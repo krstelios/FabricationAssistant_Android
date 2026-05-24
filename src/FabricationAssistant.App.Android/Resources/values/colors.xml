@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="fa_surface_900">#1B1D1F</color>
+    <color name="fa_surface_800">#26282B</color>
+    <color name="fa_surface_700">#33363A</color>
+    <color name="fa_text_primary">#E3E5E8</color>
+    <color name="fa_text_secondary">#9CA3AF</color>
+    <color name="fa_accent_500">#3B82F6</color>
+    <color name="fa_accent_600">#2563EB</color>
+    <color name="fa_on_accent">#FFFFFF</color>
+
+    <color name="md_theme_primary">#3B82F6</color>
+    <color name="md_theme_onPrimary">#FFFFFF</color>
+    <color name="md_theme_surface">#1B1D1F</color>
+    <color name="md_theme_onSurface">#E3E5E8</color>
+    <color name="md_theme_surfaceVariant">#26282B</color>
+    <color name="md_theme_onSurfaceVariant">#9CA3AF</color>
+</resources>

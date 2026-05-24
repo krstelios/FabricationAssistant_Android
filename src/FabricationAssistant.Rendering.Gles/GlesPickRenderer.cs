@@ -1,0 +1,177 @@
+using FabricationAssistant.Core.Camera;
+using Silk.NET.OpenGLES;
+
+namespace FabricationAssistant.Rendering.Gles;
+
+/// <summary>
+/// Owns the offscreen R32UI framebuffer and pick shader. Renders the scene
+/// with per-mesh uMeshIndex as the fragment output, then reads back the pixel
+/// at the tap location to recover which mesh was hit. Index 0 is the
+/// background / no-hit value (set by glClear).
+///
+/// All entry points must run on the GL render thread. The host typically
+/// calls Pick from a render-thread command queued via
+/// ViewportSurfaceView.QueueRendererCommand.
+/// </summary>
+public sealed class GlesPickRenderer : IDisposable
+{
+    private readonly GL _gl;
+    private readonly ShaderProgram _program;
+    private uint _fbo;
+    private uint _colorTexture;
+    private uint _depthRb;
+    private int _width;
+    private int _height;
+
+    public GlesPickRenderer(GL gl, string vertSource, string fragSource)
+    {
+        _gl = gl ?? throw new ArgumentNullException(nameof(gl));
+        _program = new ShaderProgram(_gl, "pick", vertSource, fragSource);
+    }
+
+    /// <summary>
+    /// (Re)allocates the R32UI color texture and D24 depth renderbuffer at the
+    /// given size. Called from GlesViewportRenderer.OnSurfaceChanged so the
+    /// pick FBO tracks the main viewport size.
+    /// </summary>
+    public void Resize(int width, int height)
+    {
+        if (width <= 0 || height <= 0) return;
+        if (width == _width && height == _height && _fbo != 0) return;
+
+        DestroyResources();
+
+        _width = width;
+        _height = height;
+
+        _colorTexture = _gl.GenTexture();
+        _gl.BindTexture(TextureTarget.Texture2D, _colorTexture);
+        unsafe
+        {
+            _gl.TexImage2D(
+                TextureTarget.Texture2D,
+                level: 0,
+                InternalFormat.R32ui,
+                (uint)width,
+                (uint)height,
+                border: 0,
+                PixelFormat.RedInteger,
+                PixelType.UnsignedInt,
+                pixels: (void*)0);
+        }
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Nearest);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Nearest);
+        _gl.BindTexture(TextureTarget.Texture2D, 0);
+
+        _depthRb = _gl.GenRenderbuffer();
+        _gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, _depthRb);
+        _gl.RenderbufferStorage(
+            RenderbufferTarget.Renderbuffer,
+            InternalFormat.DepthComponent24,
+            (uint)width,
+            (uint)height);
+        _gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, 0);
+
+        _fbo = _gl.GenFramebuffer();
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _fbo);
+        _gl.FramebufferTexture2D(
+            FramebufferTarget.Framebuffer,
+            FramebufferAttachment.ColorAttachment0,
+            TextureTarget.Texture2D,
+            _colorTexture,
+            level: 0);
+        _gl.FramebufferRenderbuffer(
+            FramebufferTarget.Framebuffer,
+            FramebufferAttachment.DepthAttachment,
+            RenderbufferTarget.Renderbuffer,
+            _depthRb);
+
+        var status = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
+        if (status != GLEnum.FramebufferComplete)
+        {
+            Android.Util.Log.Error("FA.Pick",
+                $"Pick FBO incomplete: 0x{(int)status:X4} ({width}x{height})");
+        }
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+    }
+
+    /// <summary>
+    /// Renders the scene to the pick FBO using mesh indices as fragment output
+    /// and reads back the pixel at (x, viewportY) where viewportY is in
+    /// Android (top-down) coordinates. Returns the 1-based mesh index that
+    /// was hit, or null when the background was hit.
+    /// </summary>
+    public unsafe int? Pick(int x, int y, GpuScene scene, CameraState camera)
+    {
+        if (_fbo == 0 || _width == 0 || _height == 0) return null;
+        if (x < 0 || y < 0 || x >= _width || y >= _height) return null;
+
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _fbo);
+        _gl.Viewport(0, 0, (uint)_width, (uint)_height);
+        uint clear = 0u;
+        _gl.ClearBuffer(GLEnum.Color, 0, &clear);
+        _gl.Clear((uint)ClearBufferMask.DepthBufferBit);
+
+        _gl.Enable(EnableCap.DepthTest);
+        _gl.DepthFunc(DepthFunction.Lequal);
+
+        _program.Use();
+
+        float aspect = (float)_width / _height;
+        var identity = ViewportCameraMath.IdentityModelMatrix();
+        var view = ViewportCameraMath.ViewMatrix(camera);
+        var proj = ViewportCameraMath.ProjectionMatrix(camera, aspect);
+
+        SetMat4("uView", view);
+        SetMat4("uProjection", proj);
+
+        int modelLoc = _gl.GetUniformLocation(_program.Handle, "uModel");
+        int indexLoc = _gl.GetUniformLocation(_program.Handle, "uMeshIndex");
+        foreach (var mesh in scene.Meshes)
+        {
+            float[] model = mesh.WorldTransform ?? identity;
+            if (modelLoc >= 0)
+                _gl.UniformMatrix4(modelLoc, true, model);
+            if (indexLoc >= 0)
+                _gl.Uniform1(indexLoc, (uint)mesh.MeshIndex);
+            GlesRenderUtil.ApplyMeshCulling(_gl, mesh);
+            mesh.Draw();
+        }
+        GlesRenderUtil.ResetMeshCulling(_gl);
+
+        // glReadPixels uses bottom-up Y. Tap input is top-down. Flip.
+        int glY = _height - 1 - y;
+        uint pixel = 0u;
+        _gl.ReadPixels(x, glY, 1u, 1u, PixelFormat.RedInteger, PixelType.UnsignedInt, &pixel);
+
+        // Restore the surface (default) framebuffer. The renderer always
+        // draws the main frame to FBO 0, so Pick can safely re-bind 0 here
+        // even if a future pass introduces another FBO - it will rebind
+        // before drawing.
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0u);
+
+        return pixel == 0u ? null : (int)pixel;
+    }
+
+    private void SetMat4(string name, float[] m)
+    {
+        int loc = _gl.GetUniformLocation(_program.Handle, name);
+        if (loc < 0) return;
+        _gl.UniformMatrix4(loc, true, m);
+    }
+
+    private void DestroyResources()
+    {
+        if (_fbo != 0) { _gl.DeleteFramebuffer(_fbo); _fbo = 0; }
+        if (_colorTexture != 0) { _gl.DeleteTexture(_colorTexture); _colorTexture = 0; }
+        if (_depthRb != 0) { _gl.DeleteRenderbuffer(_depthRb); _depthRb = 0; }
+        _width = 0;
+        _height = 0;
+    }
+
+    public void Dispose()
+    {
+        DestroyResources();
+        _program.Dispose();
+    }
+}

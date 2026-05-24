@@ -1,0 +1,60 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-android34.0</TargetFramework>
+    <SupportedOSPlatformVersion>24</SupportedOSPlatformVersion>
+    <OutputType>Exe</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>FabricationAssistant.App.Android</RootNamespace>
+    <AssemblyName>FabricationAssistant.App.Android</AssemblyName>
+    <ApplicationId>com.fabricationassistant.android</ApplicationId>
+    <ApplicationVersion>1</ApplicationVersion>
+    <ApplicationDisplayVersion>0.1.0</ApplicationDisplayVersion>
+    <AndroidApplicationLabel>Fabrication Assistant</AndroidApplicationLabel>
+    <AndroidMinSdkVersion>24</AndroidMinSdkVersion>
+    <RuntimeIdentifiers>android-arm64;android-x64</RuntimeIdentifiers>
+    <AndroidEnableProfiledAot>false</AndroidEnableProfiledAot>
+    <AndroidPackageFormat>apk</AndroidPackageFormat>
+    <!--
+      Self-contained Debug APK: embed all managed assemblies into the APK
+      instead of relying on Fast Deployment's separate push to
+      /data/user/0/<pkg>/files/.__override__. This lets `adb install` work
+      identically to Release builds and avoids "No assemblies found" SIGABRT
+      crashes when the app is installed via plain adb install (rather than
+      via `dotnet build -t:Run` / `dotnet build -t:Install`).
+    -->
+    <EmbedAssembliesIntoApk>true</EmbedAssembliesIntoApk>
+    <AndroidUseSharedRuntime>false</AndroidUseSharedRuntime>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.1" />
+    <PackageReference Include="Xamarin.AndroidX.AppCompat" Version="1.7.0.5" />
+    <PackageReference Include="Xamarin.Google.Android.Material" Version="1.12.0.1" />
+    <PackageReference Include="Xamarin.AndroidX.ConstraintLayout" Version="2.2.0.1" />
+    <!-- Xamarin.AndroidX.DrawerLayout 1.2.0.15 is pulled in transitively by
+         AppCompat 1.7.0.5; no explicit reference needed. -->
+
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FabricationAssistant.Core.Android\FabricationAssistant.Core.Android.csproj" />
+    <ProjectReference Include="..\FabricationAssistant.Import.Gltf.Android\FabricationAssistant.Import.Gltf.Android.csproj" />
+    <ProjectReference Include="..\FabricationAssistant.Platform.Android\FabricationAssistant.Platform.Android.csproj" />
+    <ProjectReference Include="..\FabricationAssistant.Rendering.Gles\FabricationAssistant.Rendering.Gles.csproj" />
+    <ProjectReference Include="..\FabricationAssistant.Input.Gestures.Android\FabricationAssistant.Input.Gestures.Android.csproj" />
+    <ProjectReference Include="..\FabricationAssistant.Draco.Android\FabricationAssistant.Draco.Android.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AndroidNativeLibrary Include="..\..\deps\prebuilt\arm64-v8a\libdraco_native.so">
+      <Abi>arm64-v8a</Abi>
+    </AndroidNativeLibrary>
+    <AndroidNativeLibrary Include="..\..\deps\prebuilt\x86_64\libdraco_native.so">
+      <Abi>x86_64</Abi>
+    </AndroidNativeLibrary>
+  </ItemGroup>
+
+</Project>

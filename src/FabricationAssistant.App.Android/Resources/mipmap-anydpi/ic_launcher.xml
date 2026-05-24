@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Legacy icon for API 24-25 (pre-adaptive-icon era). Layer-list composites the
+  background color with the foreground vector. Newer API (26+) prefers the
+  ic_launcher.xml under mipmap-anydpi-v26/.
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@drawable/ic_launcher_background" />
+    <item android:drawable="@drawable/fa_logo_foreground" />
+</layer-list>

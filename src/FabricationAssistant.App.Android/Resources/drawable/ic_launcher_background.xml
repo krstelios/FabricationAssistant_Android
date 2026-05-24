@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Transparent background for the adaptive launcher icon. Matches the desktop
+  icon.svg which has fill="none" on the root <svg> element. The launcher will
+  show its mask shape over whatever the home-screen background is (wallpaper,
+  app drawer surface, etc.) and only the teal lines + F glyph from the
+  foreground drawable will be visible on top.
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#00000000" />
+</shape>

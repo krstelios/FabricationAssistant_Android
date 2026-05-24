@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-android34.0</TargetFramework>
+    <SupportedOSPlatformVersion>24</SupportedOSPlatformVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>FabricationAssistant.Import.Gltf</RootNamespace>
+    <AssemblyName>FabricationAssistant.Import.Gltf</AssemblyName>
+    <Description>Android shim - compile-links FabricationAssistant.Import.Gltf source files for net8.0-android.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SharpGLTF.Core" Version="1.0.6" />
+    <PackageReference Include="SharpZipLib" Version="1.4.2" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FabricationAssistant.Core.Android\FabricationAssistant.Core.Android.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Import.Gltf\**\*.cs"
+             Exclude="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Import.Gltf\bin\**\*.cs;$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Import.Gltf\obj\**\*.cs"
+             LinkBase="Linked" />
+  </ItemGroup>
+
+</Project>

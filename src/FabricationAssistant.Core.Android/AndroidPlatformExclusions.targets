@@ -1,0 +1,24 @@
+<Project>
+  <!--
+    Files in the desktop FabricationAssistant.Core source tree that we
+    deliberately exclude from the Android compile because they depend on
+    Windows-only APIs (Environment.SpecialFolder paths, registry, P/Invoke
+    into Windows DLLs, etc.).
+
+    Each <CoreExclusions> item is picked up by the <Compile Remove> in
+    FabricationAssistant.Core.Android.csproj.
+
+    When adding a new exclusion, note the reason here so the controller
+    knows whether a replacement is needed (e.g. Task 8 supplies
+    FabricationAssistantPathsBootstrap as the Android-side replacement
+    for FabricationAssistantPaths.cs).
+  -->
+  <ItemGroup>
+    <!--
+      Uses Environment.SpecialFolder.LocalApplicationData which maps to a
+      Windows-specific path. Replaced on Android by
+      FabricationAssistantPathsBootstrap (Plan 1 Task 8).
+    -->
+    <CoreExclusions Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Runtime\FabricationAssistantPaths.cs" />
+  </ItemGroup>
+</Project>

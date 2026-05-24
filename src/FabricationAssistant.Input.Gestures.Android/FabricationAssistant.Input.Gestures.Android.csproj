@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-android34.0</TargetFramework>
+    <SupportedOSPlatformVersion>24</SupportedOSPlatformVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>FabricationAssistant.Input.Gestures.Android</RootNamespace>
+    <AssemblyName>FabricationAssistant.Input.Gestures.Android</AssemblyName>
+    <Description>Android-specific touch-to-gesture-recognizer bridge.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FabricationAssistant.Core.Android\FabricationAssistant.Core.Android.csproj" />
+  </ItemGroup>
+
+</Project>

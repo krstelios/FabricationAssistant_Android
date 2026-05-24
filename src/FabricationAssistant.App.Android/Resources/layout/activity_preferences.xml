@@ -1,0 +1,248 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/md_theme_surface">
+
+    <com.google.android.material.appbar.MaterialToolbar
+        android:id="@+id/prefsToolbar"
+        android:layout_width="match_parent"
+        android:layout_height="@dimen/fa_app_bar_height"
+        android:background="@color/md_theme_surfaceVariant"
+        app:title="@string/preferences_title"
+        app:titleTextAppearance="@style/FA.TextAppearance.Title"
+        app:navigationIcon="@drawable/ic_chevron_right"
+        app:navigationContentDescription="@string/preferences_close"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <ScrollView
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:padding="@dimen/fa_space_l"
+        android:clipToPadding="false"
+        app:layout_constraintTop_toBottomOf="@+id/prefsToolbar"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <!-- ── Viewport ─────────────────────────────────────────── -->
+            <com.google.android.material.card.MaterialCardView
+                style="@style/FA.PreferencesCard"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="@dimen/fa_space_l">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/preferences_section_viewport"
+                        android:textAppearance="@style/FA.TextAppearance.Subtitle" />
+
+                    <com.google.android.material.materialswitch.MaterialSwitch
+                        android:id="@+id/prefShowGrid"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/fa_space_m"
+                        android:text="@string/preferences_show_grid"
+                        android:textAppearance="@style/FA.TextAppearance.Body" />
+
+                    <com.google.android.material.materialswitch.MaterialSwitch
+                        android:id="@+id/prefShowSelectionHighlight"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/fa_space_s"
+                        android:text="@string/preferences_show_selection_highlight"
+                        android:textAppearance="@style/FA.TextAppearance.Body" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/fa_space_m"
+                        android:text="@string/preferences_background_preset"
+                        android:textAppearance="@style/FA.TextAppearance.Body" />
+
+                    <com.google.android.material.button.MaterialButtonToggleGroup
+                        android:id="@+id/prefBackgroundPreset"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/fa_space_xs"
+                        app:singleSelection="true"
+                        app:selectionRequired="true">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/prefBackgroundSlate"
+                            style="?attr/materialButtonOutlinedStyle"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="@string/preferences_background_slate" />
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/prefBackgroundGrey"
+                            style="?attr/materialButtonOutlinedStyle"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="@string/preferences_background_grey" />
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/prefBackgroundBlack"
+                            style="?attr/materialButtonOutlinedStyle"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="@string/preferences_background_black" />
+                    </com.google.android.material.button.MaterialButtonToggleGroup>
+
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+
+            <!-- ── Navigation ──────────────────────────────────────── -->
+            <com.google.android.material.card.MaterialCardView
+                style="@style/FA.PreferencesCard"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="@dimen/fa_space_l">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/preferences_section_navigation"
+                        android:textAppearance="@style/FA.TextAppearance.Subtitle" />
+
+                    <TextView
+                        android:id="@+id/prefOrbitLabel"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/fa_space_m"
+                        android:text="@string/preferences_orbit_sensitivity"
+                        android:textAppearance="@style/FA.TextAppearance.Body" />
+                    <SeekBar
+                        android:id="@+id/prefOrbitSensitivity"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:max="49" />
+
+                    <TextView
+                        android:id="@+id/prefPanLabel"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/fa_space_s"
+                        android:text="@string/preferences_pan_sensitivity"
+                        android:textAppearance="@style/FA.TextAppearance.Body" />
+                    <SeekBar
+                        android:id="@+id/prefPanSensitivity"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:max="49" />
+
+                    <TextView
+                        android:id="@+id/prefZoomLabel"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/fa_space_s"
+                        android:text="@string/preferences_zoom_sensitivity"
+                        android:textAppearance="@style/FA.TextAppearance.Body" />
+                    <SeekBar
+                        android:id="@+id/prefZoomSensitivity"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:max="49" />
+
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+
+            <!-- ── Rendering ───────────────────────────────────────── -->
+            <com.google.android.material.card.MaterialCardView
+                style="@style/FA.PreferencesCard"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="@dimen/fa_space_l">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/preferences_section_rendering"
+                        android:textAppearance="@style/FA.TextAppearance.Subtitle" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/fa_space_m"
+                        android:text="@string/preferences_msaa_samples"
+                        android:textAppearance="@style/FA.TextAppearance.Body" />
+
+                    <com.google.android.material.button.MaterialButtonToggleGroup
+                        android:id="@+id/prefMsaaSamples"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/fa_space_xs"
+                        app:singleSelection="true"
+                        app:selectionRequired="true">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/prefMsaaOff"
+                            style="?attr/materialButtonOutlinedStyle"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="@string/preferences_msaa_off" />
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/prefMsaa2x"
+                            style="?attr/materialButtonOutlinedStyle"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="@string/preferences_msaa_2x" />
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/prefMsaa4x"
+                            style="?attr/materialButtonOutlinedStyle"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="@string/preferences_msaa_4x" />
+                    </com.google.android.material.button.MaterialButtonToggleGroup>
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/fa_space_s"
+                        android:text="@string/preferences_msaa_restart_hint"
+                        android:textAppearance="@style/FA.TextAppearance.Caption" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/fa_space_m"
+                        android:text="@string/preferences_deferred_hint"
+                        android:textAppearance="@style/FA.TextAppearance.Caption" />
+
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+
+        </LinearLayout>
+    </ScrollView>
+
+</androidx.constraintlayout.widget.ConstraintLayout>

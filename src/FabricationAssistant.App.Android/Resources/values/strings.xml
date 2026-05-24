@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Fabrication Assistant</string>
+    <string name="open_button">Open</string>
+
+    <!-- Navigation rail / toolbar content descriptions -->
+    <string name="cd_nav_open">Open file</string>
+    <string name="cd_nav_recent">Recent files</string>
+    <string name="cd_nav_fit">Fit to view</string>
+    <string name="cd_nav_settings">Settings</string>
+    <string name="cd_tool_section">Section plane</string>
+    <string name="cd_tool_measure">Measurement</string>
+    <string name="cd_tool_view_cube">Reset view</string>
+    <string name="cd_toggle_properties">Toggle properties</string>
+    <string name="cd_open_drawer">Open navigation drawer</string>
+
+    <!-- Properties panel -->
+    <string name="properties_title">Properties</string>
+    <string name="properties_empty">No selection</string>
+
+    <!-- Preferences screen -->
+    <string name="preferences_title">Settings</string>
+    <string name="preferences_close">Close settings</string>
+    <string name="preferences_section_viewport">Viewport</string>
+    <string name="preferences_section_navigation">Navigation</string>
+    <string name="preferences_section_rendering">Rendering</string>
+    <string name="preferences_show_grid">Show ground grid</string>
+    <string name="preferences_show_selection_highlight">Highlight selected body</string>
+    <string name="preferences_background_preset">Background</string>
+    <string name="preferences_background_slate">Slate</string>
+    <string name="preferences_background_grey">Grey</string>
+    <string name="preferences_background_black">Black</string>
+    <string name="preferences_orbit_sensitivity">Orbit sensitivity</string>
+    <string name="preferences_pan_sensitivity">Pan sensitivity</string>
+    <string name="preferences_zoom_sensitivity">Pinch-zoom sensitivity</string>
+    <string name="preferences_msaa_samples">Anti-aliasing</string>
+    <string name="preferences_msaa_off">Off</string>
+    <string name="preferences_msaa_2x">2×</string>
+    <string name="preferences_msaa_4x">4×</string>
+    <string name="preferences_msaa_restart_hint">Anti-aliasing changes apply the next time the app starts.</string>
+    <string name="preferences_deferred_hint">Rendering controls apply live except anti-aliasing, which is selected when the app starts.</string>
+</resources>

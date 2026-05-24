@@ -1,0 +1,25 @@
+# Build artifacts
+bin/
+obj/
+[Bb]uild/
+artifacts/
+src/**/native/build-*/
+*.user
+
+# Android-specific
+*.apk
+*.aab
+*.keystore
+local.properties
+
+# IDE
+.idea/
+.vs/
+*.suo
+*.csproj.cache
+
+# Logs
+*.log
+
+# Plan 2B: Draco source clone and prebuilt native artifacts
+deps/

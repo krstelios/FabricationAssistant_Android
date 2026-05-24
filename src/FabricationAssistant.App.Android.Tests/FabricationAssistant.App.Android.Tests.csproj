@@ -1,0 +1,59 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>FabricationAssistant.App.Android.Tests</RootNamespace>
+    <AssemblyName>FabricationAssistant.App.Android.Tests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <!--
+    Test project targets plain net8.0 (overridden by local Directory.Build.props),
+    not net8.0-android. This lets pure math/gesture/import tests run on the dev
+    machine via `dotnet test` without needing an emulator. We link the math
+    subset of Core directly so the tests are self-contained.
+  -->
+  <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Math\**\*.cs"
+             LinkBase="Linked\Math" />
+  </ItemGroup>
+
+  <!--
+    Link the gesture recognizer + its geometry types so the desktop test suite
+    can be ported and run on net8.0 host without Android tooling. We can't
+    ProjectReference FabricationAssistant.Input.Gestures.Android (it targets
+    net8.0-android34.0) so we link the small set of files instead.
+  -->
+  <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.Input.Gestures.Android\Point2D.cs"
+             LinkBase="Linked\Gestures" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.Input.Gestures.Android\Vector2D.cs"
+             LinkBase="Linked\Gestures" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.Input.Gestures.Android\TouchGestureEvent.cs"
+             LinkBase="Linked\Gestures" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.Input.Gestures.Android\ViewportTouchGestureRecognizer.cs"
+             LinkBase="Linked\Gestures" />
+  </ItemGroup>
+
+  <!--
+    Link the partial-class file that contains MsaaSceneFramebuffer.ClampSamples
+    into the test assembly so unit tests can exercise the pure-arithmetic path
+    without pulling in the full FabricationAssistant.Rendering.Gles project
+    (which targets net8.0-android and references Silk.NET.OpenGLES, neither of
+    which can load in the net8.0 host test runner).
+  -->
+  <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.Rendering.Gles\MsaaSceneFramebuffer.ClampSamples.cs"
+             LinkBase="Linked\Rendering.Gles" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,179 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.drawerlayout.widget.DrawerLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/drawerLayout"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/md_theme_surface">
+
+    <!-- Main content -->
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
+        <com.google.android.material.appbar.MaterialToolbar
+            android:id="@+id/topAppBar"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/fa_app_bar_height"
+            android:background="@color/md_theme_surfaceVariant"
+            app:title="@string/app_name"
+            app:titleTextAppearance="@style/FA.TextAppearance.Title"
+            app:navigationIcon="@drawable/ic_menu"
+            app:navigationContentDescription="@string/cd_open_drawer"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
+
+        <FrameLayout
+            android:id="@+id/viewportContainer"
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:background="@color/md_theme_surface"
+            app:layout_constraintTop_toBottomOf="@+id/topAppBar"
+            app:layout_constraintBottom_toTopOf="@+id/bottomAppBar"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
+
+        <include
+            android:id="@+id/propertiesPanel"
+            layout="@layout/view_properties_panel"
+            android:layout_width="match_parent"
+            android:layout_height="240dp"
+            android:visibility="gone"
+            app:layout_constraintBottom_toTopOf="@+id/bottomAppBar"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
+
+        <LinearLayout
+            android:id="@+id/bottomAppBar"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/fa_bottom_bar_height"
+            android:orientation="horizontal"
+            android:background="@color/md_theme_surfaceVariant"
+            android:gravity="center_vertical"
+            android:paddingStart="@dimen/fa_space_s"
+            android:paddingEnd="@dimen/fa_space_s"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/toolViewCube"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:contentDescription="@string/cd_tool_view_cube"
+                app:icon="@drawable/ic_view_cube"
+                app:iconGravity="textStart"
+                app:iconPadding="0dp"
+                app:iconSize="20dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                style="@style/FA.IconButton" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/toolSection"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:layout_marginStart="@dimen/fa_space_xs"
+                android:contentDescription="@string/cd_tool_section"
+                app:icon="@drawable/ic_section"
+                app:iconGravity="textStart"
+                app:iconPadding="0dp"
+                app:iconSize="20dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                style="@style/FA.IconButton" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/toolMeasure"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:layout_marginStart="@dimen/fa_space_xs"
+                android:contentDescription="@string/cd_tool_measure"
+                app:icon="@drawable/ic_measure"
+                app:iconGravity="textStart"
+                app:iconPadding="0dp"
+                app:iconSize="20dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                style="@style/FA.IconButton" />
+
+            <Space
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/propertiesToggle"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:contentDescription="@string/cd_toggle_properties"
+                app:icon="@drawable/ic_chevron_right"
+                app:iconGravity="textStart"
+                app:iconPadding="0dp"
+                app:iconSize="20dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                style="@style/FA.IconButton" />
+
+        </LinearLayout>
+
+    </androidx.constraintlayout.widget.ConstraintLayout>
+
+    <!-- Drawer (left) -->
+    <LinearLayout
+        android:layout_width="280dp"
+        android:layout_height="match_parent"
+        android:layout_gravity="start"
+        android:orientation="vertical"
+        android:background="@color/md_theme_surface"
+        android:padding="@dimen/fa_space_l">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/navOpenButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/fa_space_s"
+            android:text="@string/cd_nav_open"
+            app:icon="@drawable/ic_open_file"
+            app:iconGravity="textStart"
+            style="@style/Widget.Material3.Button.TextButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/navRecentButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/fa_space_xs"
+            android:text="@string/cd_nav_recent"
+            app:icon="@drawable/ic_recent"
+            app:iconGravity="textStart"
+            style="@style/Widget.Material3.Button.TextButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/navFitButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/fa_space_xs"
+            android:text="@string/cd_nav_fit"
+            app:icon="@drawable/ic_fit"
+            app:iconGravity="textStart"
+            style="@style/Widget.Material3.Button.TextButton" />
+
+        <Space
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/navSettingsButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="@dimen/fa_space_s"
+            android:text="@string/cd_nav_settings"
+            app:icon="@drawable/ic_settings"
+            app:iconGravity="textStart"
+            style="@style/Widget.Material3.Button.TextButton" />
+    </LinearLayout>
+
+</androidx.drawerlayout.widget.DrawerLayout>
