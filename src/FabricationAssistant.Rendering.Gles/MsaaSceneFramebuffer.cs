@@ -70,6 +70,9 @@ public sealed partial class MsaaSceneFramebuffer : IDisposable
 
         _colorRbo = _gl.GenRenderbuffer();
         _gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, _colorRbo);
+        // RenderbufferStorageMultisample with samples == 1 is legal in
+        // GLES 3.x but implementations may silently treat it differently.
+        // Take the explicit single-sample path when samples <= 1.
         if (clamped > 1)
         {
             _gl.RenderbufferStorageMultisample(RenderbufferTarget.Renderbuffer,
@@ -99,15 +102,18 @@ public sealed partial class MsaaSceneFramebuffer : IDisposable
             FramebufferAttachment.DepthStencilAttachment, RenderbufferTarget.Renderbuffer, _depthStencilRbo);
 
         var status = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
+        // Unbind before any further work so a successful path and the throw
+        // path leave the same clean binding state (renderbuffer = 0, FBO = 0).
+        // Otherwise a caller that catches the exception inherits bindings
+        // pointing at the just-deleted handles, which is driver-undefined.
+        _gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, 0);
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
         if (status != GLEnum.FramebufferComplete)
         {
             Destroy();
             throw new InvalidOperationException(
                 $"MsaaSceneFramebuffer: FBO incomplete after attachment, status = 0x{(int)status:X4}");
         }
-
-        _gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, 0);
-        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
     }
 
     /// <summary>
@@ -160,6 +166,5 @@ public sealed partial class MsaaSceneFramebuffer : IDisposable
         if (_disposed) return;
         Destroy();
         _disposed = true;
-        GC.SuppressFinalize(this);
     }
 }

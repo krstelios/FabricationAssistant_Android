@@ -27,6 +27,7 @@ public sealed class GlesViewportRenderer
     private GlesNormalDepthRenderer? _normalDepthRenderer;
     private GlesSsaoRenderer? _ssaoRenderer;
     private GlesOutlineRenderer? _outlineRenderer;
+    private MsaaSceneFramebuffer? _msaaFbo;
     private uint _whiteAoTexture;
     private bool _initialized;
     private int _width;
@@ -117,6 +118,11 @@ public sealed class GlesViewportRenderer
         var outlineFs = LoadEmbeddedShader("outline.gles.frag");
         _outlineRenderer = new GlesOutlineRenderer(_gl, pickVs, maskFs, fsVs, outlineFs);
 
+        // Plan 3B: offscreen multisample FBO. All scene passes (grid, mesh,
+        // edge) render into this FBO and the resolved color is blitted to
+        // the default backbuffer before the selection outline post-process.
+        _msaaFbo = new MsaaSceneFramebuffer(_gl);
+
         _initialized = true;
     }
 
@@ -131,6 +137,7 @@ public sealed class GlesViewportRenderer
         _normalDepthRenderer?.Resize(width, height);
         _ssaoRenderer?.Resize(width, height);
         _outlineRenderer?.Resize(width, height);
+        _msaaFbo?.Ensure(width, height, Appearance.MsaaSamples);
     }
 
     public void OnDrawFrame()
@@ -149,6 +156,11 @@ public sealed class GlesViewportRenderer
 
         var a = Appearance;
         EnsureEdgesMatchAppearance(a);
+
+        // Re-allocate the MSAA FBO if the user changed the sample count
+        // via the preferences sheet, or if the viewport was resized. Cheap
+        // when nothing has changed (Ensure compares cached dims + samples).
+        _msaaFbo?.Ensure(_width, _height, a.MsaaSamples);
 
         // SSAO pre-pass: render scene normals+depth, then compute occlusion.
         // Bound back to the default FBO before the main mesh pass, which
@@ -169,13 +181,21 @@ public sealed class GlesViewportRenderer
         }
 
         _gl.Viewport(0, 0, (uint)_width, (uint)_height);
+        // Bind the offscreen MSAA FBO. ResetMainFramebufferState restores
+        // depth/blend/cull defaults; the bind itself happens here so all
+        // subsequent draw calls land in the multisample renderbuffer.
+        if (_msaaFbo is not null && _msaaFbo.FboHandle != 0)
+            _msaaFbo.Bind();
+        else
+            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
         ResetMainFramebufferState();
 
         // Clay mode swaps to its own background so the scene reads as a
         // matte studio shot rather than the operator's main background.
         float[] bg = a.Mode == RenderMode.Clay ? a.ClayBackgroundColor : a.BackgroundColor;
         _gl.ClearColor(bg[0], bg[1], bg[2], 1.0f);
-        _gl.Clear((uint)(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit));
+        _gl.ClearStencil(0);
+        _gl.Clear((uint)(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit | ClearBufferMask.StencilBufferBit));
 
         if (Scene is null || Camera is null || _width == 0 || _height == 0)
             return;
@@ -368,6 +388,12 @@ public sealed class GlesViewportRenderer
             _gl.Disable(EnableCap.Blend);
         }
 
+        // Plan 3B: resolve the MSAA color attachment to the default
+        // backbuffer. The selection outline post-process draws into the
+        // default FBO over the resolved color.
+        if (_msaaFbo is not null && _msaaFbo.FboHandle != 0)
+            _msaaFbo.ResolveToDefault();
+
         // ── Selection outline post-process (Phase G) ──────────────────
         // Renders a Sobel-edged outline of the picked mesh over the default
         // framebuffer. The inline color highlight in mesh.gles.frag stays
@@ -460,8 +486,10 @@ public sealed class GlesViewportRenderer
 
     private void ResetMainFramebufferState()
     {
-        _gl!.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
-        _gl.Enable(EnableCap.DepthTest);
+        // Framebuffer is bound by the caller (OnDrawFrame). Do NOT re-bind
+        // FBO 0 here - that would discard the MSAA target the caller just
+        // selected. This method now only resets pipeline state.
+        _gl!.Enable(EnableCap.DepthTest);
         _gl.DepthFunc(DepthFunction.Lequal);
         _gl.DepthMask(true);
         _gl.Disable(EnableCap.Blend);
