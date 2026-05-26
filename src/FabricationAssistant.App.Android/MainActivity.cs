@@ -456,21 +456,21 @@ public sealed class MainActivity : AppCompatActivity
         if (_navRecentButton is not null) _navRecentButton.Click += OnRecentClicked;
 
         _navModelExplorerButton = FindViewById<MaterialButton>(Resource.Id.navModelExplorerButton);
-        if (_navModelExplorerButton is not null) _navModelExplorerButton.Click += (_, _) => ToggleModelExplorerPanel();
+        if (_navModelExplorerButton is not null) _navModelExplorerButton.Click += OnModelExplorerClicked;
 
         _navBomButton = FindViewById<MaterialButton>(Resource.Id.navBomButton);
-        if (_navBomButton is not null) _navBomButton.Click += (_, _) => ToggleBomPanel(AndroidBomPanelKind.Hierarchy);
+        if (_navBomButton is not null) _navBomButton.Click += OnBomClicked;
 
         _navBomFlatButton = FindViewById<MaterialButton>(Resource.Id.navBomFlatButton);
-        if (_navBomFlatButton is not null) _navBomFlatButton.Click += (_, _) => ToggleBomPanel(AndroidBomPanelKind.Consolidated);
+        if (_navBomFlatButton is not null) _navBomFlatButton.Click += OnBomFlatClicked;
 
         _navSpenPalmButton = FindViewById<MaterialButton>(Resource.Id.navSpenPalmButton);
         if (_navSpenPalmButton is not null)
-            _navSpenPalmButton.Click += (_, _) => ToggleSpenPalmRejection();
+            _navSpenPalmButton.Click += OnSpenPalmClicked;
 
         _navSettingsButton = FindViewById<MaterialButton>(Resource.Id.navSettingsButton);
         if (_navSettingsButton is not null)
-            _navSettingsButton.Click += (_, _) => ToggleSettingsPanel();
+            _navSettingsButton.Click += OnSettingsClicked;
 
         BindPropertiesPanel();
 
@@ -601,7 +601,7 @@ public sealed class MainActivity : AppCompatActivity
 
         if (_propertiesToggle is not null)
         {
-            _propertiesToggle.Click += (_, _) => SetPropertiesPanelExpanded(!_propertiesPanelExpanded);
+            _propertiesToggle.Click += OnPropertiesToggleClicked;
         }
 
         if (_propertiesPanelDivider is not null)
@@ -612,6 +612,11 @@ public sealed class MainActivity : AppCompatActivity
                 SetPropertiesPanelWidth,
                 direction: -1));
         }
+    }
+
+    private void OnPropertiesToggleClicked(object? sender, EventArgs e)
+    {
+        SetPropertiesPanelExpanded(!_propertiesPanelExpanded);
     }
 
     private void SetPropertiesPanelExpanded(bool expanded)
@@ -749,6 +754,31 @@ public sealed class MainActivity : AppCompatActivity
             return;
 
         ToggleRecentPanel();
+    }
+
+    private void OnModelExplorerClicked(object? sender, EventArgs e)
+    {
+        ToggleModelExplorerPanel();
+    }
+
+    private void OnBomClicked(object? sender, EventArgs e)
+    {
+        ToggleBomPanel(AndroidBomPanelKind.Hierarchy);
+    }
+
+    private void OnBomFlatClicked(object? sender, EventArgs e)
+    {
+        ToggleBomPanel(AndroidBomPanelKind.Consolidated);
+    }
+
+    private void OnSpenPalmClicked(object? sender, EventArgs e)
+    {
+        ToggleSpenPalmRejection();
+    }
+
+    private void OnSettingsClicked(object? sender, EventArgs e)
+    {
+        ToggleSettingsPanel();
     }
 
     private void ToggleRecentPanel()
@@ -1582,133 +1612,220 @@ public sealed class MainActivity : AppCompatActivity
         ApplyRenderModeTooltips();
 
         if (_toolSelectButton is not null)
-            _toolSelectButton.Click += (_, _) => ActivateSelectTool("select button");
+            _toolSelectButton.Click += OnToolSelectClicked;
         if (_toolMoveButton is not null)
-            _toolMoveButton.Click += (_, _) => ToggleBodyMoveTool();
+            _toolMoveButton.Click += OnToolMoveClicked;
         if (_toolZoomWindowButton is not null)
-            _toolZoomWindowButton.Click += (_, _) => ActivateZoomWindowTool();
+            _toolZoomWindowButton.Click += OnToolZoomWindowClicked;
         if (_toolZoomSelectedButton is not null)
-            _toolZoomSelectedButton.Click += (_, _) => ZoomToSelection();
+            _toolZoomSelectedButton.Click += OnToolZoomSelectedClicked;
         if (_toolScanQrButton is not null)
-            _toolScanQrButton.Click += (_, _) => BeginQrScan();
+            _toolScanQrButton.Click += OnToolScanQrClicked;
         if (_toolFitViewButton is not null)
             _toolFitViewButton.Click += OnFitClicked;
         if (_toolViewPresetsButton is not null)
-            _toolViewPresetsButton.Click += (_, _) => ShowViewPresetToolbar();
+            _toolViewPresetsButton.Click += OnToolViewPresetsClicked;
         if (_toolSectionsButton is not null)
-            _toolSectionsButton.Click += (_, _) => ShowSectionToolbar();
+            _toolSectionsButton.Click += OnToolSectionsClicked;
         if (_toolMeasureButton is not null)
-            _toolMeasureButton.Click += (_, _) => ShowMeasureToolbar();
+            _toolMeasureButton.Click += OnToolMeasureClicked;
         if (_toolExplodeButton is not null)
-            _toolExplodeButton.Click += (_, _) => ToggleExplodeTool();
+            _toolExplodeButton.Click += OnToolExplodeClicked;
         if (_toolHideButton is not null)
-            _toolHideButton.Click += (_, _) => HideSelectedNodes();
+            _toolHideButton.Click += OnToolHideClicked;
         if (_toolShowAllButton is not null)
-            _toolShowAllButton.Click += (_, _) => ShowAllNodes();
+            _toolShowAllButton.Click += OnToolShowAllClicked;
         if (_toolIsolateButton is not null)
-            _toolIsolateButton.Click += (_, _) => IsolateSelectedNodes();
+            _toolIsolateButton.Click += OnToolIsolateClicked;
         if (_toolIsolateXrayButton is not null)
-            _toolIsolateXrayButton.Click += (_, _) => IsolateXraySelectedNodes();
+            _toolIsolateXrayButton.Click += OnToolIsolateXrayClicked;
         if (_toolRenderModesButton is not null)
-            _toolRenderModesButton.Click += (_, _) => ShowRenderModeToolbar();
+            _toolRenderModesButton.Click += OnToolRenderModesClicked;
         if (_toolFullscreenButton is not null)
-            _toolFullscreenButton.Click += (_, _) => SetFullscreenUiActive(!_fullscreenUiActive);
+            _toolFullscreenButton.Click += OnToolFullscreenClicked;
         if (_measureBackButton is not null)
-            _measureBackButton.Click += (_, _) => ExitMeasureToolbar();
+            _measureBackButton.Click += OnMeasureBackClicked;
         if (_measurePointToPointButton is not null)
-            _measurePointToPointButton.Click += (_, _) => SetMeasureMode(MeasureToolMode.PointToPoint);
+            _measurePointToPointButton.Click += OnMeasurePointToPointClicked;
         if (_measureFaceToPointButton is not null)
-            _measureFaceToPointButton.Click += (_, _) => SetMeasureMode(MeasureToolMode.FaceToPoint);
+            _measureFaceToPointButton.Click += OnMeasureFaceToPointClicked;
         if (_measureFaceToFaceButton is not null)
-            _measureFaceToFaceButton.Click += (_, _) => SetMeasureMode(MeasureToolMode.FaceToFace);
+            _measureFaceToFaceButton.Click += OnMeasureFaceToFaceClicked;
         if (_measureBoundingBoxButton is not null)
             _measureBoundingBoxButton.Click += OnBoundingBoxMeasureClicked;
         if (_measureClearButton is not null)
-            _measureClearButton.Click += (_, _) =>
-            {
-                _measure?.ClearMeasurements();
-                RefreshMeasurementOverlays();
-            };
+            _measureClearButton.Click += OnMeasureClearClicked;
         if (_viewPresetReturnButton is not null)
-            _viewPresetReturnButton.Click += (_, _) => ExitViewPresetToolbar();
+            _viewPresetReturnButton.Click += OnViewPresetReturnClicked;
         if (_viewIsoButton is not null)
-            _viewIsoButton.Click += (_, _) => ApplyViewPreset(StandardView.Isometric);
+            _viewIsoButton.Click += OnViewIsoClicked;
         if (_viewFrontButton is not null)
-            _viewFrontButton.Click += (_, _) => ApplyViewPreset(StandardView.Front);
+            _viewFrontButton.Click += OnViewFrontClicked;
         if (_viewRightButton is not null)
-            _viewRightButton.Click += (_, _) => ApplyViewPreset(StandardView.Right);
+            _viewRightButton.Click += OnViewRightClicked;
         if (_viewLeftButton is not null)
-            _viewLeftButton.Click += (_, _) => ApplyViewPreset(StandardView.Left);
+            _viewLeftButton.Click += OnViewLeftClicked;
         if (_viewTopButton is not null)
-            _viewTopButton.Click += (_, _) => ApplyViewPreset(StandardView.Top);
+            _viewTopButton.Click += OnViewTopClicked;
         if (_viewBottomButton is not null)
-            _viewBottomButton.Click += (_, _) => ApplyViewPreset(StandardView.Bottom);
+            _viewBottomButton.Click += OnViewBottomClicked;
         if (_viewBackButton is not null)
-            _viewBackButton.Click += (_, _) => ApplyViewPreset(StandardView.Back);
+            _viewBackButton.Click += OnViewBackClicked;
         if (_viewResetButton is not null)
-            _viewResetButton.Click += (_, _) => ApplyViewPresetReset();
+            _viewResetButton.Click += OnViewResetClicked;
         if (_sectionBackButton is not null)
-            _sectionBackButton.Click += (_, _) => ActivateSelectTool("section return");
+            _sectionBackButton.Click += OnSectionBackClicked;
         if (_sectionXButton is not null)
-            _sectionXButton.Click += (_, _) => ApplyAxisSection(SectionSubMode.X);
+            _sectionXButton.Click += OnSectionXClicked;
         if (_sectionYButton is not null)
-            _sectionYButton.Click += (_, _) => ApplyAxisSection(SectionSubMode.Y);
+            _sectionYButton.Click += OnSectionYClicked;
         if (_sectionZButton is not null)
-            _sectionZButton.Click += (_, _) => ApplyAxisSection(SectionSubMode.Z);
+            _sectionZButton.Click += OnSectionZClicked;
         if (_sectionCustomButton is not null)
-            _sectionCustomButton.Click += (_, _) => ApplyCustomSection();
+            _sectionCustomButton.Click += OnSectionCustomClicked;
         if (_sectionClearButton is not null)
-            _sectionClearButton.Click += (_, _) => ClearSections();
+            _sectionClearButton.Click += OnSectionClearClicked;
         if (_sectionFillSwitch is not null)
-        {
-            _sectionFillSwitch.CheckedChange += (_, e) =>
-            {
-                if (_sectionSwitchUpdating || _sections is null)
-                    return;
-                AppSettings.SectionFillVisible = e.IsChecked;
-                _sections.FillVisible = e.IsChecked;
-                UpdateSectionRendererState();
-            };
-        }
+            _sectionFillSwitch.CheckedChange += OnSectionFillCheckedChanged;
         if (_sectionEdgesSwitch is not null)
-        {
-            _sectionEdgesSwitch.CheckedChange += (_, e) =>
-            {
-                if (_sectionSwitchUpdating || _sections is null)
-                    return;
-                AppSettings.SectionEdgesVisible = e.IsChecked;
-                _sections.EdgesVisible = e.IsChecked;
-                UpdateSectionRendererState();
-            };
-        }
+            _sectionEdgesSwitch.CheckedChange += OnSectionEdgesCheckedChanged;
         if (_explodeBackButton is not null)
-            _explodeBackButton.Click += (_, _) => ActivateSelectTool("explode return");
+            _explodeBackButton.Click += OnExplodeBackClicked;
         if (_explodeSlider is not null)
         {
             _explodeSlider.SetOnTouchListener(new DisallowParentInterceptTouchListener());
-            _explodeSlider.ProgressChanged += (_, e) =>
-            {
-                if (_explodeSliderUpdating || !e.FromUser)
-                    return;
-                SetExplodeAmount(e.Progress / 100.0, "slider");
-            };
+            _explodeSlider.ProgressChanged += OnExplodeSliderProgressChanged;
         }
         if (_renderModeBackButton is not null)
-            _renderModeBackButton.Click += (_, _) => ExitRenderModeToolbar();
+            _renderModeBackButton.Click += OnRenderModeBackClicked;
         if (_renderModeShadedButton is not null)
-            _renderModeShadedButton.Click += (_, _) => SetRenderModeFromToolbar(RenderMode.Shaded);
+            _renderModeShadedButton.Click += OnRenderModeShadedClicked;
         if (_renderModeWireframeButton is not null)
-            _renderModeWireframeButton.Click += (_, _) => SetRenderModeFromToolbar(RenderMode.Wireframe);
+            _renderModeWireframeButton.Click += OnRenderModeWireframeClicked;
         if (_renderModeShadedEdgesButton is not null)
-            _renderModeShadedEdgesButton.Click += (_, _) => SetRenderModeFromToolbar(RenderMode.ShadedWithEdges);
+            _renderModeShadedEdgesButton.Click += OnRenderModeShadedEdgesClicked;
         if (_renderModeClayButton is not null)
-            _renderModeClayButton.Click += (_, _) => SetRenderModeFromToolbar(RenderMode.Clay);
+            _renderModeClayButton.Click += OnRenderModeClayClicked;
 
         _bottomToolbarMode = BottomToolbarMode.Main;
         _activeModalTool = AndroidModalTool.Select;
         UpdateBottomToolbarVisibility();
         UpdateFullscreenButtonState();
     }
+
+    private void OnToolSelectClicked(object? sender, EventArgs e) => ActivateSelectTool("select button");
+
+    private void OnToolMoveClicked(object? sender, EventArgs e) => ToggleBodyMoveTool();
+
+    private void OnToolZoomWindowClicked(object? sender, EventArgs e) => ActivateZoomWindowTool();
+
+    private void OnToolZoomSelectedClicked(object? sender, EventArgs e) => ZoomToSelection();
+
+    private void OnToolScanQrClicked(object? sender, EventArgs e) => BeginQrScan();
+
+    private void OnToolViewPresetsClicked(object? sender, EventArgs e) => ShowViewPresetToolbar();
+
+    private void OnToolSectionsClicked(object? sender, EventArgs e) => ShowSectionToolbar();
+
+    private void OnToolMeasureClicked(object? sender, EventArgs e) => ShowMeasureToolbar();
+
+    private void OnToolExplodeClicked(object? sender, EventArgs e) => ToggleExplodeTool();
+
+    private void OnToolHideClicked(object? sender, EventArgs e) => HideSelectedNodes();
+
+    private void OnToolShowAllClicked(object? sender, EventArgs e) => ShowAllNodes();
+
+    private void OnToolIsolateClicked(object? sender, EventArgs e) => IsolateSelectedNodes();
+
+    private void OnToolIsolateXrayClicked(object? sender, EventArgs e) => IsolateXraySelectedNodes();
+
+    private void OnToolRenderModesClicked(object? sender, EventArgs e) => ShowRenderModeToolbar();
+
+    private void OnToolFullscreenClicked(object? sender, EventArgs e) => SetFullscreenUiActive(!_fullscreenUiActive);
+
+    private void OnMeasureBackClicked(object? sender, EventArgs e) => ExitMeasureToolbar();
+
+    private void OnMeasurePointToPointClicked(object? sender, EventArgs e) => SetMeasureMode(MeasureToolMode.PointToPoint);
+
+    private void OnMeasureFaceToPointClicked(object? sender, EventArgs e) => SetMeasureMode(MeasureToolMode.FaceToPoint);
+
+    private void OnMeasureFaceToFaceClicked(object? sender, EventArgs e) => SetMeasureMode(MeasureToolMode.FaceToFace);
+
+    private void OnMeasureClearClicked(object? sender, EventArgs e)
+    {
+        _measure?.ClearMeasurements();
+        RefreshMeasurementOverlays();
+    }
+
+    private void OnViewPresetReturnClicked(object? sender, EventArgs e) => ExitViewPresetToolbar();
+
+    private void OnViewIsoClicked(object? sender, EventArgs e) => ApplyViewPreset(StandardView.Isometric);
+
+    private void OnViewFrontClicked(object? sender, EventArgs e) => ApplyViewPreset(StandardView.Front);
+
+    private void OnViewRightClicked(object? sender, EventArgs e) => ApplyViewPreset(StandardView.Right);
+
+    private void OnViewLeftClicked(object? sender, EventArgs e) => ApplyViewPreset(StandardView.Left);
+
+    private void OnViewTopClicked(object? sender, EventArgs e) => ApplyViewPreset(StandardView.Top);
+
+    private void OnViewBottomClicked(object? sender, EventArgs e) => ApplyViewPreset(StandardView.Bottom);
+
+    private void OnViewBackClicked(object? sender, EventArgs e) => ApplyViewPreset(StandardView.Back);
+
+    private void OnViewResetClicked(object? sender, EventArgs e) => ApplyViewPresetReset();
+
+    private void OnSectionBackClicked(object? sender, EventArgs e) => ActivateSelectTool("section return");
+
+    private void OnSectionXClicked(object? sender, EventArgs e) => ApplyAxisSection(SectionSubMode.X);
+
+    private void OnSectionYClicked(object? sender, EventArgs e) => ApplyAxisSection(SectionSubMode.Y);
+
+    private void OnSectionZClicked(object? sender, EventArgs e) => ApplyAxisSection(SectionSubMode.Z);
+
+    private void OnSectionCustomClicked(object? sender, EventArgs e) => ApplyCustomSection();
+
+    private void OnSectionClearClicked(object? sender, EventArgs e) => ClearSections();
+
+    private void OnSectionFillCheckedChanged(object? sender, CompoundButton.CheckedChangeEventArgs e)
+    {
+        if (_sectionSwitchUpdating || _sections is null)
+            return;
+
+        AppSettings.SectionFillVisible = e.IsChecked;
+        _sections.FillVisible = e.IsChecked;
+        UpdateSectionRendererState();
+    }
+
+    private void OnSectionEdgesCheckedChanged(object? sender, CompoundButton.CheckedChangeEventArgs e)
+    {
+        if (_sectionSwitchUpdating || _sections is null)
+            return;
+
+        AppSettings.SectionEdgesVisible = e.IsChecked;
+        _sections.EdgesVisible = e.IsChecked;
+        UpdateSectionRendererState();
+    }
+
+    private void OnExplodeBackClicked(object? sender, EventArgs e) => ActivateSelectTool("explode return");
+
+    private void OnExplodeSliderProgressChanged(object? sender, SeekBar.ProgressChangedEventArgs e)
+    {
+        if (_explodeSliderUpdating || !e.FromUser)
+            return;
+
+        SetExplodeAmount(e.Progress / 100.0, "slider");
+    }
+
+    private void OnRenderModeBackClicked(object? sender, EventArgs e) => ExitRenderModeToolbar();
+
+    private void OnRenderModeShadedClicked(object? sender, EventArgs e) => SetRenderModeFromToolbar(RenderMode.Shaded);
+
+    private void OnRenderModeWireframeClicked(object? sender, EventArgs e) => SetRenderModeFromToolbar(RenderMode.Wireframe);
+
+    private void OnRenderModeShadedEdgesClicked(object? sender, EventArgs e) => SetRenderModeFromToolbar(RenderMode.ShadedWithEdges);
+
+    private void OnRenderModeClayClicked(object? sender, EventArgs e) => SetRenderModeFromToolbar(RenderMode.Clay);
 
     private void ShowMeasureToolbar()
     {
@@ -8800,14 +8917,7 @@ public sealed class MainActivity : AppCompatActivity
         _loadingCancelButton.SetPadding(Dp(12), 0, Dp(12), 0);
         _loadingCancelButton.SetTextColor(GetColorCompat(Resource.Color.fa_accent_500));
         _loadingCancelButton.SetTextSize(ComplexUnitType.Px, Dp(12));
-        _loadingCancelButton.Click += (_, _) =>
-        {
-            CancellationTokenSource? loadCts = SnapshotActiveLoad();
-            if (loadCts is null) return;
-            _loadingCancelButton.Enabled = false;
-            UpdateLoadingDetail("Canceling...");
-            loadCts.Cancel();
-        };
+        _loadingCancelButton.Click += OnLoadingCancelClicked;
         var cancelParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, Dp(36));
         cancelParams.LeftMargin = Dp(12);
         row.AddView(_loadingCancelButton, cancelParams);
@@ -8820,6 +8930,18 @@ public sealed class MainActivity : AppCompatActivity
         var barParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, Dp(3));
         barParams.TopMargin = Dp(14);
         inner.AddView(bar, barParams);
+    }
+
+    private void OnLoadingCancelClicked(object? sender, EventArgs e)
+    {
+        CancellationTokenSource? loadCts = SnapshotActiveLoad();
+        if (loadCts is null)
+            return;
+
+        if (_loadingCancelButton is not null)
+            _loadingCancelButton.Enabled = false;
+        UpdateLoadingDetail("Canceling...");
+        loadCts.Cancel();
     }
 
     private void ShowLoading(string detail)
@@ -9282,74 +9404,88 @@ public sealed class MainActivity : AppCompatActivity
 
     private void ClearAndroidViewListeners()
     {
+        static void DetachClick(View? view, EventHandler handler)
+        {
+            if (view is null)
+                return;
+
+            view.Click -= handler;
+            view.SetOnClickListener(null);
+        }
+
         _viewport?.SetOnTouchListener(null);
         _viewport?.SetOnHoverListener(null);
         _viewport?.SetOnGenericMotionListener(null);
 
-        _propertiesToggle?.SetOnClickListener(null);
-        _navOpenButton?.SetOnClickListener(null);
-        _navRecentButton?.SetOnClickListener(null);
-        _navModelExplorerButton?.SetOnClickListener(null);
-        _navBomButton?.SetOnClickListener(null);
-        _navBomFlatButton?.SetOnClickListener(null);
-        _navSpenPalmButton?.SetOnClickListener(null);
-        _navSettingsButton?.SetOnClickListener(null);
+        DetachClick(_propertiesToggle, OnPropertiesToggleClicked);
+        DetachClick(_navOpenButton, OnOpenClicked);
+        DetachClick(_navRecentButton, OnRecentClicked);
+        DetachClick(_navModelExplorerButton, OnModelExplorerClicked);
+        DetachClick(_navBomButton, OnBomClicked);
+        DetachClick(_navBomFlatButton, OnBomFlatClicked);
+        DetachClick(_navSpenPalmButton, OnSpenPalmClicked);
+        DetachClick(_navSettingsButton, OnSettingsClicked);
+        DetachClick(_toolSelectButton, OnToolSelectClicked);
+        DetachClick(_toolMoveButton, OnToolMoveClicked);
+        DetachClick(_toolZoomWindowButton, OnToolZoomWindowClicked);
+        DetachClick(_toolZoomSelectedButton, OnToolZoomSelectedClicked);
+        DetachClick(_toolScanQrButton, OnToolScanQrClicked);
+        DetachClick(_toolFitViewButton, OnFitClicked);
+        DetachClick(_toolViewPresetsButton, OnToolViewPresetsClicked);
+        DetachClick(_toolSectionsButton, OnToolSectionsClicked);
+        DetachClick(_toolMeasureButton, OnToolMeasureClicked);
+        DetachClick(_toolExplodeButton, OnToolExplodeClicked);
+        DetachClick(_toolHideButton, OnToolHideClicked);
+        DetachClick(_toolShowAllButton, OnToolShowAllClicked);
+        DetachClick(_toolIsolateButton, OnToolIsolateClicked);
+        DetachClick(_toolIsolateXrayButton, OnToolIsolateXrayClicked);
+        DetachClick(_toolRenderModesButton, OnToolRenderModesClicked);
+        DetachClick(_toolFullscreenButton, OnToolFullscreenClicked);
+        DetachClick(_measureBackButton, OnMeasureBackClicked);
+        DetachClick(_measurePointToPointButton, OnMeasurePointToPointClicked);
+        DetachClick(_measureFaceToPointButton, OnMeasureFaceToPointClicked);
+        DetachClick(_measureFaceToFaceButton, OnMeasureFaceToFaceClicked);
+        DetachClick(_measureBoundingBoxButton, OnBoundingBoxMeasureClicked);
+        DetachClick(_measureClearButton, OnMeasureClearClicked);
+        DetachClick(_viewPresetReturnButton, OnViewPresetReturnClicked);
+        DetachClick(_viewIsoButton, OnViewIsoClicked);
+        DetachClick(_viewFrontButton, OnViewFrontClicked);
+        DetachClick(_viewRightButton, OnViewRightClicked);
+        DetachClick(_viewLeftButton, OnViewLeftClicked);
+        DetachClick(_viewTopButton, OnViewTopClicked);
+        DetachClick(_viewBottomButton, OnViewBottomClicked);
+        DetachClick(_viewBackButton, OnViewBackClicked);
+        DetachClick(_viewResetButton, OnViewResetClicked);
+        DetachClick(_sectionBackButton, OnSectionBackClicked);
+        DetachClick(_sectionXButton, OnSectionXClicked);
+        DetachClick(_sectionYButton, OnSectionYClicked);
+        DetachClick(_sectionZButton, OnSectionZClicked);
+        DetachClick(_sectionCustomButton, OnSectionCustomClicked);
+        DetachClick(_sectionClearButton, OnSectionClearClicked);
+        DetachClick(_explodeBackButton, OnExplodeBackClicked);
+        DetachClick(_renderModeBackButton, OnRenderModeBackClicked);
+        DetachClick(_renderModeShadedButton, OnRenderModeShadedClicked);
+        DetachClick(_renderModeWireframeButton, OnRenderModeWireframeClicked);
+        DetachClick(_renderModeShadedEdgesButton, OnRenderModeShadedEdgesClicked);
+        DetachClick(_renderModeClayButton, OnRenderModeClayClicked);
+        DetachClick(_loadingCancelButton, OnLoadingCancelClicked);
 
-        foreach (View? button in new View?[]
+        if (_sectionFillSwitch is not null)
         {
-            _toolSelectButton,
-            _toolMoveButton,
-            _toolZoomWindowButton,
-            _toolZoomSelectedButton,
-            _toolScanQrButton,
-            _toolFitViewButton,
-            _toolViewPresetsButton,
-            _toolSectionsButton,
-            _toolMeasureButton,
-            _toolExplodeButton,
-            _toolHideButton,
-            _toolShowAllButton,
-            _toolIsolateButton,
-            _toolIsolateXrayButton,
-            _toolRenderModesButton,
-            _toolFullscreenButton,
-            _measureBackButton,
-            _measurePointToPointButton,
-            _measureFaceToPointButton,
-            _measureFaceToFaceButton,
-            _measureBoundingBoxButton,
-            _measureClearButton,
-            _viewPresetReturnButton,
-            _viewIsoButton,
-            _viewFrontButton,
-            _viewRightButton,
-            _viewLeftButton,
-            _viewTopButton,
-            _viewBottomButton,
-            _viewBackButton,
-            _viewResetButton,
-            _sectionBackButton,
-            _sectionXButton,
-            _sectionYButton,
-            _sectionZButton,
-            _sectionCustomButton,
-            _sectionClearButton,
-            _explodeBackButton,
-            _renderModeBackButton,
-            _renderModeShadedButton,
-            _renderModeWireframeButton,
-            _renderModeShadedEdgesButton,
-            _renderModeClayButton,
-            _loadingCancelButton,
-        })
-        {
-            button?.SetOnClickListener(null);
+            _sectionFillSwitch.CheckedChange -= OnSectionFillCheckedChanged;
+            _sectionFillSwitch.SetOnCheckedChangeListener(null);
         }
-
-        _sectionFillSwitch?.SetOnCheckedChangeListener(null);
-        _sectionEdgesSwitch?.SetOnCheckedChangeListener(null);
-        _explodeSlider?.SetOnTouchListener(null);
-        _explodeSlider?.SetOnSeekBarChangeListener(null);
+        if (_sectionEdgesSwitch is not null)
+        {
+            _sectionEdgesSwitch.CheckedChange -= OnSectionEdgesCheckedChanged;
+            _sectionEdgesSwitch.SetOnCheckedChangeListener(null);
+        }
+        if (_explodeSlider is not null)
+        {
+            _explodeSlider.ProgressChanged -= OnExplodeSliderProgressChanged;
+            _explodeSlider.SetOnTouchListener(null);
+            _explodeSlider.SetOnSeekBarChangeListener(null);
+        }
     }
 
     private void RemoveOwnedOverlayViews()
