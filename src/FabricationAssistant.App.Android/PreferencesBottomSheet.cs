@@ -23,7 +23,7 @@ namespace FabricationAssistant.App.Android;
 /// <see cref="OnSettingsChanged"/> so the host re-applies live without
 /// waiting for the sheet to close.
 /// </summary>
-public sealed class PreferencesBottomSheet : BottomSheetDialogFragment
+public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposable
 {
     private const float TabletBreakpointDp = 700f;
     private const float TabletPanelWidthDp = 520f;
@@ -31,6 +31,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment
     private int _sheetWidthOverridePx;
     private FrameLayout? _resizeHandle;
     private readonly List<AlertDialog> _colorPickerDialogs = new();
+    private bool _disposed;
 
     public Action? OnSettingsChanged { get; set; }
 
@@ -69,13 +70,29 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment
 
     public override void OnDestroy()
     {
+        DisposeManagedContent();
+        base.OnDestroy();
+    }
+
+    public new void Dispose()
+    {
+        DisposeManagedContent();
+        base.Dispose();
+    }
+
+    private void DisposeManagedContent()
+    {
+        if (_disposed)
+            return;
+
+        _disposed = true;
         DismissColorPickerDialogs();
         OnSettingsChanged = null;
-        base.OnDestroy();
     }
 
     public View CreateEmbeddedView(Context ctx)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
         AppSettings.Initialize(ctx);
         int pad = Dp(ctx, 16);
 

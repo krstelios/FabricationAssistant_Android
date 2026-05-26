@@ -75,7 +75,6 @@ public static class AppSettings
     private const float MinSectionGizmoScale = 0.5f;
     private const float MaxSectionGizmoScale = 4.0f;
 
-    private static readonly object _initLock = new();
     private static ISharedPreferences? _prefs;
     private static readonly (string Key, float Expected)[] LegacyFloatDefaultsToRemove =
     [
@@ -158,11 +157,10 @@ public static class AppSettings
     public static void Initialize(Context context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        lock (_initLock)
-        {
-            _prefs ??= context.GetSharedPreferences(FileName, FileCreationMode.Private);
-            MigrateDefaultsIfNeeded();
-        }
+        ISharedPreferences prefs = context.GetSharedPreferences(FileName, FileCreationMode.Private)
+            ?? throw new InvalidOperationException("Context.GetSharedPreferences returned null.");
+        System.Threading.Interlocked.CompareExchange(ref _prefs, prefs, null);
+        MigrateDefaultsIfNeeded();
     }
 
     public static void ResetToDefaults()

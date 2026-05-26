@@ -719,7 +719,7 @@ internal sealed class AndroidBomPanel : IDisposable
             {
                 int padding = cellPadding;
                 if (_kind == AndroidBomPanelKind.Hierarchy && string.Equals(_columns[i].Key, ColumnKeyPart, StringComparison.Ordinal))
-                    padding += Dp(ctx, row.Level * 18);
+                    padding += Dp(ctx, row.Level * 18 + 30);
                 widths[i] = Math.Max(widths[i], MeasureTextWidth(paint, CellText(row, _columns[i].Key), padding));
             }
         }
@@ -892,7 +892,7 @@ internal sealed class AndroidBomPanel : IDisposable
         => columnKey switch
         {
             ColumnKeyLevel => row.Level.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            ColumnKeyPart => row.Children.Count > 0 ? (row.IsExpanded ? "v " : "> ") + row.PartNumber : row.PartNumber,
+            ColumnKeyPart => row.PartNumber,
             ColumnKeyName => row.Name,
             ColumnKeyRevName => row.RevName,
             ColumnKeyRevision => row.RevisionId,
@@ -1130,14 +1130,7 @@ internal sealed class AndroidBomPanel : IDisposable
         {
             int[] widths = _columnWidthsAccessor();
             root.AddView(CreateCell(_ctx, row.Level.ToString(System.Globalization.CultureInfo.InvariantCulture), WidthAt(widths, 0)));
-            TextView part = CreateCell(_ctx, row.PartNumber, WidthAt(widths, 1));
-            part.SetPadding(Dp(_ctx, 8 + row.Level * 18), 0, Dp(_ctx, 8), 0);
-            if (row.Children.Count > 0)
-            {
-                part.Text = (row.IsExpanded ? "v " : "> ") + row.PartNumber;
-                part.Click += (_, _) => _toggle(row);
-            }
-            root.AddView(part);
+            root.AddView(CreateHierarchyPartCell(row, WidthAt(widths, 1)));
             root.AddView(CreateCell(_ctx, row.Name, WidthAt(widths, 2)));
             root.AddView(CreateCell(_ctx, row.RevName, WidthAt(widths, 3)));
             root.AddView(CreateCell(_ctx, row.RevisionId, WidthAt(widths, 4)));
@@ -1161,8 +1154,70 @@ internal sealed class AndroidBomPanel : IDisposable
             root.AddView(CreateCell(_ctx, row.SourceType, WidthAt(widths, 9)));
         }
 
+        private View CreateHierarchyPartCell(BomPanelRow row, int widthPx)
+        {
+            var container = new LinearLayout(_ctx)
+            {
+                Orientation = Orientation.Horizontal,
+            };
+            container.SetGravity(GravityFlags.CenterVertical);
+            container.SetPadding(Dp(_ctx, 8 + row.Level * 18), 0, Dp(_ctx, 8), 0);
+            container.LayoutParameters = new LinearLayout.LayoutParams(
+                widthPx,
+                ViewGroup.LayoutParams.MatchParent);
+
+            int disclosureWidth = Dp(_ctx, 24);
+            if (row.Children.Count > 0)
+            {
+                var disclosure = new TextView(_ctx)
+                {
+                    Text = row.IsExpanded ? "-" : "+",
+                    Gravity = GravityFlags.Center,
+                    ContentDescription = row.IsExpanded ? "Collapse BOM row" : "Expand BOM row",
+                    Clickable = true,
+                    Focusable = true,
+                };
+                disclosure.SetTextSize(ComplexUnitType.Sp, 14f);
+                disclosure.SetTypeface(Typeface.Default, TypefaceStyle.Bold);
+                disclosure.SetTextColor(ColorRes(_ctx, Resource.Color.fa_text_secondary));
+                disclosure.SetOnClickListener(new RowToggleClickListener(row, _toggle));
+                container.AddView(disclosure, new LinearLayout.LayoutParams(
+                    disclosureWidth,
+                    ViewGroup.LayoutParams.MatchParent));
+            }
+            else
+            {
+                container.AddView(new Space(_ctx), new LinearLayout.LayoutParams(
+                    disclosureWidth,
+                    ViewGroup.LayoutParams.MatchParent));
+            }
+
+            TextView part = CreateCell(_ctx, row.PartNumber, 0);
+            part.SetPadding(Dp(_ctx, 4), 0, 0, 0);
+            part.LayoutParameters = new LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.MatchParent,
+                1f);
+            container.AddView(part);
+            return container;
+        }
+
         private static int WidthAt(IReadOnlyList<int> widths, int index)
             => index >= 0 && index < widths.Count ? widths[index] : 80;
+
+        private sealed class RowToggleClickListener : Java.Lang.Object, View.IOnClickListener
+        {
+            private readonly BomPanelRow _row;
+            private readonly Action<BomPanelRow> _toggle;
+
+            public RowToggleClickListener(BomPanelRow row, Action<BomPanelRow> toggle)
+            {
+                _row = row;
+                _toggle = toggle;
+            }
+
+            public void OnClick(View? v) => _toggle(_row);
+        }
     }
 
     private sealed class HorizontalTableScrollTouchListener : Java.Lang.Object, View.IOnTouchListener
