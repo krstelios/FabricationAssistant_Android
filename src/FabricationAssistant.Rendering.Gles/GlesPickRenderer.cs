@@ -134,64 +134,67 @@ public sealed class GlesPickRenderer : IDisposable
         }
         if (x < 0 || y < 0 || x >= _width || y >= _height) return null;
 
-        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _fbo);
-        _gl.Viewport(0, 0, (uint)_width, (uint)_height);
-        uint clear = 0u;
-        _gl.ClearBuffer(GLEnum.Color, 0, &clear);
-        _gl.Clear((uint)ClearBufferMask.DepthBufferBit);
-
-        _gl.Enable(EnableCap.DepthTest);
-        _gl.DepthFunc(DepthFunction.Lequal);
-
-        _program.Use();
-
-        float aspect = (float)_width / _height;
-        var identity = ViewportCameraMath.IdentityModelMatrix();
-        var view = ViewportCameraMath.ViewMatrix(camera);
-        var proj = ViewportCameraMath.ProjectionMatrix(camera, aspect);
-
-        SetMat4("uView", view);
-        SetMat4("uProjection", proj);
-        SetSectionUniforms(_program);
-
-        int modelLoc = _gl.GetUniformLocation(_program.Handle, "uModel");
-        int indexLoc = _gl.GetUniformLocation(_program.Handle, "uMeshIndex");
-        foreach (var mesh in scene.Meshes)
-        {
-            if (!mesh.Visible && !IsXrayBackgroundMesh(mesh))
-                continue;
-
-            float[] model = mesh.WorldTransform ?? identity;
-            if (modelLoc >= 0)
-                _gl.UniformMatrix4(modelLoc, true, model);
-            if (indexLoc >= 0)
-                _gl.Uniform1(indexLoc, (uint)mesh.MeshIndex);
-            GlesRenderUtil.ApplyMeshCulling(_gl, mesh);
-            mesh.Draw();
-        }
-        GlesRenderUtil.ResetMeshCulling(_gl);
-
-        // glReadPixels uses bottom-up Y. Tap input is top-down. Flip.
+        // glReadPixels uses bottom-up Y. Tap input is top-down. Flip before
+        // rendering so the pick pass can scissor to the one pixel being read.
         int glY = _height - 1 - y;
         if (glY < 0 || glY >= _height)
-        {
-            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0u);
             return null;
+
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _fbo);
+        _gl.Viewport(0, 0, (uint)_width, (uint)_height);
+        _gl.Enable(EnableCap.ScissorTest);
+        _gl.Scissor(x, glY, 1u, 1u);
+
+        try
+        {
+            uint clear = 0u;
+            _gl.ClearBuffer(GLEnum.Color, 0, &clear);
+            _gl.Clear((uint)ClearBufferMask.DepthBufferBit);
+
+            _gl.Enable(EnableCap.DepthTest);
+            _gl.DepthFunc(DepthFunction.Lequal);
+
+            _program.Use();
+
+            float aspect = (float)_width / _height;
+            var identity = ViewportCameraMath.IdentityModelMatrix();
+            var view = ViewportCameraMath.ViewMatrix(camera);
+            var proj = ViewportCameraMath.ProjectionMatrix(camera, aspect);
+
+            SetMat4("uView", view);
+            SetMat4("uProjection", proj);
+            SetSectionUniforms(_program);
+
+            int modelLoc = _gl.GetUniformLocation(_program.Handle, "uModel");
+            int indexLoc = _gl.GetUniformLocation(_program.Handle, "uMeshIndex");
+            foreach (var mesh in scene.Meshes)
+            {
+                if (!mesh.Visible && !IsXrayBackgroundMesh(mesh))
+                    continue;
+
+                float[] model = mesh.WorldTransform ?? identity;
+                if (modelLoc >= 0)
+                    _gl.UniformMatrix4(modelLoc, true, model);
+                if (indexLoc >= 0)
+                    _gl.Uniform1(indexLoc, (uint)mesh.MeshIndex);
+                GlesRenderUtil.ApplyMeshCulling(_gl, mesh);
+                mesh.Draw();
+            }
+            GlesRenderUtil.ResetMeshCulling(_gl);
+
+            uint pixel = 0u;
+            DrainGlErrors("before-readpixels");
+            _gl.Flush();
+            _gl.ReadPixels(x, glY, 1u, 1u, PixelFormat.RedInteger, PixelType.UnsignedInt, &pixel);
+            DrainGlErrors("readpixels");
+
+            return pixel == 0u ? null : (int)pixel;
         }
-
-        uint pixel = 0u;
-        DrainGlErrors("before-readpixels");
-        _gl.Flush();
-        _gl.ReadPixels(x, glY, 1u, 1u, PixelFormat.RedInteger, PixelType.UnsignedInt, &pixel);
-        DrainGlErrors("readpixels");
-
-        // Restore the surface (default) framebuffer. The renderer always
-        // draws the main frame to FBO 0, so Pick can safely re-bind 0 here
-        // even if a future pass introduces another FBO - it will rebind
-        // before drawing.
-        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0u);
-
-        return pixel == 0u ? null : (int)pixel;
+        finally
+        {
+            _gl.Disable(EnableCap.ScissorTest);
+            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0u);
+        }
     }
 
     private bool IsXrayBackgroundMesh(GpuMesh mesh)
