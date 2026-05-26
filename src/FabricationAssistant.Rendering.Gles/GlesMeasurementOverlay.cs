@@ -48,8 +48,6 @@ internal sealed class GlesMeasurementOverlay : IDisposable
         _program = new ShaderProgram(gl, "measure.overlay", vertexSource, fragmentSource);
         _diskProgram = new ShaderProgram(gl, "measure.disk", diskVertexSource, diskFragmentSource);
         _primitiveLimits = GlesRenderUtil.QueryPrimitiveLimits(gl);
-        CreateBuffers();
-        CreateDiskBuffers();
     }
 
     public Vector3 DimensionHighlightColor { get; set; } = new(1.0f, 0.5019608f, 0.2509804f);
@@ -148,8 +146,13 @@ internal sealed class GlesMeasurementOverlay : IDisposable
         _gl.Enable(EnableCap.CullFace);
     }
 
-    private unsafe void CreateBuffers()
+    private unsafe void EnsureBuffers()
     {
+        if (_vao != 0 && _vbo != 0)
+            return;
+
+        DeleteMainBuffers();
+
         _vao = _gl.GenVertexArray();
         _vbo = _gl.GenBuffer();
 
@@ -164,8 +167,13 @@ internal sealed class GlesMeasurementOverlay : IDisposable
         _gl.BindVertexArray(0);
     }
 
-    private unsafe void CreateDiskBuffers()
+    private unsafe void EnsureDiskBuffers()
     {
+        if (_diskVao != 0 && _diskVbo != 0)
+            return;
+
+        DeleteDiskBuffers();
+
         _diskVao = _gl.GenVertexArray();
         _diskVbo = _gl.GenBuffer();
 
@@ -192,6 +200,8 @@ internal sealed class GlesMeasurementOverlay : IDisposable
         if (vertexCount == 0)
             return;
 
+        EnsureBuffers();
+
         _gl.BindVertexArray(_vao);
         _gl.BindBuffer(BufferTargetARB.ArrayBuffer, _vbo);
         Span<float> span = CollectionsMarshal.AsSpan(data);
@@ -213,6 +223,8 @@ internal sealed class GlesMeasurementOverlay : IDisposable
         int vertexCount = data.Count / DiskFloatsPerVertex;
         if (vertexCount == 0)
             return;
+
+        EnsureDiskBuffers();
 
         _gl.BindVertexArray(_diskVao);
         _gl.BindBuffer(BufferTargetARB.ArrayBuffer, _diskVbo);
@@ -400,12 +412,22 @@ internal sealed class GlesMeasurementOverlay : IDisposable
 
     public void Dispose()
     {
-        if (_vbo != 0) { _gl.DeleteBuffer(_vbo); _vbo = 0; }
-        if (_vao != 0) { _gl.DeleteVertexArray(_vao); _vao = 0; }
-        if (_diskVbo != 0) { _gl.DeleteBuffer(_diskVbo); _diskVbo = 0; }
-        if (_diskVao != 0) { _gl.DeleteVertexArray(_diskVao); _diskVao = 0; }
+        DeleteMainBuffers();
+        DeleteDiskBuffers();
         _program.Dispose();
         _diskProgram.Dispose();
+    }
+
+    private void DeleteMainBuffers()
+    {
+        if (_vbo != 0) { _gl.DeleteBuffer(_vbo); _vbo = 0; }
+        if (_vao != 0) { _gl.DeleteVertexArray(_vao); _vao = 0; }
+    }
+
+    private void DeleteDiskBuffers()
+    {
+        if (_diskVbo != 0) { _gl.DeleteBuffer(_diskVbo); _diskVbo = 0; }
+        if (_diskVao != 0) { _gl.DeleteVertexArray(_diskVao); _diskVao = 0; }
     }
 
     private readonly record struct Color4(float R, float G, float B, float A);

@@ -34,7 +34,6 @@ internal sealed class GlesAxisTriadOverlay : IDisposable
     {
         _gl = gl ?? throw new ArgumentNullException(nameof(gl));
         _program = new ShaderProgram(gl, "axis.triad", vertexSource, fragmentSource);
-        CreateBuffers();
     }
 
     public void Render(CameraState camera, int width, int height)
@@ -78,8 +77,13 @@ internal sealed class GlesAxisTriadOverlay : IDisposable
         Draw();
     }
 
-    private unsafe void CreateBuffers()
+    private unsafe void EnsureBuffers()
     {
+        if (_vao != 0 && _vbo != 0)
+            return;
+
+        DeleteBuffers();
+
         _vao = _gl.GenVertexArray();
         _vbo = _gl.GenBuffer();
 
@@ -98,8 +102,7 @@ internal sealed class GlesAxisTriadOverlay : IDisposable
         if (vertexCount == 0)
             return;
 
-        if (_vao == 0 || _vbo == 0)
-            CreateBuffers();
+        EnsureBuffers();
 
         _gl.GetInteger(GLEnum.BlendSrcRgb, _blendSrcRgb);
         _gl.GetInteger(GLEnum.BlendSrcAlpha, _blendSrcAlpha);
@@ -303,6 +306,12 @@ internal sealed class GlesAxisTriadOverlay : IDisposable
 
     public void Dispose()
     {
+        DeleteBuffers();
+        _program.Dispose();
+    }
+
+    private void DeleteBuffers()
+    {
         if (_vbo != 0)
         {
             _gl.DeleteBuffer(_vbo);
@@ -314,8 +323,6 @@ internal sealed class GlesAxisTriadOverlay : IDisposable
             _gl.DeleteVertexArray(_vao);
             _vao = 0;
         }
-
-        _program.Dispose();
     }
 
     private readonly record struct AxisDraw(Vector2 Direction, float Length, float Depth, Vector4 Color, AxisLabel Label);

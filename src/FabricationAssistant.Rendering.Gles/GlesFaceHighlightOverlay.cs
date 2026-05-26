@@ -21,7 +21,6 @@ internal sealed class GlesFaceHighlightOverlay : IDisposable
     {
         _gl = gl ?? throw new ArgumentNullException(nameof(gl));
         _program = new ShaderProgram(gl, "measure.face-highlight", vertexSource, fragmentSource);
-        CreateBuffers();
     }
 
     public void Render(
@@ -80,8 +79,13 @@ internal sealed class GlesFaceHighlightOverlay : IDisposable
         }
     }
 
-    private unsafe void CreateBuffers()
+    private unsafe void EnsureBuffers()
     {
+        if (_vao != 0 && _vbo != 0)
+            return;
+
+        DeleteBuffers();
+
         _vao = _gl.GenVertexArray();
         _vbo = _gl.GenBuffer();
 
@@ -98,8 +102,7 @@ internal sealed class GlesFaceHighlightOverlay : IDisposable
 
     private unsafe void UploadAndDraw(List<float> data, int vertexCount)
     {
-        if (_vao == 0 || _vbo == 0)
-            CreateBuffers();
+        EnsureBuffers();
 
         _gl.BindVertexArray(_vao);
         _gl.BindBuffer(BufferTargetARB.ArrayBuffer, _vbo);
@@ -163,9 +166,14 @@ internal sealed class GlesFaceHighlightOverlay : IDisposable
 
     public void Dispose()
     {
+        DeleteBuffers();
+        _program.Dispose();
+    }
+
+    private void DeleteBuffers()
+    {
         if (_vbo != 0) { _gl.DeleteBuffer(_vbo); _vbo = 0; }
         if (_vao != 0) { _gl.DeleteVertexArray(_vao); _vao = 0; }
-        _program.Dispose();
     }
 
     private readonly record struct Color4(float R, float G, float B, float A);

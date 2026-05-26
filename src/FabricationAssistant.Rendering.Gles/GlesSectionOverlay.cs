@@ -39,7 +39,6 @@ internal sealed class GlesSectionOverlay : IDisposable
         _gl = gl ?? throw new ArgumentNullException(nameof(gl));
         _program = new ShaderProgram(gl, "section.overlay", vertexSource, fragmentSource);
         _primitiveLimits = GlesRenderUtil.QueryPrimitiveLimits(gl);
-        CreateBuffers();
     }
 
     public float PlaneSizeFraction { get; set; } = 0.025f;
@@ -203,8 +202,13 @@ internal sealed class GlesSectionOverlay : IDisposable
         Draw(view, projection, PrimitiveType.Lines, depthTest: false, blend: true, lineWidth: 2.4f, pointSize: 1.0f);
     }
 
-    private unsafe void CreateBuffers()
+    private unsafe void EnsureBuffers()
     {
+        if (_vao != 0 && _vbo != 0)
+            return;
+
+        DeleteBuffers();
+
         _vao = _gl.GenVertexArray();
         _vbo = _gl.GenBuffer();
 
@@ -230,6 +234,8 @@ internal sealed class GlesSectionOverlay : IDisposable
         int vertexCount = _data.Count / FloatsPerVertex;
         if (vertexCount == 0)
             return;
+
+        EnsureBuffers();
 
         _program.Use();
         SetMat4("uView", view);
@@ -258,9 +264,6 @@ internal sealed class GlesSectionOverlay : IDisposable
         {
             _gl.Disable(EnableCap.Blend);
         }
-
-        if (_vao == 0 || _vbo == 0)
-            CreateBuffers();
 
         _gl.LineWidth(_primitiveLimits.ClampLineWidth(lineWidth));
         _gl.BindVertexArray(_vao);
@@ -448,6 +451,12 @@ internal sealed class GlesSectionOverlay : IDisposable
 
     public void Dispose()
     {
+        DeleteBuffers();
+        _program.Dispose();
+    }
+
+    private void DeleteBuffers()
+    {
         if (_vbo != 0)
         {
             _gl.DeleteBuffer(_vbo);
@@ -459,7 +468,5 @@ internal sealed class GlesSectionOverlay : IDisposable
             _gl.DeleteVertexArray(_vao);
             _vao = 0;
         }
-
-        _program.Dispose();
     }
 }
