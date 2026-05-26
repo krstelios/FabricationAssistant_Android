@@ -55,6 +55,7 @@ public sealed class GlesViewportRenderer : IDisposable
     private int _lastLoggedMsaaMaxSamples = int.MinValue;
     private long _lastSlowFrameLogTicks;
     private readonly FrameTimingAccumulator _frameTiming = new();
+    private SceneAppearance _appearance = SceneAppearance.CreateDefault();
     private readonly float[] _viewMatrixScratch = new float[16];
     private readonly float[] _projectionMatrixScratch = new float[16];
     private readonly float[] _sectionUniformScratch = new float[32];
@@ -134,7 +135,15 @@ public sealed class GlesViewportRenderer : IDisposable
     /// PreferencesBottomSheet writes through AppSettings; MainActivity rebuilds
     /// this struct on every change via AppSettings.Apply.
     /// </summary>
-    public SceneAppearance Appearance { get; set; } = SceneAppearance.CreateDefault();
+    public SceneAppearance Appearance
+    {
+        get => _appearance;
+        set
+        {
+            _appearance = value;
+            ResetSlowFrameLogThrottle();
+        }
+    }
 
     public float XrayIsolationOpacity { get; set; } = 0.18f;
 
@@ -1230,17 +1239,21 @@ public sealed class GlesViewportRenderer : IDisposable
             return;
 
         long now = Stopwatch.GetTimestamp();
-        if (_lastSlowFrameLogTicks != 0
-            && (now - _lastSlowFrameLogTicks) * 1000.0 / Stopwatch.Frequency < 1000.0)
+        long lastSlowFrameLogTicks = Volatile.Read(ref _lastSlowFrameLogTicks);
+        if (lastSlowFrameLogTicks != 0
+            && (now - lastSlowFrameLogTicks) * 1000.0 / Stopwatch.Frequency < 1000.0)
         {
             return;
         }
 
-        _lastSlowFrameLogTicks = now;
+        Interlocked.Exchange(ref _lastSlowFrameLogTicks, now);
         Android.Util.Log.Warn(
             "FA.Renderer",
             $"Slow frame: {elapsedMs:0.0}ms, queueCommands={queueCommandCount}, interactive={interactive}, lightweight={lightweightNavigationActive}, mode={appearance.Mode}, ssao={ssaoActive}, edges={edgesDrawn}, edgeWidth={appearance.EdgeWidth:0.###}, outline={(!lightweightNavigationActive && appearance.OutlineEnabled && HighlightSelection)}, meshes={Scene?.Meshes.Count ?? 0}, transparent={_lastSurfaceTransparentMeshCount}, hiddenAlpha={_lastSurfaceHiddenMeshCount}, msaa={(appearance.MsaaSamples <= 1 ? "Off" : appearance.MsaaSamples + "x")}, viewport={_width}x{_height}.");
     }
+
+    private void ResetSlowFrameLogThrottle()
+        => Interlocked.Exchange(ref _lastSlowFrameLogTicks, 0);
 
     private void SetMat4(ShaderProgram program, string name, float[] m)
     {
@@ -1764,6 +1777,7 @@ public sealed class GlesViewportRenderer : IDisposable
         _lastLoggedSsaoState = default;
         _lastSsaoDiagnostics = default;
         _lastLoggedTransparencyState = default;
+        ResetSlowFrameLogThrottle();
         _gl = null;
     }
 
