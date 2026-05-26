@@ -22,6 +22,8 @@ public sealed class GlesOutlineRenderer : IDisposable
     private uint _maskTex;
     private int _width;
     private int _height;
+    private string? _lastFramebufferError;
+    private bool _loggedFramebufferUnavailable;
     private readonly float[] _viewScratch = new float[16];
     private readonly float[] _projectionScratch = new float[16];
     private readonly float[] _sectionUniformScratch = new float[32];
@@ -69,11 +71,15 @@ public sealed class GlesOutlineRenderer : IDisposable
         var st = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
         if (st != GLEnum.FramebufferComplete)
         {
-            Android.Util.Log.Error("FA.Outline", $"Mask FBO incomplete: 0x{(int)st:X4}");
+            _lastFramebufferError = $"Outline mask FBO incomplete: 0x{(int)st:X4} ({width}x{height})";
+            _loggedFramebufferUnavailable = false;
+            Android.Util.Log.Error("FA.Outline", _lastFramebufferError);
             _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
             DestroyResources();
             return;
         }
+        _lastFramebufferError = null;
+        _loggedFramebufferUnavailable = false;
         _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
     }
 
@@ -104,8 +110,18 @@ public sealed class GlesOutlineRenderer : IDisposable
     public void Render(GpuScene scene, CameraState camera, IReadOnlyCollection<int> selectedMeshIndices,
         float[] outlineColor, float thicknessPx, int width, int height)
     {
-        if (selectedMeshIndices is null || selectedMeshIndices.Count == 0 || _maskFbo == 0 || width <= 0 || height <= 0) return;
-        if (width != _width || height != _height) Resize(width, height);
+        if (selectedMeshIndices is null || selectedMeshIndices.Count == 0 || width <= 0 || height <= 0) return;
+        if (width != _width || height != _height || _maskFbo == 0)
+            Resize(width, height);
+        if (_maskFbo == 0)
+        {
+            if (!_loggedFramebufferUnavailable && _lastFramebufferError is not null)
+            {
+                Android.Util.Log.Warn("FA.Outline", "Outline unavailable after framebuffer setup failure: " + _lastFramebufferError);
+                _loggedFramebufferUnavailable = true;
+            }
+            return;
+        }
 
         var selectedLookup = new HashSet<int>();
         foreach (int selectedMeshIndex in selectedMeshIndices)

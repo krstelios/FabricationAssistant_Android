@@ -212,6 +212,7 @@ public sealed class GlesSsaoRenderer : IDisposable
                 renderError);
             _gl.DepthMask(true);
             _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+            _gl.ActiveTexture(TextureUnit.Texture0);
             return;
         }
 
@@ -290,6 +291,7 @@ public sealed class GlesSsaoRenderer : IDisposable
             renderError);
         _gl.DepthMask(true);
         _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+        _gl.ActiveTexture(TextureUnit.Texture0);
     }
 
     private unsafe GlesSsaoTextureStats ReadAoStats(uint fbo)
@@ -297,43 +299,51 @@ public sealed class GlesSsaoRenderer : IDisposable
         if (fbo == 0 || _width <= 0 || _height <= 0)
             return default;
 
-        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, fbo);
-
-        const int roiSize = 32;
-        int roiWidth = System.Math.Min(roiSize, _width);
-        int roiHeight = System.Math.Min(roiSize, _height);
-        int x0 = System.Math.Max(0, (_width - roiWidth) / 2);
-        int y0 = System.Math.Max(0, (_height - roiHeight) / 2);
-        var pixels = new byte[roiWidth * roiHeight];
-        _gl.Finish();
-        fixed (byte* p = pixels)
+        try
         {
-            _gl.ReadPixels(x0, y0, (uint)roiWidth, (uint)roiHeight, PixelFormat.Red, PixelType.UnsignedByte, p);
-        }
+            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, fbo);
 
-        byte min = byte.MaxValue;
-        byte max = byte.MinValue;
-        int sum = 0;
-        int count = pixels.Length;
-        for (int i = 0; i < pixels.Length; i++)
+            const int roiSize = 32;
+            int roiWidth = System.Math.Min(roiSize, _width);
+            int roiHeight = System.Math.Min(roiSize, _height);
+            int x0 = System.Math.Max(0, (_width - roiWidth) / 2);
+            int y0 = System.Math.Max(0, (_height - roiHeight) / 2);
+            var pixels = new byte[roiWidth * roiHeight];
+            _gl.Finish();
+            fixed (byte* p = pixels)
+            {
+                _gl.ReadPixels(x0, y0, (uint)roiWidth, (uint)roiHeight, PixelFormat.Red, PixelType.UnsignedByte, p);
+            }
+
+            byte min = byte.MaxValue;
+            byte max = byte.MinValue;
+            int sum = 0;
+            int count = pixels.Length;
+            for (int i = 0; i < pixels.Length; i++)
+            {
+                byte value = pixels[i];
+                min = System.Math.Min(min, value);
+                max = System.Math.Max(max, value);
+                sum += value;
+            }
+
+            int centerX = System.Math.Clamp(_width / 2 - x0, 0, roiWidth - 1);
+            int centerY = System.Math.Clamp(_height / 2 - y0, 0, roiHeight - 1);
+            byte center = pixels[centerY * roiWidth + centerX];
+            var error = _gl.GetError();
+            return new GlesSsaoTextureStats(
+                count > 0 && error == GLEnum.NoError,
+                min,
+                max,
+                count > 0 ? sum / (float)count : 0f,
+                center,
+                error);
+        }
+        finally
         {
-            byte value = pixels[i];
-            min = System.Math.Min(min, value);
-            max = System.Math.Max(max, value);
-            sum += value;
+            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+            _gl.ActiveTexture(TextureUnit.Texture0);
         }
-
-        int centerX = System.Math.Clamp(_width / 2 - x0, 0, roiWidth - 1);
-        int centerY = System.Math.Clamp(_height / 2 - y0, 0, roiHeight - 1);
-        byte center = pixels[centerY * roiWidth + centerX];
-        var error = _gl.GetError();
-        return new GlesSsaoTextureStats(
-            count > 0 && error == GLEnum.NoError,
-            min,
-            max,
-            count > 0 ? sum / (float)count : 0f,
-            center,
-            error);
     }
 
     private void DrawFullscreen()

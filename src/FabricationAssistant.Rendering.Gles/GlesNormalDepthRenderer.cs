@@ -19,6 +19,8 @@ public sealed class GlesNormalDepthRenderer : IDisposable
     private uint _depthTex;
     private int _width;
     private int _height;
+    private string? _lastFramebufferError;
+    private bool _loggedFramebufferUnavailable;
     private float _linearDepthMin;
     private float _linearDepthMax = 1f;
     private readonly float[] _viewScratch = new float[16];
@@ -85,11 +87,15 @@ public sealed class GlesNormalDepthRenderer : IDisposable
         var st = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
         if (st != GLEnum.FramebufferComplete)
         {
-            Android.Util.Log.Error("FA.NormalDepth", $"FBO incomplete: 0x{(int)st:X4} ({width}x{height})");
+            _lastFramebufferError = $"Normal/depth FBO incomplete: 0x{(int)st:X4} ({width}x{height})";
+            _loggedFramebufferUnavailable = false;
+            Android.Util.Log.Error("FA.NormalDepth", _lastFramebufferError);
             _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
             DestroyResources();
             return;
         }
+        _lastFramebufferError = null;
+        _loggedFramebufferUnavailable = false;
         _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
     }
 
@@ -105,8 +111,19 @@ public sealed class GlesNormalDepthRenderer : IDisposable
         bool collectDiagnostics = false)
     {
         LastRenderInfo = default;
-        if (_fbo == 0) return;
-        if (width != _width || height != _height) Resize(width, height);
+        if (width <= 0 || height <= 0)
+            return;
+        if (width != _width || height != _height || _fbo == 0)
+            Resize(width, height);
+        if (_fbo == 0)
+        {
+            if (!_loggedFramebufferUnavailable && _lastFramebufferError is not null)
+            {
+                Android.Util.Log.Warn("FA.NormalDepth", "Normal/depth unavailable after framebuffer setup failure: " + _lastFramebufferError);
+                _loggedFramebufferUnavailable = true;
+            }
+            return;
+        }
 
         _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _fbo);
         _gl.Viewport(0, 0, (uint)_width, (uint)_height);

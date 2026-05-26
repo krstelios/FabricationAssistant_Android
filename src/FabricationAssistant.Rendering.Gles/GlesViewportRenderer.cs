@@ -349,13 +349,6 @@ public sealed class GlesViewportRenderer : IDisposable
         _initialized = true;
     }
 
-    private void ClearProgramUniformCaches()
-    {
-        _meshProgram?.ClearUniformCache();
-        _edgeProgram?.ClearUniformCache();
-        _sectionStencilProgram?.ClearUniformCache();
-    }
-
     public void OnSurfaceChanged(int width, int height)
     {
         _guard.EnsureOnRenderThread();
@@ -440,6 +433,7 @@ public sealed class GlesViewportRenderer : IDisposable
             ResetMainFramebufferState();
             _normalDepthRenderer.SectionPlanes = SectionPlanes;
             _normalDepthRenderer.Render(Scene, camera, _width, _height, a, collectSsaoDiagnostics);
+            _ssaoRenderer.Resize(_width, _height);
             _ssaoRenderer.Render(
                 _normalDepthRenderer.NormalTexture,
                 _normalDepthRenderer.DepthTexture,
@@ -1062,7 +1056,8 @@ public sealed class GlesViewportRenderer : IDisposable
 
             _gl.ColorMask(false, false, false, false);
             _gl.DepthMask(false);
-            _gl.Disable(EnableCap.DepthTest);
+            _gl.Enable(EnableCap.DepthTest);
+            _gl.DepthFunc(DepthFunction.Lequal);
             _gl.Disable(EnableCap.CullFace);
             _gl.Disable(EnableCap.Blend);
             _gl.StencilFunc(StencilFunction.Always, 0, capStencilBit);
@@ -1617,6 +1612,7 @@ public sealed class GlesViewportRenderer : IDisposable
         _gl.Enable(EnableCap.CullFace);
         _gl.CullFace(TriangleFace.Back);
         _gl.FrontFace(FrontFaceDirection.Ccw);
+        _gl.ActiveTexture(TextureUnit.Texture0);
     }
 
     /// <summary>
