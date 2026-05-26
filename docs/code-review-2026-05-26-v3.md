@@ -89,13 +89,17 @@ Updated 2026-05-27 after implementation and tablet verification.
 
 - **B5:** settings-to-renderer handoff now snapshots every `SceneAppearance` array field before queueing the GL-thread command, so future UI-side array mutation cannot alias an in-flight renderer appearance update. Unit coverage verifies array fields are cloned and scalar fields are preserved.
 
+### Fixed in `ba62126` (`Lazy-create overlay vertex buffers`)
+
+- **B19:** axis-triad, section, measurement, and measurement face-highlight overlays no longer create VAO/VBO resources in constructors. Each draw/upload path now ensures its GL buffers immediately before binding and uses shared cleanup helpers to clear partial handles, hardening overlay rendering after context recreation.
+
 ### Latest tablet verification
 
-- Installed the debug APK containing `7b45c9b` on tablet `R52TA040AQT`.
+- Installed the debug APK containing `ba62126` on tablet `R52TA040AQT`.
 - Opened the app, loaded recent file `50-0001916_00.fa`.
-- Load log scan: `documentNodes=1937`, `documentMeshes=666`, `visibleMeshNodes=666`, diagonal `4.622`; tablet reports `GL_MAX_SAMPLES=4`, so the 8x-capable MSAA path clamps to 4x on this hardware. Initial `load-document` GL command run was `5161.5ms`.
-- Scripted interaction: no fatal exception, ANR, import failure, GLES error, framebuffer failure, or JNI error; sampled frame timing blocks averaged `16.3-17.1ms`, max `34.0ms`, with `1` frame over `33ms` and `0` frames over `50ms`.
-- Render queue burst: top `pick:tap` run `71.5ms`, top wait `63.3ms`, slow-frame log count `5`, Choreographer skipped-frame log count during scripted interaction `0`. Cold launch emitted one pre-load Choreographer skipped-frame line.
+- Load log scan: `documentNodes=1937`, `documentMeshes=666`, `visibleMeshNodes=666`, diagonal `4.622`; tablet reports `GL_MAX_SAMPLES=4`, so the 8x-capable MSAA path clamps to 4x on this hardware. Initial `load-document` GL command run was `5253.8ms`.
+- Scripted interaction: no fatal exception, ANR, import failure, GLES error, framebuffer failure, or JNI error; sampled frame timing blocks averaged `16.2-16.9ms`, max `26.8ms`, with `0` frames over `33ms` / `50ms`.
+- Render queue burst: top `pick:tap` run `43.6ms`, top wait `33.1ms`, slow-frame log count `2`, Choreographer skipped-frame log count during scripted interaction `0`.
 - Final app-PID logcat regression scan after scripted interaction: no crash, ANR, import, GLES, framebuffer, render, or load failure.
 
 ---
