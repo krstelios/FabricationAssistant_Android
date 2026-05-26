@@ -9572,6 +9572,7 @@ public sealed class MainActivity : AppCompatActivity
             bool requestedPerspective = appearance.IsPerspective;
             bool effectivePerspective = _isInFixedView ? false : requestedPerspective;
             appearance.IsPerspective = effectivePerspective;
+            appearance = appearance.CreateRendererSnapshot();
             if (_camera is not null)
             {
                 double aspect = GetViewportAspect();

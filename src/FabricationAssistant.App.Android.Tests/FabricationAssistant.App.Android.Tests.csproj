@@ -74,6 +74,8 @@
   <ItemGroup>
     <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.Rendering.Gles\MsaaSceneFramebuffer.ClampSamples.cs"
              LinkBase="Linked\Rendering.Gles" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.Rendering.Gles\SceneAppearance.cs"
+             LinkBase="Linked\Rendering.Gles" />
   </ItemGroup>
 
 </Project>

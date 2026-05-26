@@ -183,4 +183,26 @@ public struct SceneAppearance
         HoverOutlineThicknessPx = 0.37757202f,
         HoverTintStrength = 0.2f,
     };
+
+    /// <summary>
+    /// Returns a GL-thread handoff copy whose array fields cannot be changed
+    /// by future UI-side edits to this instance.
+    /// </summary>
+    public SceneAppearance CreateRendererSnapshot()
+    {
+        var snapshot = this;
+        snapshot.GridLineColor = CloneArray(GridLineColor);
+        snapshot.BackgroundColor = CloneArray(BackgroundColor);
+        snapshot.SurfaceColor = CloneArray(SurfaceColor);
+        snapshot.EdgeColor = CloneArray(EdgeColor);
+        snapshot.ClaySurfaceColor = CloneArray(ClaySurfaceColor);
+        snapshot.ClayBackgroundColor = CloneArray(ClayBackgroundColor);
+        snapshot.ClayFeatureEdgeColor = CloneArray(ClayFeatureEdgeColor);
+        snapshot.OutlineColor = CloneArray(OutlineColor);
+        snapshot.HoverOutlineColor = CloneArray(HoverOutlineColor);
+        return snapshot;
+    }
+
+    private static float[] CloneArray(float[]? values)
+        => values is { Length: > 0 } ? (float[])values.Clone() : Array.Empty<float>();
 }
