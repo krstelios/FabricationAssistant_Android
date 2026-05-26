@@ -55,6 +55,15 @@ Updated 2026-05-26 after implementation and tablet verification.
 
 - **R9-readpixels follow-up:** pick rendering scissors the offscreen FBO to the tapped pixel before clear/draw/readback, reducing full-viewport pick raster work.
 
+### Fixed in `cf75428` (`Harden transient GLES framebuffer recovery`)
+
+- **R9-FBO:** normal/depth and outline FBO setup failures now keep and re-log the setup error when the pass is unavailable.
+- **Memory-trim recovery:** normal/depth, SSAO, and outline transient framebuffers are reallocated on the next render after `TrimTransientGpuResources()` instead of staying disabled.
+- **R9-SSAO binding hygiene:** SSAO diagnostic readback restores framebuffer binding and texture unit 0 after stats collection.
+- **R9-AO texture-unit hygiene:** main framebuffer state reset now also restores active texture unit 0.
+- **R9-section-cap stencil:** section cap stencil writes now depth-test against the scene depth buffer to keep cap parity in visible depth order.
+- **D2 / cleanup:** removed the unused viewport renderer uniform-cache reset helper.
+
 ### Latest tablet verification
 
 - Installed the current debug APK on tablet `R52TA040AQT`.
