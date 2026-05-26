@@ -9,6 +9,61 @@
 
 ---
 
+## 0. Fix progress
+
+Updated 2026-05-26 after implementation and tablet verification.
+
+### Fixed in `955147f` (`updates`)
+
+- **B1 / R1 / R2:** shader compile/link cleanup now deletes the vertex shader on fragment compile failure and detaches/deletes shaders on link failure.
+- **B2 / R5:** `GpuScene.Load` no longer exposes an empty public mesh list during scene replacement.
+- **B3 / R3:** `GpuMesh` VAO/VBO/EBO creation is lazy and upload-safe after context recreation.
+- **B4 / R4:** mesh upload and edge ribbon temporary buffers use pooled arrays.
+- **B6 / L4:** viewport render requests short-circuit while paused and queued renderer commands are drained on pause.
+- **B8:** Android dispatcher send timeout is configurable and defaults longer.
+- **B10 / I1:** SAF persistable read permission is taken before import work.
+- **B11 / I2 / S1:** recents writes and settings migration use durable `Commit()`.
+- **B14 / B23 / I6 / I7:** import validation checks GLB length/version, GLTF JSON asset metadata, and FA archive structure rather than trusting MIME or magic bytes alone.
+- **B15:** BOM selected-row state keys off stable row identity instead of stale row references.
+- **B17:** measurement integration disposes event subscriptions.
+- **B18 / B20 / R9-MSAA / R9-outline / R9-grid / R9-viewport:** MSAA fallback is bounded, outline/grid state is restored, and main framebuffer reset restores the viewport.
+- **B21 / B22:** S-Pen hover is wired and palm rejection arms only on stylus down/pointer down.
+- **L3:** GL thread guard is explicitly initialized on surface creation.
+- **L8 / U9 / U10:** undo and Android view/listener cleanup paths are hardened on destroy.
+- **I4:** recent URI dedupe normalizes percent-encoded variants.
+- **I9 / I10 / B12:** Draco GLB handling avoids full-file managed byte-array loading and writes decoded output through temp file streams.
+- **R7:** aspect clamp logging is rate-limited instead of silent.
+
+### Fixed in `486b5c0` (`Harden Android renderer and lifecycle follow-ups`)
+
+- **B16:** `AndroidMeasureRaycaster` invalidates acceleration cache on scene visibility/transient/move version changes.
+- **L10 / R9-readpixels:** pick readback flushes before `ReadPixels`; normal-depth and SSAO diagnostic readbacks already finish before reads.
+- **R9-FBO:** pick FBO setup failure is retained and surfaced in logs instead of silently behaving like a default-framebuffer fallback.
+- **R9-line-width / point-size:** measurement and section overlays query GLES primitive limits and clamp line widths / point sizes.
+- **U3:** S-Pen palm-rejection toast is debounced.
+- **U6:** styled tooltip controllers are rebuilt after configuration changes.
+- **U7:** preferences bottom-sheet height is bounded so landscape tablets keep viewport space.
+- **U8:** fullscreen property-panel restore validates the panel before reopening it.
+- **L1:** saved package occurrence selection is null-safe.
+- **L2:** context-loss reload now gives the user fallback UX/logging if retained data and URI reload are unavailable.
+
+### Fixed in `8d63085` (`Use flush for GLES pick readback`)
+
+- **L10 / R9-readpixels:** pick readback uses `Flush()` instead of `Finish()` after tablet regression showed `Finish()` forced long tap-pick stalls.
+
+### Fixed in `5c5ced9` (`Scissor GLES pick readback to tapped pixel`)
+
+- **R9-readpixels follow-up:** pick rendering scissors the offscreen FBO to the tapped pixel before clear/draw/readback, reducing full-viewport pick raster work.
+
+### Latest tablet verification
+
+- Installed the current debug APK on tablet `R52TA040AQT`.
+- Opened the app, loaded recent file `50-0001916_00.fa`.
+- Logcat scan after load and scripted interaction: no fatal exception, ANR, import failure, GLES error, or pick FBO failure.
+- Steady-state scripted interaction still reports burst-pick slow-frame warnings on the 666-mesh model, but no Choreographer skipped-frame logs.
+
+---
+
 ## 1. High-level Android codebase map
 
 ```
