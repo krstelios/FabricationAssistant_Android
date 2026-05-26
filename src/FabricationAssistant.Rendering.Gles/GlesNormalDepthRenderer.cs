@@ -23,6 +23,7 @@ public sealed class GlesNormalDepthRenderer : IDisposable
     private float _linearDepthMax = 1f;
     private readonly float[] _viewScratch = new float[16];
     private readonly float[] _projectionScratch = new float[16];
+    private readonly float[] _sectionUniformScratch = new float[32];
 
     /// <summary>Octahedron-encoded view-space normal in RG, packed depth in BA.</summary>
     public uint NormalTexture => _normalTex;
@@ -91,6 +92,9 @@ public sealed class GlesNormalDepthRenderer : IDisposable
         }
         _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
     }
+
+    public void TrimFramebuffers()
+        => DestroyResources();
 
     public void Render(
         GpuScene scene,
@@ -181,6 +185,7 @@ public sealed class GlesNormalDepthRenderer : IDisposable
         int x0 = System.Math.Max(0, (_width - roiWidth) / 2);
         int y0 = System.Math.Max(0, (_height - roiHeight) / 2);
         var rgba = new byte[roiWidth * roiHeight * 4];
+        _gl.Finish();
         fixed (byte* p = rgba)
         {
             _gl.ReadPixels(x0, y0, (uint)roiWidth, (uint)roiHeight, PixelFormat.Rgba, PixelType.UnsignedByte, p);
@@ -310,7 +315,8 @@ public sealed class GlesNormalDepthRenderer : IDisposable
         if (planesLoc < 0 || count <= 0)
             return;
 
-        float[] values = new float[32];
+        float[] values = _sectionUniformScratch;
+        Array.Clear(values, 0, values.Length);
         for (int i = 0; i < count; i++)
         {
             GlesSectionPlane plane = SectionPlanes[i];

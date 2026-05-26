@@ -84,7 +84,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment
             AppSettings.ResetToDefaults();
             NotifySettingsChanged();
             Toast.MakeText(ctx, "Settings reset", ToastLength.Short)?.Show();
-            DismissAllowingStateLoss();
+            ReplaceVisibleSettingsView(ctx, scroll);
         });
 
         // ── Render mode ────────────────────────────────────────────────
@@ -109,7 +109,6 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment
             g => AppSettings.GridLineColorG = g,
             b => AppSettings.GridLineColorB = b);
         AddSwitch(ctx, helpers, "Show axes gizmo", AppSettings.ShowAxes, v => AppSettings.ShowAxes = v);
-        AddSwitch(ctx, helpers, "Show view cube", AppSettings.ShowViewCube, v => AppSettings.ShowViewCube = v);
         AddToggleRow(ctx, helpers, new[] { "Perspective", "Orthographic" },
             AppSettings.IsPerspective ? 0 : 1, idx => AppSettings.IsPerspective = (idx == 0));
 
@@ -156,6 +155,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment
             r => AppSettings.ClayFeatureEdgeR = r, g => AppSettings.ClayFeatureEdgeG = g, b => AppSettings.ClayFeatureEdgeB = b);
         AddFloatSlider(ctx, clay, "Clay edge alpha", 0f, 1f, AppSettings.ClayFeatureEdgeA, v => AppSettings.ClayFeatureEdgeA = v);
         AddFloatSlider(ctx, clay, "Clay edge width", 0.05f, 4f, AppSettings.ClayFeatureEdgeWidth, v => AppSettings.ClayFeatureEdgeWidth = v);
+        AddFloatSlider(ctx, clay, "Clay edge depth bias", 0f, 0.01f, AppSettings.ClayFeatureEdgeDepthBias, v => AppSettings.ClayFeatureEdgeDepthBias = v);
         AddFloatSlider(ctx, clay, "Clay crease angle", 1f, 150f, AppSettings.ClayFeatureEdgeCreaseAngleDegrees, v => AppSettings.ClayFeatureEdgeCreaseAngleDegrees = v);
 
         // ── Lighting ───────────────────────────────────────────────────
@@ -249,11 +249,11 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment
             g => AppSettings.SectionCapG = g,
             b => AppSettings.SectionCapB = b);
         AddFloatSlider(ctx, sections, "Plane size", 0.005f, 0.20f, AppSettings.SectionPlaneSizeFraction, v => AppSettings.SectionPlaneSizeFraction = v);
-        AddFloatSlider(ctx, sections, "Gizmo size", 0.01f, 0.50f, AppSettings.SectionGizmoSizeFraction, v => AppSettings.SectionGizmoSizeFraction = v);
 
         // ── Navigation ─────────────────────────────────────────────────
         var nav = AddSection(ctx, root, "Navigation", "Orbit, pan, zoom");
         AddSwitch(ctx, nav, "Lightweight camera navigation", AppSettings.LightweightNavigationEnabled, v => AppSettings.LightweightNavigationEnabled = v);
+        AddFloatSlider(ctx, nav, "Section gizmo scale", 0.5f, 4f, AppSettings.SectionGizmoScale, v => AppSettings.SectionGizmoScale = v);
         AddFloatSlider(ctx, nav, "Orbit sensitivity", 0.1f, 5f, AppSettings.OrbitSensitivity, v => AppSettings.OrbitSensitivity = v);
         AddFloatSlider(ctx, nav, "Pan sensitivity", 0.1f, 5f, AppSettings.PanSensitivity, v => AppSettings.PanSensitivity = v);
         AddFloatSlider(ctx, nav, "Pinch-zoom sensitivity", 0.1f, 5f, AppSettings.ZoomSensitivity, v => AppSettings.ZoomSensitivity = v);
@@ -262,6 +262,25 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment
 
         scroll.AddView(root);
         return scroll;
+    }
+
+    private void ReplaceVisibleSettingsView(Context ctx, View currentView)
+    {
+        if (currentView.Parent is not ViewGroup parent)
+        {
+            currentView.Post(() => ReanchorSheetAfterContentChange(currentView));
+            return;
+        }
+
+        int index = parent.IndexOfChild(currentView);
+        if (index < 0)
+            return;
+
+        ViewGroup.LayoutParams? layoutParams = currentView.LayoutParameters;
+        parent.RemoveViewAt(index);
+        View replacement = CreateEmbeddedView(ctx);
+        parent.AddView(replacement, index, layoutParams);
+        replacement.Post(() => ReanchorSheetAfterContentChange(replacement));
     }
 
     private void ApplySheetLayout()
@@ -588,6 +607,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment
         reset.SetTextSize(ComplexUnitType.Px, Dp(ctx, 13));
         reset.SetPadding(Dp(ctx, 12), 0, Dp(ctx, 12), 0);
         reset.LayoutParameters = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WrapContent, Dp(ctx, 36));
+        reset.ContentDescription = "Reset settings";
         reset.Click += (_, _) => resetToDefaults();
         row.AddView(reset);
 
@@ -640,6 +660,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment
         var arrow = new ImageView(ctx);
         arrow.SetImageResource(Resource.Drawable.ic_chevron_right);
         arrow.SetColorFilter(GetColor(ctx, Resource.Color.fa_text_secondary));
+        arrow.ContentDescription = title;
         arrow.LayoutParameters = new LinearLayout.LayoutParams(Dp(ctx, 24), Dp(ctx, 24));
 
         header.AddView(titleGroup);
@@ -683,6 +704,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment
     private void AddSwitch(Context ctx, ViewGroup parent, string label, bool initial, Action<bool> save)
     {
         var sw = new MaterialSwitch(ctx) { Text = label, Checked = initial };
+        sw.ContentDescription = label;
         sw.SetTextColor(GetColor(ctx, Resource.Color.fa_text_primary));
         var lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MatchParent, LinearLayout.LayoutParams.WrapContent);
         lp.BottomMargin = Dp(ctx, 6);
@@ -698,7 +720,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment
         lp.BottomMargin = Dp(ctx, 6);
         row.LayoutParameters = lp;
 
-        var labelTv = new TextView(ctx) { Text = $"{label}: {initial:G3}" };
+        var labelTv = new TextView(ctx) { Text = FormatSliderValue(label, initial) };
         labelTv.SetTextColor(GetColor(ctx, Resource.Color.fa_text_secondary));
 
         var seek = new SeekBar(ctx);
@@ -708,7 +730,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment
         seek.ProgressChanged += (_, e) =>
         {
             float v = min + e.Progress / 1000f * (max - min);
-            labelTv.Text = $"{label}: {v:G3}";
+            labelTv.Text = FormatSliderValue(label, v);
             if (e.FromUser)
             {
                 save(v);
@@ -719,6 +741,16 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment
         row.AddView(labelTv);
         row.AddView(seek);
         parent.AddView(row);
+    }
+
+    private static string FormatSliderValue(string label, float value)
+    {
+        string format = Math.Abs(value) < 0.01f && value != 0f ? "F6" : "F4";
+        return string.Format(
+            System.Globalization.CultureInfo.InvariantCulture,
+            "{0}: {1}",
+            label,
+            value.ToString(format, System.Globalization.CultureInfo.InvariantCulture));
     }
 
     private void AddIntSlider(Context ctx, ViewGroup parent, string label, int min, int max, int initial, Action<int> save)
@@ -797,6 +829,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment
         var pickLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WrapContent, Dp(ctx, 34));
         pickLp.LeftMargin = Dp(ctx, 8);
         pick.LayoutParameters = pickLp;
+        pick.ContentDescription = $"Pick {label} color";
         row.AddView(pick);
 
         void ApplyRowState()
@@ -1111,10 +1144,13 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment
         => System.Math.Clamp((int)System.Math.Round(Clamp01(v) * 255f), 0, 255);
 
     private static float Clamp01(float v)
-        => System.Math.Clamp(v, 0f, 1f);
+        => float.IsFinite(v) ? System.Math.Clamp(v, 0f, 1f) : 0f;
 
     private static float NormalizeHue(float hue)
     {
+        if (!float.IsFinite(hue))
+            return 0f;
+
         hue %= 360f;
         return hue < 0f ? hue + 360f : hue;
     }

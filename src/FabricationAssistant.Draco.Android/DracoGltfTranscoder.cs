@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json.Nodes;
 
@@ -15,126 +16,147 @@ public static class DracoGltfTranscoder
     private const uint GlbVersion = 2;
     private const uint ChunkTypeJson = 0x4E4F534A;  // "JSON"
     private const uint ChunkTypeBin  = 0x004E4942;  // "BIN\0"
+    private const long MaxSourceBytes = 1L * 1024L * 1024L * 1024L;
+    private const long MaxDecodedBytes = 2L * 1024L * 1024L * 1024L;
 
     public static void Transcode(string sourceGlbPath, string destinationGlbPath)
     {
         ArgumentNullException.ThrowIfNull(sourceGlbPath);
         ArgumentNullException.ThrowIfNull(destinationGlbPath);
 
-        byte[] bytes = File.ReadAllBytes(sourceGlbPath);
-        var (json, bin) = ReadGlb(bytes);
+        long sourceLength = new FileInfo(sourceGlbPath).Length;
+        if (sourceLength > MaxSourceBytes)
+            throw new InvalidDataException($"Draco source GLB is too large ({sourceLength:n0} bytes). Maximum supported size is {MaxSourceBytes:n0} bytes.");
+
+        var (json, bin) = ReadGlb(sourceGlbPath);
 
         var root = JsonNode.Parse(json) ?? throw new InvalidDataException("glTF JSON parse failed");
 
-        // Preserve the original binary chunk content as the prefix of the new
-        // chunk. This keeps every non-Draco bufferView (textures, animations,
-        // skins, anything else the file embeds) pointing at valid bytes. We
-        // append decoded Draco buffers AFTER this prefix - the existing Draco
-        // bufferViews remain in the array but are no longer referenced by any
-        // primitive. The overhead is small because Draco-encoded data is much
-        // smaller than its decoded form, and the temp transcoded file is
-        // deleted as soon as the inner GltfImportService finishes reading it.
-        var newBin = new MemoryStream();
-        newBin.Write(bin);
-        PadTo4Bytes(newBin);
+        string tempBinPath = Path.Combine(
+            Path.GetDirectoryName(destinationGlbPath) ?? Path.GetTempPath(),
+            $"{Path.GetFileName(destinationGlbPath)}.{Guid.NewGuid():N}.bin");
 
-        var bufferViews = root["bufferViews"] as JsonArray ?? new JsonArray();
-        var accessors = root["accessors"] as JsonArray ?? new JsonArray();
-        var meshes = root["meshes"] as JsonArray;
-        if (meshes is null)
+        try
         {
-            File.WriteAllBytes(destinationGlbPath, bytes);
-            return;
-        }
+            using var newBin = new FileStream(
+                tempBinPath,
+                FileMode.CreateNew,
+                FileAccess.ReadWrite,
+                FileShare.None,
+                bufferSize: 128 * 1024,
+                FileOptions.SequentialScan);
 
-        bool changed = false;
-        foreach (var meshNode in meshes)
-        {
-            var prims = meshNode?["primitives"] as JsonArray;
-            if (prims is null) continue;
-            foreach (var prim in prims)
+            // Preserve the original binary chunk content as the prefix of the
+            // new chunk. This keeps every non-Draco bufferView (textures,
+            // animations, skins, anything else the file embeds) pointing at
+            // valid bytes. Decoded Draco buffers are appended after this prefix.
+            newBin.Write(bin);
+            EnsureDecodedBudget(newBin.Length);
+            PadTo4Bytes(newBin);
+
+            var bufferViews = root["bufferViews"] as JsonArray ?? new JsonArray();
+            var accessors = root["accessors"] as JsonArray ?? new JsonArray();
+            var meshes = root["meshes"] as JsonArray;
+            if (meshes is null)
             {
-                var ext = prim?["extensions"]?["KHR_draco_mesh_compression"];
-                if (ext is null) continue;
-
-                int viewIndex = ext["bufferView"]!.GetValue<int>();
-                var view = bufferViews[viewIndex]!;
-                int offset = view["byteOffset"]?.GetValue<int>() ?? 0;
-                int length = view["byteLength"]!.GetValue<int>();
-                var encoded = new ReadOnlySpan<byte>(bin, offset, length);
-
-                using var dm = DracoMesh.Decode(encoded)
-                    ?? throw new InvalidDataException("Draco decode failed for primitive");
-
-                var positions = dm.GetPositions();
-                var normals = dm.GetNormals();
-                var texCoords = dm.GetTexCoords();
-                var indices = dm.GetIndices();
-
-                if (positions is null || indices is null)
-                    throw new InvalidDataException("Draco decoded mesh missing required attributes");
-
-                int posView = AppendFloatBufferView(bufferViews, newBin, positions, byteStride: 12);
-                int idxView = AppendUInt32BufferView(bufferViews, newBin, indices);
-                int posAccessor = AppendVec3FloatAccessor(accessors, posView, dm.NumPoints, positions);
-                int idxAccessor = AppendUIntAccessor(accessors, idxView, indices.Length);
-
-                int? nrmAccessor = normals is null ? null
-                    : AppendVec3FloatAccessor(accessors,
-                        AppendFloatBufferView(bufferViews, newBin, normals, byteStride: 12),
-                        dm.NumPoints, normals);
-                int? uvAccessor = texCoords is null ? null
-                    : AppendVec2FloatAccessor(accessors,
-                        AppendFloatBufferView(bufferViews, newBin, texCoords, byteStride: 8),
-                        dm.NumPoints);
-
-                var attribs = prim!["attributes"] as JsonObject ?? new JsonObject();
-                attribs["POSITION"] = posAccessor;
-                if (nrmAccessor.HasValue) attribs["NORMAL"] = nrmAccessor.Value;
-                if (uvAccessor.HasValue) attribs["TEXCOORD_0"] = uvAccessor.Value;
-                prim["attributes"] = attribs;
-                prim["indices"] = idxAccessor;
-
-                ((JsonObject)prim["extensions"]!).Remove("KHR_draco_mesh_compression");
-                if (((JsonObject)prim["extensions"]!).Count == 0)
-                    ((JsonObject)prim).Remove("extensions");
-
-                changed = true;
+                File.Copy(sourceGlbPath, destinationGlbPath, overwrite: true);
+                return;
             }
+
+            bool changed = false;
+            foreach (var meshNode in meshes)
+            {
+                var prims = meshNode?["primitives"] as JsonArray;
+                if (prims is null) continue;
+                foreach (var prim in prims)
+                {
+                    var ext = prim?["extensions"]?["KHR_draco_mesh_compression"];
+                    if (ext is null) continue;
+
+                    int viewIndex = ext["bufferView"]!.GetValue<int>();
+                    var view = bufferViews[viewIndex]!;
+                    int offset = view["byteOffset"]?.GetValue<int>() ?? 0;
+                    int length = view["byteLength"]!.GetValue<int>();
+                    var encoded = new ReadOnlySpan<byte>(bin, offset, length);
+
+                    using var dm = DracoMesh.Decode(encoded)
+                        ?? throw new InvalidDataException("Draco decode failed for primitive");
+
+                    var positions = dm.GetPositions();
+                    var normals = dm.GetNormals();
+                    var texCoords = dm.GetTexCoords();
+                    var indices = dm.GetIndices();
+
+                    if (positions is null || indices is null)
+                        throw new InvalidDataException("Draco decoded mesh missing required attributes");
+
+                    int posView = AppendFloatBufferView(bufferViews, newBin, positions, byteStride: 12);
+                    int idxView = AppendUInt32BufferView(bufferViews, newBin, indices);
+                    int posAccessor = AppendVec3FloatAccessor(accessors, posView, dm.NumPoints, positions);
+                    int idxAccessor = AppendUIntAccessor(accessors, idxView, indices.Length);
+
+                    int? nrmAccessor = normals is null ? null
+                        : AppendVec3FloatAccessor(accessors,
+                            AppendFloatBufferView(bufferViews, newBin, normals, byteStride: 12),
+                            dm.NumPoints, normals);
+                    int? uvAccessor = texCoords is null ? null
+                        : AppendVec2FloatAccessor(accessors,
+                            AppendFloatBufferView(bufferViews, newBin, texCoords, byteStride: 8),
+                            dm.NumPoints);
+
+                    var attribs = prim!["attributes"] as JsonObject ?? new JsonObject();
+                    attribs["POSITION"] = posAccessor;
+                    if (nrmAccessor.HasValue) attribs["NORMAL"] = nrmAccessor.Value;
+                    if (uvAccessor.HasValue) attribs["TEXCOORD_0"] = uvAccessor.Value;
+                    prim["attributes"] = attribs;
+                    prim["indices"] = idxAccessor;
+
+                    ((JsonObject)prim["extensions"]!).Remove("KHR_draco_mesh_compression");
+                    if (((JsonObject)prim["extensions"]!).Count == 0)
+                        ((JsonObject)prim).Remove("extensions");
+
+                    changed = true;
+                }
+            }
+
+            TryRemoveExtensionRef(root, "extensionsUsed", "KHR_draco_mesh_compression");
+            TryRemoveExtensionRef(root, "extensionsRequired", "KHR_draco_mesh_compression");
+
+            root["bufferViews"] = bufferViews;
+            root["accessors"] = accessors;
+
+            var buffers = root["buffers"] as JsonArray ?? new JsonArray();
+            if (buffers.Count == 0) buffers.Add(new JsonObject());
+            EnsureDecodedBudget(newBin.Length);
+            buffers[0]!["byteLength"] = checked((int)newBin.Length);
+            ((JsonObject)buffers[0]!).Remove("uri");
+            root["buffers"] = buffers;
+
+            if (!changed)
+            {
+                File.Copy(sourceGlbPath, destinationGlbPath, overwrite: true);
+                return;
+            }
+
+            WriteGlb(destinationGlbPath, root.ToJsonString(), newBin);
         }
-
-        TryRemoveExtensionRef(root, "extensionsUsed", "KHR_draco_mesh_compression");
-        TryRemoveExtensionRef(root, "extensionsRequired", "KHR_draco_mesh_compression");
-
-        root["bufferViews"] = bufferViews;
-        root["accessors"] = accessors;
-
-        var buffers = root["buffers"] as JsonArray ?? new JsonArray();
-        if (buffers.Count == 0) buffers.Add(new JsonObject());
-        buffers[0]!["byteLength"] = (int)newBin.Length;
-        ((JsonObject)buffers[0]!).Remove("uri");
-        root["buffers"] = buffers;
-
-        if (!changed)
+        finally
         {
-            File.WriteAllBytes(destinationGlbPath, bytes);
-            return;
+            TryDeleteFile(tempBinPath);
         }
-
-        WriteGlb(destinationGlbPath, root.ToJsonString(), newBin.ToArray());
     }
 
-    private static int AppendFloatBufferView(JsonArray bufferViews, MemoryStream bin, float[] data, int byteStride)
+    private static int AppendFloatBufferView(JsonArray bufferViews, Stream bin, float[] data, int byteStride)
     {
         long offset = bin.Position;
-        var bytes = new byte[data.Length * 4];
-        Buffer.BlockCopy(data, 0, bytes, 0, bytes.Length);
+        EnsureDecodedBudget(offset + (long)data.Length * 4L + 3L);
+        ReadOnlySpan<byte> bytes = MemoryMarshal.AsBytes(data.AsSpan());
         bin.Write(bytes);
         PadTo4Bytes(bin);
         var node = new JsonObject
         {
             ["buffer"] = 0,
-            ["byteOffset"] = (int)offset,
+            ["byteOffset"] = checked((int)offset),
             ["byteLength"] = bytes.Length,
             ["byteStride"] = byteStride,
         };
@@ -142,17 +164,17 @@ public static class DracoGltfTranscoder
         return bufferViews.Count - 1;
     }
 
-    private static int AppendUInt32BufferView(JsonArray bufferViews, MemoryStream bin, uint[] data)
+    private static int AppendUInt32BufferView(JsonArray bufferViews, Stream bin, uint[] data)
     {
         long offset = bin.Position;
-        var bytes = new byte[data.Length * 4];
-        Buffer.BlockCopy(data, 0, bytes, 0, bytes.Length);
+        EnsureDecodedBudget(offset + (long)data.Length * 4L + 3L);
+        ReadOnlySpan<byte> bytes = MemoryMarshal.AsBytes(data.AsSpan());
         bin.Write(bytes);
         PadTo4Bytes(bin);
         var node = new JsonObject
         {
             ["buffer"] = 0,
-            ["byteOffset"] = (int)offset,
+            ["byteOffset"] = checked((int)offset),
             ["byteLength"] = bytes.Length,
         };
         bufferViews.Add(node);
@@ -228,45 +250,76 @@ public static class DracoGltfTranscoder
         }
     }
 
-    private static void PadTo4Bytes(MemoryStream s)
+    private static void PadTo4Bytes(Stream s)
     {
         long pad = (4 - (s.Position % 4)) % 4;
+        EnsureDecodedBudget(s.Position + pad);
         for (int i = 0; i < pad; i++) s.WriteByte(0);
     }
 
-    private static (string json, byte[] bin) ReadGlb(byte[] data)
+    private static void EnsureDecodedBudget(long byteCount)
     {
-        if (data.Length < 12) throw new InvalidDataException("GLB too short");
-        uint magic = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(0));
-        if (magic != GlbMagic) throw new InvalidDataException("Not a GLB file");
+        if (byteCount > MaxDecodedBytes)
+            throw new InvalidDataException($"Decoded Draco GLB exceeds the maximum supported size of {MaxDecodedBytes:n0} bytes.");
+    }
 
-        int p = 12;
+    private static (string json, byte[] bin) ReadGlb(string path)
+    {
+        using var fs = File.OpenRead(path);
+        if (fs.Length < 12) throw new InvalidDataException("GLB too short");
+
+        Span<byte> header = stackalloc byte[12];
+        fs.ReadExactly(header);
+
+        uint magic = BinaryPrimitives.ReadUInt32LittleEndian(header);
+        if (magic != GlbMagic) throw new InvalidDataException("Not a GLB file");
+        uint version = BinaryPrimitives.ReadUInt32LittleEndian(header[4..]);
+        if (version != GlbVersion) throw new InvalidDataException($"Unsupported GLB version {version}.");
+        uint declaredLength = BinaryPrimitives.ReadUInt32LittleEndian(header[8..]);
+        if (declaredLength != fs.Length) throw new InvalidDataException("GLB declared length does not match file length.");
+
         string? json = null;
         byte[] bin = Array.Empty<byte>();
-        while (p < data.Length)
+        Span<byte> chunkHeader = stackalloc byte[8];
+        while (fs.Position < fs.Length)
         {
-            uint chunkLength = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(p)); p += 4;
-            uint chunkType = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(p)); p += 4;
+            if (fs.Length - fs.Position < 8)
+                throw new InvalidDataException("GLB chunk header is truncated");
+
+            fs.ReadExactly(chunkHeader);
+            uint chunkLength = BinaryPrimitives.ReadUInt32LittleEndian(chunkHeader);
+            uint chunkType = BinaryPrimitives.ReadUInt32LittleEndian(chunkHeader[4..]);
+            if (chunkLength > int.MaxValue || fs.Position + chunkLength > fs.Length)
+                throw new InvalidDataException("GLB chunk length exceeds file bounds");
+
             if (chunkType == ChunkTypeJson)
-                json = Encoding.UTF8.GetString(data, p, (int)chunkLength).TrimEnd('\0', ' ');
+            {
+                byte[] jsonBytes = new byte[checked((int)chunkLength)];
+                fs.ReadExactly(jsonBytes);
+                json = Encoding.UTF8.GetString(jsonBytes).TrimEnd('\0', ' ');
+            }
             else if (chunkType == ChunkTypeBin)
             {
-                bin = new byte[chunkLength];
-                Buffer.BlockCopy(data, p, bin, 0, (int)chunkLength);
+                bin = new byte[checked((int)chunkLength)];
+                fs.ReadExactly(bin);
             }
-            p += (int)chunkLength;
+            else
+            {
+                fs.Position += chunkLength;
+            }
         }
         if (json is null) throw new InvalidDataException("GLB missing JSON chunk");
         return (json, bin);
     }
 
-    private static void WriteGlb(string path, string json, byte[] bin)
+    private static void WriteGlb(string path, string json, Stream bin)
     {
         byte[] jsonBytes = Encoding.UTF8.GetBytes(json);
         int jsonPad = (4 - (jsonBytes.Length % 4)) % 4;
-        int binPad = (4 - (bin.Length % 4)) % 4;
+        int binLength = checked((int)bin.Length);
+        int binPad = (4 - (binLength % 4)) % 4;
         int jsonLen = jsonBytes.Length + jsonPad;
-        int binLen = bin.Length + binPad;
+        int binLen = binLength + binPad;
         int totalLen = 12 + 8 + jsonLen + 8 + binLen;
 
         using var fs = File.Create(path);
@@ -286,7 +339,13 @@ public static class DracoGltfTranscoder
         BinaryPrimitives.WriteUInt32LittleEndian(chunkHdr, (uint)binLen);
         BinaryPrimitives.WriteUInt32LittleEndian(chunkHdr[4..], ChunkTypeBin);
         fs.Write(chunkHdr);
-        fs.Write(bin);
+        bin.Position = 0;
+        bin.CopyTo(fs);
         for (int i = 0; i < binPad; i++) fs.WriteByte(0);
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try { File.Delete(path); } catch { }
     }
 }

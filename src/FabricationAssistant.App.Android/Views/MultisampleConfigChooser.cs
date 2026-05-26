@@ -78,20 +78,28 @@ public sealed class MultisampleConfigChooser : Java.Lang.Object, GLSurfaceView.I
         // Pick the first config that matches the requested sample count. EGL is
         // allowed to return configs with more samples than asked; we want an
         // exact match so 2x doesn't accidentally select the 4x driver path.
+        EGLConfig? fallback = null;
         foreach (var c in configs)
         {
             if (c is null) continue;
-            if (GetConfigAttrib(egl, display, c, IEGL10.EglSamples) >= samples
-                && GetConfigAttrib(egl, display, c, IEGL10.EglRedSize) >= 8
-                && GetConfigAttrib(egl, display, c, IEGL10.EglGreenSize) >= 8
-                && GetConfigAttrib(egl, display, c, IEGL10.EglBlueSize) >= 8
-                && GetConfigAttrib(egl, display, c, IEGL10.EglDepthSize) >= 24)
+            if (!HasMinimumAttributes(egl, display, c))
+                continue;
+
+            fallback ??= c;
+            if (GetConfigAttrib(egl, display, c, IEGL10.EglSamples) >= samples)
             {
                 return c;
             }
         }
-        return configs[0];
+        return fallback;
     }
+
+    private static bool HasMinimumAttributes(IEGL10 egl, EGLDisplay display, EGLConfig config)
+        => GetConfigAttrib(egl, display, config, IEGL10.EglRedSize) >= 8
+           && GetConfigAttrib(egl, display, config, IEGL10.EglGreenSize) >= 8
+           && GetConfigAttrib(egl, display, config, IEGL10.EglBlueSize) >= 8
+           && GetConfigAttrib(egl, display, config, IEGL10.EglDepthSize) >= 24
+           && GetConfigAttrib(egl, display, config, IEGL10.EglStencilSize) >= 8;
 
     private static int GetConfigAttrib(IEGL10 egl, EGLDisplay display, EGLConfig config, int attribute)
     {

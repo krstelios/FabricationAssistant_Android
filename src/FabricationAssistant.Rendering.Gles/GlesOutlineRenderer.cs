@@ -4,7 +4,7 @@ using Silk.NET.OpenGLES;
 namespace FabricationAssistant.Rendering.Gles;
 
 /// <summary>
-/// Selection-outline post-process. Renders only the currently selected mesh
+/// Selection-outline post-process. Renders the currently selected mesh set
 /// into a single-channel R8 mask FBO, then runs a Sobel-style edge-detect
 /// shader as a fullscreen pass that alpha-blends the outline color over the
 /// default framebuffer. The mesh shader's inline color highlight is the
@@ -24,6 +24,7 @@ public sealed class GlesOutlineRenderer : IDisposable
     private int _height;
     private readonly float[] _viewScratch = new float[16];
     private readonly float[] _projectionScratch = new float[16];
+    private readonly float[] _sectionUniformScratch = new float[32];
     public IReadOnlyList<GlesSectionPlane> SectionPlanes { get; set; } = Array.Empty<GlesSectionPlane>();
 
     public GlesOutlineRenderer(
@@ -55,8 +56,8 @@ public sealed class GlesOutlineRenderer : IDisposable
                 InternalFormat.R8, (uint)width, (uint)height,
                 0, PixelFormat.Red, PixelType.UnsignedByte, (void*)0);
         }
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Linear);
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Nearest);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Nearest);
         _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.ClampToEdge);
         _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.ClampToEdge);
         _gl.BindTexture(TextureTarget.Texture2D, 0);
@@ -67,9 +68,17 @@ public sealed class GlesOutlineRenderer : IDisposable
             TextureTarget.Texture2D, _maskTex, 0);
         var st = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
         if (st != GLEnum.FramebufferComplete)
+        {
             Android.Util.Log.Error("FA.Outline", $"Mask FBO incomplete: 0x{(int)st:X4}");
+            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+            DestroyResources();
+            return;
+        }
         _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
     }
+
+    public void TrimFramebuffers()
+        => DestroyResources();
 
     /// <summary>
     /// Draws the outline composite onto the currently-bound framebuffer
@@ -79,18 +88,40 @@ public sealed class GlesOutlineRenderer : IDisposable
     /// </summary>
     public void Render(GpuScene scene, CameraState camera, int selectedMeshIndex,
         float[] outlineColor, float thicknessPx, int width, int height)
+        => Render(
+            scene,
+            camera,
+            selectedMeshIndex > 0 ? new[] { selectedMeshIndex } : Array.Empty<int>(),
+            outlineColor,
+            thicknessPx,
+            width,
+            height);
+
+    /// <summary>
+    /// Draws one outline around a logical selection that may contain multiple
+    /// rendered meshes, such as an assembly selected from the Model Explorer.
+    /// </summary>
+    public void Render(GpuScene scene, CameraState camera, IReadOnlyCollection<int> selectedMeshIndices,
+        float[] outlineColor, float thicknessPx, int width, int height)
     {
-        if (selectedMeshIndex <= 0 || _maskFbo == 0 || width <= 0 || height <= 0) return;
+        if (selectedMeshIndices is null || selectedMeshIndices.Count == 0 || _maskFbo == 0 || width <= 0 || height <= 0) return;
         if (width != _width || height != _height) Resize(width, height);
 
-        // Find the selected mesh up-front so we skip the mask pass entirely
-        // if the selection is stale (mesh deleted, scene replaced, etc).
-        GpuMesh? selected = null;
-        foreach (var m in scene.Meshes)
+        var selectedLookup = new HashSet<int>();
+        foreach (int selectedMeshIndex in selectedMeshIndices)
         {
-            if (m.MeshIndex == selectedMeshIndex) { selected = m; break; }
+            if (selectedMeshIndex > 0)
+                selectedLookup.Add(selectedMeshIndex);
         }
-        if (selected is null) return;
+        if (selectedLookup.Count == 0) return;
+
+        var selectedMeshes = new List<GpuMesh>(selectedLookup.Count);
+        foreach (GpuMesh mesh in scene.Meshes)
+        {
+            if (mesh.Visible && selectedLookup.Contains(mesh.MeshIndex))
+                selectedMeshes.Add(mesh);
+        }
+        if (selectedMeshes.Count == 0) return;
 
         // ── Mask pass ────────────────────────────────────────────────
         _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _maskFbo);
@@ -108,10 +139,13 @@ public sealed class GlesOutlineRenderer : IDisposable
         SetMat4(_maskProgram, "uProjection", _projectionScratch);
         SetSectionUniforms(_maskProgram);
         int modelLoc = _maskProgram.UniformLocation("uModel");
-        float[] model = selected.WorldTransform ?? identity;
-        if (modelLoc >= 0) _gl.UniformMatrix4(modelLoc, true, model);
-        GlesRenderUtil.ApplyMeshCulling(_gl, selected);
-        selected.Draw();
+        foreach (GpuMesh selected in selectedMeshes)
+        {
+            float[] model = selected.WorldTransform ?? identity;
+            if (modelLoc >= 0) _gl.UniformMatrix4(modelLoc, true, model);
+            GlesRenderUtil.ApplyMeshCulling(_gl, selected);
+            selected.Draw();
+        }
         GlesRenderUtil.ResetMeshCulling(_gl);
 
         // ── Composite pass ──────────────────────────────────────────
@@ -133,6 +167,9 @@ public sealed class GlesOutlineRenderer : IDisposable
         GlesFullscreenTriangle.Draw(_gl, _fullscreenVao);
 
         _gl.Disable(EnableCap.Blend);
+        _gl.Enable(EnableCap.DepthTest);
+        _gl.DepthMask(true);
+        _gl.Enable(EnableCap.CullFace);
     }
 
     private void SetMat4(ShaderProgram p, string name, float[] m)
@@ -161,7 +198,8 @@ public sealed class GlesOutlineRenderer : IDisposable
         if (planesLoc < 0 || count <= 0)
             return;
 
-        float[] values = new float[32];
+        float[] values = _sectionUniformScratch;
+        Array.Clear(values, 0, values.Length);
         for (int i = 0; i < count; i++)
         {
             GlesSectionPlane plane = SectionPlanes[i];

@@ -5,18 +5,12 @@ using AndroidUri = Android.Net.Uri;
 
 namespace FabricationAssistant.App.Android;
 
-public sealed class RecentFileEntry
-{
-    public string Uri { get; set; } = "";
-    public string DisplayName { get; set; } = "";
-    public long LastOpenedUnixMs { get; set; }
-}
-
 public static class RecentFilesStore
 {
     private const string PreferencesName = "fa_recent_files";
     private const string EntriesKey = "entries_json";
     private const int MaxEntries = 10;
+    private static readonly object Gate = new();
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -26,6 +20,22 @@ public static class RecentFilesStore
     public static IReadOnlyList<RecentFileEntry> Load(Context context)
     {
         ArgumentNullException.ThrowIfNull(context);
+
+        lock (Gate)
+        {
+            var entries = LoadUnsafe(context);
+            var accessible = RecentFilesList.FilterAccessible(
+                entries,
+                uriText => HasReadableAccess(context, uriText),
+                MaxEntries);
+            if (accessible.Count != entries.Count)
+                SaveUnsafe(context, accessible);
+            return accessible;
+        }
+    }
+
+    private static IReadOnlyList<RecentFileEntry> LoadUnsafe(Context context)
+    {
 
         string? json = context
             .GetSharedPreferences(PreferencesName, FileCreationMode.Private)
@@ -39,11 +49,7 @@ public static class RecentFilesStore
             var entries = JsonSerializer.Deserialize<List<RecentFileEntry>>(json, JsonOptions)
                 ?? new List<RecentFileEntry>();
 
-            return entries
-                .Where(e => !string.IsNullOrWhiteSpace(e.Uri))
-                .OrderByDescending(e => e.LastOpenedUnixMs)
-                .Take(MaxEntries)
-                .ToArray();
+            return RecentFilesList.Normalize(entries, MaxEntries);
         }
         catch (Exception ex)
         {
@@ -61,31 +67,38 @@ public static class RecentFilesStore
         if (string.IsNullOrWhiteSpace(uriText))
             return;
 
-        string displayName = ResolveDisplayName(context, uri);
-        var entries = Load(context)
-            .Where(e => !string.Equals(e.Uri, uriText, StringComparison.Ordinal))
-            .Take(MaxEntries - 1)
-            .ToList();
-
-        entries.Insert(0, new RecentFileEntry
+        lock (Gate)
         {
-            Uri = uriText,
-            DisplayName = displayName,
-            LastOpenedUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-        });
+            string displayName = ResolveDisplayName(context, uri);
+            var entry = new RecentFileEntry
+            {
+                Uri = uriText,
+                DisplayName = displayName,
+                LastOpenedUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            };
 
-        Save(context, entries);
+            var entries = RecentFilesList.AddOrPromote(
+                LoadUnsafe(context),
+                entry,
+                entryUri => HasReadableAccess(context, entryUri),
+                MaxEntries);
+
+            SaveUnsafe(context, entries);
+        }
     }
 
     public static void Remove(Context context, string uriText)
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        var entries = Load(context)
-            .Where(e => !string.Equals(e.Uri, uriText, StringComparison.Ordinal))
-            .ToList();
+        lock (Gate)
+        {
+            var entries = LoadUnsafe(context)
+                .Where(e => !string.Equals(e.Uri, uriText, StringComparison.Ordinal))
+                .ToList();
 
-        Save(context, entries);
+            SaveUnsafe(context, entries);
+        }
     }
 
     public static void TryTakePersistableReadPermission(Context context, AndroidUri uri)
@@ -106,13 +119,55 @@ public static class RecentFilesStore
 
     private static void Save(Context context, IReadOnlyList<RecentFileEntry> entries)
     {
-        string json = JsonSerializer.Serialize(entries.Take(MaxEntries), JsonOptions);
-        context
-            .GetSharedPreferences(PreferencesName, FileCreationMode.Private)
-            ?.Edit()
-            ?.PutString(EntriesKey, json)
-            ?.Apply();
+        lock (Gate)
+            SaveUnsafe(context, entries);
     }
+
+    private static void SaveUnsafe(Context context, IReadOnlyList<RecentFileEntry> entries)
+    {
+        string json = JsonSerializer.Serialize(entries.Take(MaxEntries), JsonOptions);
+        var editor = context
+            .GetSharedPreferences(PreferencesName, FileCreationMode.Private)
+            ?.Edit();
+        if (editor is null)
+            return;
+
+        editor.PutString(EntriesKey, json);
+        if (!editor.Commit())
+            global::Android.Util.Log.Warn("FA.Recent", "Failed to commit recent files to SharedPreferences.");
+    }
+
+    private static bool HasReadableAccess(Context context, string uriText)
+    {
+        if (string.IsNullOrWhiteSpace(uriText))
+            return false;
+
+        AndroidUri? uri = AndroidUri.Parse(uriText);
+        if (uri is null)
+            return false;
+
+        try
+        {
+            using var descriptor = context.ContentResolver?.OpenFileDescriptor(uri, "r");
+            return descriptor is not null;
+        }
+        catch (Exception ex) when (IsAccessRevoked(ex))
+        {
+            global::Android.Util.Log.Info("FA.Recent", "Pruned inaccessible recent file: " + uriText);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            global::Android.Util.Log.Warn("FA.Recent", "Could not verify recent file access: " + ex.Message);
+            return false;
+        }
+    }
+
+    private static bool IsAccessRevoked(Exception ex)
+        => ex is Java.Lang.SecurityException
+           || ex is UnauthorizedAccessException
+           || ex is FileNotFoundException
+           || ex.InnerException is not null && IsAccessRevoked(ex.InnerException);
 
     private static string ResolveDisplayName(Context context, AndroidUri uri)
     {

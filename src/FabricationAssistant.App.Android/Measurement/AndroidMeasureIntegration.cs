@@ -8,7 +8,7 @@ using FabricationAssistant.Core.Sections;
 
 namespace FabricationAssistant.App.Android.Measurement;
 
-internal sealed class AndroidMeasureIntegration
+internal sealed class AndroidMeasureIntegration : IDisposable
 {
     private const int MaxVertsPerMesh = 4096;
     internal const double AndroidEdgeSnapAngularTolerance = MeshMeasurePicker.DefaultEdgeSnapAngularTolerance * 2.0;
@@ -22,6 +22,8 @@ internal sealed class AndroidMeasureIntegration
     private readonly AndroidMeasureRaycaster _raycaster;
     private readonly MeasureTool _tool;
     private readonly MeasurementPresenter _presenter;
+    private readonly EventHandler _measurementsChangedHandler;
+    private readonly EventHandler _sessionStateChangedHandler;
     private string _lastStateLogKey = "";
     private long _lastStateLogMs;
     private string _lastPresentationLogKey = "";
@@ -47,16 +49,18 @@ internal sealed class AndroidMeasureIntegration
         _tool = new MeasureTool(_session, picker);
         _presenter = new MeasurementPresenter(_units);
 
-        _store.MeasurementsChanged += (_, _) =>
+        _measurementsChangedHandler = (_, _) =>
         {
             LogState("store changed");
             _invalidate();
         };
-        _session.StateChanged += (_, _) =>
+        _sessionStateChangedHandler = (_, _) =>
         {
             LogState("session changed");
             _invalidate();
         };
+        _store.MeasurementsChanged += _measurementsChangedHandler;
+        _session.StateChanged += _sessionStateChangedHandler;
     }
 
     public MeasureToolMode ActiveMode => _tool.ActiveMode;
@@ -78,6 +82,12 @@ internal sealed class AndroidMeasureIntegration
 
     public void ClearRaycastAccelerationCache(string reason)
         => _raycaster.ClearAccelerationCache(reason);
+
+    public void Dispose()
+    {
+        _store.MeasurementsChanged -= _measurementsChangedHandler;
+        _session.StateChanged -= _sessionStateChangedHandler;
+    }
 
     public void OnSceneAttached(Scene? scene)
     {
@@ -263,6 +273,7 @@ internal sealed class AndroidMeasureIntegration
             Log.Info("FA.Measure", $"BBox skipped: scene={(scene is null ? "null" : "ok")}, selectedNodes={selectedNodeIds.Count}.");
             return false;
         }
+        Scene sceneAtStart = scene;
 
         Log.Info("FA.Measure", $"BBox begin: mode={_boundingBoxMode}, selectedNodes=[{string.Join(",", selectedNodeIds)}].");
         var meshSnapshots = new List<MeshSnapshot>(selectedNodeIds.Count * 2);
@@ -302,6 +313,12 @@ internal sealed class AndroidMeasureIntegration
 
             return pts;
         }).ConfigureAwait(true);
+
+        if (!ReferenceEquals(_sceneAccessor(), sceneAtStart))
+        {
+            Log.Warn("FA.Measure", "BBox skipped: scene changed while bounding box points were being sampled.");
+            return false;
+        }
 
         if (points.Count == 0)
         {

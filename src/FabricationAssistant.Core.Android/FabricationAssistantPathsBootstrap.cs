@@ -68,8 +68,10 @@ public static class FabricationAssistantPaths
 
             return IsUnderRoot(fullPath) ? fullPath : fallbackPath;
         }
-        catch
+        catch (Exception ex)
         {
+            System.Diagnostics.Debug.WriteLine(
+                $"FabricationAssistantPaths.NormalizeToRoot failed for '{candidate}': {ex.Message}");
             return fallbackPath;
         }
     }

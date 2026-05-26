@@ -155,15 +155,16 @@ internal sealed class AndroidMeshRaycastAcceleration
 
         double tMin = 0.0;
         double tMax = double.IsFinite(maxDistance) ? maxDistance : double.PositiveInfinity;
+        double epsilon = BoundsIntersectionEpsilonFor(bounds);
 
-        if (!ClipAxis(rayOrigin.X, rayDirection.X, bounds.Min.X, bounds.Max.X, ref tMin, ref tMax)
-            || !ClipAxis(rayOrigin.Y, rayDirection.Y, bounds.Min.Y, bounds.Max.Y, ref tMin, ref tMax)
-            || !ClipAxis(rayOrigin.Z, rayDirection.Z, bounds.Min.Z, bounds.Max.Z, ref tMin, ref tMax))
+        if (!ClipAxis(rayOrigin.X, rayDirection.X, bounds.Min.X, bounds.Max.X, epsilon, ref tMin, ref tMax)
+            || !ClipAxis(rayOrigin.Y, rayDirection.Y, bounds.Min.Y, bounds.Max.Y, epsilon, ref tMin, ref tMax)
+            || !ClipAxis(rayOrigin.Z, rayDirection.Z, bounds.Min.Z, bounds.Max.Z, epsilon, ref tMin, ref tMax))
         {
             return false;
         }
 
-        if (tMax < BoundsIntersectionEpsilon)
+        if (tMax < epsilon)
             return false;
 
         entryDistance = tMin > 0.0 ? tMin : 0.0;
@@ -306,11 +307,12 @@ internal sealed class AndroidMeshRaycastAcceleration
         double direction,
         double min,
         double max,
+        double epsilon,
         ref double tMin,
         ref double tMax)
     {
-        if (Math.Abs(direction) <= BoundsIntersectionEpsilon)
-            return origin >= min && origin <= max;
+        if (Math.Abs(direction) <= epsilon)
+            return origin >= min - epsilon && origin <= max + epsilon;
 
         double invDirection = 1.0 / direction;
         double axisEntry = (min - origin) * invDirection;
@@ -323,6 +325,17 @@ internal sealed class AndroidMeshRaycastAcceleration
         return tMin <= tMax;
     }
 
+    private static double BoundsIntersectionEpsilonFor(BoundingBox bounds)
+    {
+        double extent = Math.Max(
+            Math.Max(Math.Abs(bounds.Max.X - bounds.Min.X), Math.Abs(bounds.Max.Y - bounds.Min.Y)),
+            Math.Abs(bounds.Max.Z - bounds.Min.Z));
+        if (!double.IsFinite(extent) || extent <= 1.0)
+            return BoundsIntersectionEpsilon;
+
+        return Math.Max(BoundsIntersectionEpsilon, extent * 1e-12);
+    }
+
     private static double MollerTrumboreIntersect(
         Vector3d rayOrigin,
         Vector3d rayDirection,
@@ -332,9 +345,14 @@ internal sealed class AndroidMeshRaycastAcceleration
     {
         Vector3d edge1 = v1 - v0;
         Vector3d edge2 = v2 - v0;
+        double maxEdge = Math.Max(edge1.Length, edge2.Length);
+        if (!double.IsFinite(maxEdge) || maxEdge <= 0.0)
+            return -1.0;
+        double determinantEpsilon = Math.Max(RayTriangleIntersectionEpsilon, maxEdge * maxEdge * 1e-14);
+        double distanceEpsilon = Math.Max(RayTriangleIntersectionEpsilon, maxEdge * 1e-12);
         Vector3d h = Vector3d.Cross(rayDirection, edge2);
         double a = Vector3d.Dot(edge1, h);
-        if (a > -RayTriangleIntersectionEpsilon && a < RayTriangleIntersectionEpsilon)
+        if (a > -determinantEpsilon && a < determinantEpsilon)
             return -1.0;
 
         double f = 1.0 / a;
@@ -349,7 +367,7 @@ internal sealed class AndroidMeshRaycastAcceleration
             return -1.0;
 
         double t = f * Vector3d.Dot(edge2, q);
-        return t > RayTriangleIntersectionEpsilon ? t : -1.0;
+        return t > distanceEpsilon ? t : -1.0;
     }
 
     private readonly record struct TriangleBuildInfo(int IndexOffset, BoundingBox Bounds, Vector3d Centroid);

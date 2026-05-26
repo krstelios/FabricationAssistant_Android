@@ -2,6 +2,7 @@ using Android.Content;
 using Android.Graphics;
 using Android.Graphics.Drawables;
 using Android.Text;
+using Android.Util;
 using Android.Views;
 using Android.Views.InputMethods;
 using Android.Widget;
@@ -28,7 +29,10 @@ internal enum AndroidBomPanelAction
 internal sealed record AndroidBomPanelTarget(
     AndroidBomPanelKind Kind,
     string Key,
-    string Label);
+    string Label,
+    string PartKey,
+    int PartOrdinal,
+    int PartOccurrenceCount);
 
 internal sealed class AndroidBomPanel
 {
@@ -44,6 +48,8 @@ internal sealed class AndroidBomPanel
     private LinearLayout? _tableRoot;
     private LinearLayout? _headerRow;
     private int[] _columnWidthsPx = Array.Empty<int>();
+    private int[]? _measuredColumnWidthsPx;
+    private float _measuredColumnWidthsDensity;
     private int _tableWidthPx;
     private TextView? _summary;
     private TextView? _status;
@@ -51,6 +57,8 @@ internal sealed class AndroidBomPanel
     private ListView? _list;
     private BomPanelAdapter? _adapter;
     private BomPanelRow? _selectedRow;
+    private string? _selectedRowKey;
+    private readonly Dictionary<string, int> _occurrenceCountByPartKey = new(StringComparer.Ordinal);
     private MaterialButton? _selectButton;
     private MaterialButton? _isolateButton;
     private MaterialButton? _isolateXrayButton;
@@ -90,9 +98,9 @@ internal sealed class AndroidBomPanel
 
         _status = new TextView(ctx)
         {
-            TextSize = 14f,
             Gravity = GravityFlags.Center,
         };
+        _status.SetTextSize(ComplexUnitType.Sp, 14f);
         _status.SetTextColor(ColorRes(ctx, Resource.Color.fa_text_secondary));
         _status.SetPadding(Dp(ctx, 24), Dp(ctx, 24), Dp(ctx, 24), Dp(ctx, 24));
         root.AddView(_status, new LinearLayout.LayoutParams(
@@ -147,7 +155,11 @@ internal sealed class AndroidBomPanel
         {
             if (e.Position < 0 || e.Position >= _visibleRows.Count)
                 return;
-            _selectedRow = _visibleRows[e.Position];
+            BomPanelRow row = _visibleRows[e.Position];
+            if (!_visibleRows.Contains(row))
+                return;
+            _selectedRow = row;
+            _selectedRowKey = RowIdentity(row);
             _adapter.NotifyDataSetChanged();
             UpdateActionButtons();
             HideKeyboard(ctx);
@@ -190,9 +202,9 @@ internal sealed class AndroidBomPanel
             Text = _kind == AndroidBomPanelKind.Hierarchy
                 ? "Bill of Materials"
                 : "BOM Consolidated",
-            TextSize = 18f,
         };
         title.SetTypeface(Typeface.Default, TypefaceStyle.Bold);
+        title.SetTextSize(ComplexUnitType.Sp, 18f);
         title.SetTextColor(ColorRes(ctx, Resource.Color.fa_text_primary));
         root.AddView(title, new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MatchParent,
@@ -203,18 +215,16 @@ internal sealed class AndroidBomPanel
             Text = _kind == AndroidBomPanelKind.Hierarchy
                 ? "Hierarchical BOM from Bom.json"
                 : "Flat part totals from Bom_Flatten.json",
-            TextSize = 12f,
         };
+        subtitle.SetTextSize(ComplexUnitType.Sp, 12f);
         subtitle.SetTextColor(ColorRes(ctx, Resource.Color.fa_text_secondary));
         subtitle.SetPadding(0, Dp(ctx, 2), 0, Dp(ctx, 6));
         root.AddView(subtitle, new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MatchParent,
             ViewGroup.LayoutParams.WrapContent));
 
-        _summary = new TextView(ctx)
-        {
-            TextSize = 12f,
-        };
+        _summary = new TextView(ctx);
+        _summary.SetTextSize(ComplexUnitType.Sp, 12f);
         _summary.SetTextColor(ColorRes(ctx, Resource.Color.fa_text_secondary));
         root.AddView(_summary, new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MatchParent,
@@ -225,10 +235,10 @@ internal sealed class AndroidBomPanel
     {
         _search = new EditText(ctx)
         {
-            TextSize = 14f,
             Hint = "Search BOM",
             ImeOptions = ImeAction.Done,
         };
+        _search.SetTextSize(ComplexUnitType.Sp, 14f);
         _search.SetSingleLine(true);
         _search.SetTextColor(ColorRes(ctx, Resource.Color.fa_text_primary));
         _search.SetHintTextColor(ColorRes(ctx, Resource.Color.fa_text_disabled));
@@ -303,10 +313,10 @@ internal sealed class AndroidBomPanel
         var button = new MaterialButton(ctx, null, Resource.Attribute.materialButtonOutlinedStyle)
         {
             Text = text,
-            TextSize = 12f,
             InsetTop = 0,
             InsetBottom = 0,
         };
+        button.SetTextSize(ComplexUnitType.Sp, 12f);
         button.SetAllCaps(false);
         button.SetMinHeight(0);
         button.SetPadding(Dp(ctx, 8), 0, Dp(ctx, 8), 0);
@@ -328,6 +338,9 @@ internal sealed class AndroidBomPanel
         _allRows.Clear();
         _visibleRows.Clear();
         _selectedRow = null;
+        _selectedRowKey = null;
+        _occurrenceCountByPartKey.Clear();
+        _measuredColumnWidthsPx = null;
 
         Scene? scene = _sceneAccessor();
         if (scene?.PackageInfo is null
@@ -360,6 +373,7 @@ internal sealed class AndroidBomPanel
 
         if (_allRows.Count == 0)
             SetStatus(ctx, "This package contains no BOM entries.");
+        RebuildOccurrenceCounts();
     }
 
     private void LoadHierarchyRows(Scene scene)
@@ -467,8 +481,13 @@ internal sealed class AndroidBomPanel
             }
         }
 
-        if (_selectedRow is not null && !_visibleRows.Contains(_selectedRow))
-            _selectedRow = null;
+        _selectedRow = ResolveSelectedRow();
+        if (_selectedRowKey is not null && _selectedRow is null)
+        {
+            _selectedRowKey = null;
+            if (_status is not null)
+                _status.Text = "Selection hidden by the current filter.";
+        }
 
         _adapter?.NotifyDataSetChanged();
         UpdateSummary();
@@ -518,14 +537,52 @@ internal sealed class AndroidBomPanel
 
     private void RequestAction(AndroidBomPanelAction action)
     {
-        if (_selectedRow is null)
+        BomPanelRow? selectedRow = ResolveSelectedRow();
+        if (selectedRow is null)
             return;
 
         ActionRequested?.Invoke(new AndroidBomPanelTarget(
-            _selectedRow.Kind,
-            _selectedRow.Key,
-            _selectedRow.PartNumber), action);
+            selectedRow.Kind,
+            selectedRow.Key,
+            selectedRow.PartNumber,
+            selectedRow.PartKey,
+            GetPartOrdinal(selectedRow),
+            GetPartOccurrenceCount(selectedRow)), action);
     }
+
+    private BomPanelRow? ResolveSelectedRow()
+        => _selectedRowKey is null
+            ? null
+            : _visibleRows.FirstOrDefault(row => string.Equals(RowIdentity(row), _selectedRowKey, StringComparison.Ordinal));
+
+    private static string RowIdentity(BomPanelRow row)
+        => $"{row.Kind}\u001F{row.Key}\u001F{row.PartKey}";
+
+    private int GetPartOrdinal(BomPanelRow row)
+    {
+        if (row.Kind != AndroidBomPanelKind.Hierarchy || string.IsNullOrWhiteSpace(row.PartKey))
+            return -1;
+
+        int ordinal = 0;
+        foreach (BomPanelRow candidate in _allRows
+                     .Where(candidate => candidate.Kind == AndroidBomPanelKind.Hierarchy
+                                         && string.Equals(candidate.PartKey, row.PartKey, StringComparison.Ordinal))
+                     .OrderBy(candidate => candidate.Key, AndroidPathComparer.Instance))
+        {
+            if (ReferenceEquals(candidate, row))
+                return ordinal;
+            ordinal++;
+        }
+
+        return -1;
+    }
+
+    private int GetPartOccurrenceCount(BomPanelRow row)
+        => row.Kind == AndroidBomPanelKind.Hierarchy
+           && !string.IsNullOrWhiteSpace(row.PartKey)
+           && _occurrenceCountByPartKey.TryGetValue(row.PartKey, out int count)
+            ? count
+            : 0;
 
     private void UpdateSummary()
     {
@@ -600,6 +657,10 @@ internal sealed class AndroidBomPanel
 
     private int[] MeasureColumnWidths(Context ctx)
     {
+        float density = ctx.Resources?.DisplayMetrics?.Density ?? 1f;
+        if (_measuredColumnWidthsPx is not null && Math.Abs(_measuredColumnWidthsDensity - density) < 0.001f)
+            return (int[])_measuredColumnWidthsPx.Clone();
+
         int[] widths = DefaultColumnWidths(ctx);
         using var paint = new Paint(PaintFlags.AntiAlias)
         {
@@ -628,7 +689,22 @@ internal sealed class AndroidBomPanel
                 widths[i] = Math.Min(widths[i], maxWidth);
         }
 
+        _measuredColumnWidthsPx = (int[])widths.Clone();
+        _measuredColumnWidthsDensity = density;
         return widths;
+    }
+
+    private void RebuildOccurrenceCounts()
+    {
+        _occurrenceCountByPartKey.Clear();
+        foreach (BomPanelRow row in _allRows)
+        {
+            if (row.Kind != AndroidBomPanelKind.Hierarchy || string.IsNullOrWhiteSpace(row.PartKey))
+                continue;
+
+            _occurrenceCountByPartKey.TryGetValue(row.PartKey, out int count);
+            _occurrenceCountByPartKey[row.PartKey] = count + 1;
+        }
     }
 
     private static int MeasureTextWidth(Paint paint, string text, int padding)
@@ -728,10 +804,10 @@ internal sealed class AndroidBomPanel
         var cell = new TextView(ctx)
         {
             Text = text,
-            TextSize = 12f,
             Gravity = GravityFlags.CenterVertical,
             Ellipsize = TextUtils.TruncateAt.End,
         };
+        cell.SetTextSize(ComplexUnitType.Sp, 12f);
         cell.SetSingleLine(true);
         if (bold)
             cell.SetTypeface(Typeface.Default, TypefaceStyle.Bold);
@@ -753,6 +829,7 @@ internal sealed class AndroidBomPanel
                 new(ColumnKeyRevName, "Rev Name", TinyColumnMinWidthDp, 240),
                 new(ColumnKeyRevision, "Rev", TinyColumnMinWidthDp, 58),
                 new(ColumnKeyQuantity, "Quantity", TinyColumnMinWidthDp, 86),
+                new(ColumnKeyReferenceSets, "Reference Set", TinyColumnMinWidthDp, 150),
                 new(ColumnKeySource, "Source", TinyColumnMinWidthDp, 96),
             ]
             :
@@ -763,6 +840,9 @@ internal sealed class AndroidBomPanel
                 new(ColumnKeyRevision, "Rev", TinyColumnMinWidthDp, 58),
                 new(ColumnKeyOccurrenceCount, "Qty", TinyColumnMinWidthDp, 58),
                 new(ColumnKeyTotalQuantity, "Total", TinyColumnMinWidthDp, 76),
+                new(ColumnKeyUnits, "Units", TinyColumnMinWidthDp, 86),
+                new(ColumnKeyQuantityTypes, "Quantity Types", TinyColumnMinWidthDp, 150),
+                new(ColumnKeyReferenceSets, "Reference Sets", TinyColumnMinWidthDp, 160),
                 new(ColumnKeySource, "Source", TinyColumnMinWidthDp, 96),
             ];
 
@@ -779,6 +859,7 @@ internal sealed class AndroidBomPanel
             ColumnKeyTotalQuantity => row.TotalQuantity,
             ColumnKeyUnits => row.Units,
             ColumnKeyQuantityTypes => row.QuantityTypes,
+            ColumnKeyReferenceSets => row.ReferenceSets,
             ColumnKeySource => row.SourceType,
             _ => string.Empty,
         };
@@ -793,6 +874,7 @@ internal sealed class AndroidBomPanel
     private const string ColumnKeyTotalQuantity = "totalQuantity";
     private const string ColumnKeyUnits = "units";
     private const string ColumnKeyQuantityTypes = "quantityTypes";
+    private const string ColumnKeyReferenceSets = "referenceSets";
     private const string ColumnKeySource = "source";
     private const int TinyColumnMinWidthDp = 8;
 
@@ -986,7 +1068,8 @@ internal sealed class AndroidBomPanel
             root.AddView(CreateCell(_ctx, row.RevName, WidthAt(widths, 3)));
             root.AddView(CreateCell(_ctx, row.RevisionId, WidthAt(widths, 4)));
             root.AddView(CreateCell(_ctx, row.Quantity, WidthAt(widths, 5)));
-            root.AddView(CreateCell(_ctx, row.SourceType, WidthAt(widths, 6)));
+            root.AddView(CreateCell(_ctx, row.ReferenceSets, WidthAt(widths, 6)));
+            root.AddView(CreateCell(_ctx, row.SourceType, WidthAt(widths, 7)));
         }
 
         private void AddConsolidatedCells(LinearLayout root, BomPanelRow row)
@@ -998,7 +1081,10 @@ internal sealed class AndroidBomPanel
             root.AddView(CreateCell(_ctx, row.RevisionId, WidthAt(widths, 3)));
             root.AddView(CreateCell(_ctx, row.OccurrenceCount, WidthAt(widths, 4)));
             root.AddView(CreateCell(_ctx, row.TotalQuantity, WidthAt(widths, 5)));
-            root.AddView(CreateCell(_ctx, row.SourceType, WidthAt(widths, 6)));
+            root.AddView(CreateCell(_ctx, row.Units, WidthAt(widths, 6)));
+            root.AddView(CreateCell(_ctx, row.QuantityTypes, WidthAt(widths, 7)));
+            root.AddView(CreateCell(_ctx, row.ReferenceSets, WidthAt(widths, 8)));
+            root.AddView(CreateCell(_ctx, row.SourceType, WidthAt(widths, 9)));
         }
 
         private static int WidthAt(IReadOnlyList<int> widths, int index)

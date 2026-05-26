@@ -178,14 +178,16 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster
 
     private AndroidMeshRaycastAcceleration GetAcceleration(MeshDto mesh)
     {
+        MeshAccelerationKey key = MeshAccelerationKey.Create(mesh);
         if (_accelerations.TryGetValue(mesh.MeshId, out AccelerationEntry entry)
-            && ReferenceEquals(entry.Mesh, mesh))
+            && ReferenceEquals(entry.Mesh, mesh)
+            && entry.Key.Equals(key))
         {
             return entry.Acceleration;
         }
 
         AndroidMeshRaycastAcceleration acceleration = AndroidMeshRaycastAcceleration.Build(mesh);
-        _accelerations[mesh.MeshId] = new AccelerationEntry(mesh, acceleration);
+        _accelerations[mesh.MeshId] = new AccelerationEntry(mesh, key, acceleration);
         return acceleration;
     }
 
@@ -212,7 +214,7 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster
                 out Vector3d localHit,
                 out _,
                 out int triangleIndexOffset,
-                CreateLocalHitFilter(candidate.WorldTransform, sectionPlanes)))
+                CreateLocalHitFilter(candidate.WorldTransform, sectionPlanes, candidate.Mesh.Bounds.Diagonal)))
         {
             return false;
         }
@@ -239,7 +241,8 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster
 
     private static Func<Vector3d, bool>? CreateLocalHitFilter(
         Matrix4d localToWorld,
-        IReadOnlyList<SectionPlane> sectionPlanes)
+        IReadOnlyList<SectionPlane> sectionPlanes,
+        double sceneDiagonal)
     {
         if (sectionPlanes.Count == 0)
             return null;
@@ -247,7 +250,7 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster
         return localHit =>
         {
             Vector3d worldHit = localToWorld.TransformPoint(localHit);
-            return AndroidSectionClipper.IsPointVisible(worldHit, sectionPlanes);
+            return AndroidSectionClipper.IsPointVisible(worldHit, sectionPlanes, sceneDiagonal);
         };
     }
 
@@ -291,7 +294,77 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster
     private static string Format(Vector3d value)
         => $"({value.X:0.###},{value.Y:0.###},{value.Z:0.###})";
 
-    private readonly record struct AccelerationEntry(MeshDto Mesh, AndroidMeshRaycastAcceleration Acceleration);
+    private readonly record struct MeshAccelerationKey(
+        float[] Positions,
+        int[] Indices,
+        int PositionLength,
+        int IndexLength,
+        int TriangleCount,
+        int ContentSampleHash)
+    {
+        public static MeshAccelerationKey Create(MeshDto mesh)
+            => new(
+                mesh.Positions,
+                mesh.Indices,
+                mesh.Positions.Length,
+                mesh.Indices.Length,
+                mesh.TriangleCount,
+                ComputeContentSampleHash(mesh));
+
+        private static int ComputeContentSampleHash(MeshDto mesh)
+        {
+            unchecked
+            {
+                int hash = 17;
+                hash = hash * 31 + mesh.MeshId;
+                hash = hash * 31 + mesh.TriangleCount;
+                hash = hash * 31 + SampleHash(mesh.Positions);
+                hash = hash * 31 + SampleHash(mesh.Indices);
+                hash = hash * 31 + mesh.Bounds.Min.X.GetHashCode();
+                hash = hash * 31 + mesh.Bounds.Min.Y.GetHashCode();
+                hash = hash * 31 + mesh.Bounds.Min.Z.GetHashCode();
+                hash = hash * 31 + mesh.Bounds.Max.X.GetHashCode();
+                hash = hash * 31 + mesh.Bounds.Max.Y.GetHashCode();
+                hash = hash * 31 + mesh.Bounds.Max.Z.GetHashCode();
+                return hash;
+            }
+        }
+
+        private static int SampleHash(float[] values)
+        {
+            if (values.Length == 0)
+                return 0;
+
+            unchecked
+            {
+                int hash = values.Length;
+                hash = hash * 31 + values[0].GetHashCode();
+                hash = hash * 31 + values[values.Length / 2].GetHashCode();
+                hash = hash * 31 + values[^1].GetHashCode();
+                return hash;
+            }
+        }
+
+        private static int SampleHash(int[] values)
+        {
+            if (values.Length == 0)
+                return 0;
+
+            unchecked
+            {
+                int hash = values.Length;
+                hash = hash * 31 + values[0];
+                hash = hash * 31 + values[values.Length / 2];
+                hash = hash * 31 + values[^1];
+                return hash;
+            }
+        }
+    }
+
+    private readonly record struct AccelerationEntry(
+        MeshDto Mesh,
+        MeshAccelerationKey Key,
+        AndroidMeshRaycastAcceleration Acceleration);
 
     private readonly record struct RaycastCandidate(
         SceneNode Node,

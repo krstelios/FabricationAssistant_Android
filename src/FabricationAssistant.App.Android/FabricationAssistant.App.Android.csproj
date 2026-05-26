@@ -14,6 +14,7 @@
     <ApplicationDisplayVersion>0.1.0</ApplicationDisplayVersion>
     <AndroidApplicationLabel>Fabrication Assistant</AndroidApplicationLabel>
     <AndroidMinSdkVersion>24</AndroidMinSdkVersion>
+    <AndroidTargetSdkVersion>34</AndroidTargetSdkVersion>
     <RuntimeIdentifiers>android-arm64;android-x64</RuntimeIdentifiers>
     <AndroidEnableProfiledAot>false</AndroidEnableProfiledAot>
     <AndroidPackageFormat>apk</AndroidPackageFormat>
@@ -57,5 +58,10 @@
       <Abi>x86_64</Abi>
     </AndroidNativeLibrary>
   </ItemGroup>
+
+  <Target Name="ValidateDracoNativeLibraries" BeforeTargets="Build">
+    <Error Condition="!Exists('..\..\deps\prebuilt\arm64-v8a\libdraco_native.so')" Text="Missing deps\prebuilt\arm64-v8a\libdraco_native.so. Run tools\build-libdraco.ps1 or tools\build.ps1 before packaging." />
+    <Error Condition="!Exists('..\..\deps\prebuilt\x86_64\libdraco_native.so')" Text="Missing deps\prebuilt\x86_64\libdraco_native.so. Run tools\build-libdraco.ps1 or tools\build.ps1 before packaging." />
+  </Target>
 
 </Project>

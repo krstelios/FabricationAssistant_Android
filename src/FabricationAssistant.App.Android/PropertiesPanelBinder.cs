@@ -390,9 +390,12 @@ internal sealed class PropertiesPanelBinder
     private static SceneNode ResolvePresentedNode(SceneNode node)
     {
         SceneNode presented = node;
-        while (presented.Parent is not null && ShouldHideFromExplorer(presented, presented.Parent))
+        while (presented.Parent is { } parent)
         {
-            presented = presented.Parent;
+            if (!parent.Children.Contains(presented) || !ShouldHideFromExplorer(presented, parent))
+                break;
+
+            presented = parent;
         }
 
         return presented;

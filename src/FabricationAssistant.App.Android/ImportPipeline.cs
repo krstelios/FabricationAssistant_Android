@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+using System.Text.Json;
 using Android.Content;
 using Android.Provider;
 using FabricationAssistant.Core.SceneGraph;
@@ -20,7 +22,14 @@ namespace FabricationAssistant.App.Android;
 public sealed class ImportPipeline
 {
     private const int ImportCacheKeepCount = 10;
+    private const long MaxImportBytes = 2L * 1024L * 1024L * 1024L;
+    private const int CopyBufferBytes = 128 * 1024;
+    private const uint GlbMagic = 0x46546C67; // "glTF"
+    private const uint GlbVersion = 2;
+    private const int GlbHeaderBytes = 12;
+    private const int GlbMinimumBytes = 20;
     private static readonly TimeSpan StaleTempFileAge = TimeSpan.FromHours(1);
+    private static readonly TimeSpan CopyTimeout = TimeSpan.FromMinutes(15);
 
     private readonly Context _context;
     private readonly IPlatformPaths _paths;
@@ -41,7 +50,7 @@ public sealed class ImportPipeline
     {
         ArgumentNullException.ThrowIfNull(contentUri);
 
-        string fileName = ResolveFileName(contentUri) ?? "model.bin";
+        string fileName = ResolveFileNameWithMimeFallback(contentUri, ResolveFileName(contentUri));
         string localPath = await CopyToLocalAsync(contentUri, fileName, progress, ct).ConfigureAwait(false);
         string ext = Path.GetExtension(localPath).ToLowerInvariant();
         if (ext == ".gltf")
@@ -70,6 +79,17 @@ public sealed class ImportPipeline
             $"Unsupported file type: {ext}. Supported: .gltf, .glb, .fa");
     }
 
+    public void PruneImportCache()
+        => PruneImportCache(_paths.AppDataRoot);
+
+    public static void PruneImportCache(string appDataRoot)
+    {
+        if (string.IsNullOrWhiteSpace(appDataRoot))
+            return;
+
+        TryPruneImportCache(Path.Combine(appDataRoot, "import-cache"), ImportCacheKeepCount);
+    }
+
     private async Task<string> CopyToLocalAsync(
         AndroidUri uri,
         string fileName,
@@ -82,10 +102,15 @@ public sealed class ImportPipeline
         string tempPath = localPath + ".part";
 
         progress?.Report("Copying file...");
+        long? declaredSize = TryResolveContentSize(uri);
+        if (declaredSize is > MaxImportBytes)
+            throw new InvalidDataException($"The selected file is too large ({declaredSize.Value:n0} bytes). Maximum supported import size is {MaxImportBytes:n0} bytes.");
 
         try
         {
-            using var input = _context.ContentResolver?.OpenInputStream(uri)
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(CopyTimeout);
+            await using var input = _context.ContentResolver?.OpenInputStream(uri)
                 ?? throw new InvalidOperationException("ContentResolver.OpenInputStream returned null for " + uri);
 
             await using var output = new FileStream(
@@ -93,11 +118,11 @@ public sealed class ImportPipeline
                 FileMode.CreateNew,
                 FileAccess.Write,
                 FileShare.None,
-                bufferSize: 128 * 1024,
+                bufferSize: CopyBufferBytes,
                 useAsync: true);
-            await input.CopyToAsync(output, 128 * 1024, ct).ConfigureAwait(false);
-            await output.FlushAsync(ct).ConfigureAwait(false);
-            ct.ThrowIfCancellationRequested();
+            await CopyToAsyncWithLimit(input, output, MaxImportBytes, timeoutCts.Token).ConfigureAwait(false);
+            await output.FlushAsync(timeoutCts.Token).ConfigureAwait(false);
+            timeoutCts.Token.ThrowIfCancellationRequested();
 
             File.Move(tempPath, localPath, overwrite: true);
             progress?.Report("File copied");
@@ -123,6 +148,7 @@ public sealed class ImportPipeline
         }
 
         string tempPath = localPath + ".nobom";
+        bool moved = false;
         try
         {
             await using (var input = File.OpenRead(localPath))
@@ -133,10 +159,12 @@ public sealed class ImportPipeline
             }
 
             File.Move(tempPath, localPath, overwrite: true);
+            moved = true;
         }
         finally
         {
-            try { File.Delete(tempPath); } catch { /* best-effort cleanup */ }
+            if (!moved)
+                TryDeleteFile(tempPath);
         }
     }
 
@@ -179,6 +207,54 @@ public sealed class ImportPipeline
         return $"{stem}-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds():x}-{Guid.NewGuid():N}{extension}";
     }
 
+    private string ResolveFileNameWithMimeFallback(AndroidUri uri, string? displayName)
+        => ImportFileTypeResolver.ResolveFileNameWithMimeFallback(
+            string.IsNullOrWhiteSpace(displayName) ? uri.LastPathSegment : displayName,
+            _context.ContentResolver?.GetType(uri));
+
+    private long? TryResolveContentSize(AndroidUri uri)
+    {
+        try
+        {
+            using var cursor = _context.ContentResolver?.Query(uri, null, null, null, null);
+            if (cursor is null || !cursor.MoveToFirst())
+                return null;
+
+            int sizeIndex = cursor.GetColumnIndex(IOpenableColumns.Size);
+            if (sizeIndex < 0 || cursor.IsNull(sizeIndex))
+                return null;
+
+            long size = cursor.GetLong(sizeIndex);
+            return size >= 0 ? size : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static async Task CopyToAsyncWithLimit(
+        Stream input,
+        Stream output,
+        long maxBytes,
+        CancellationToken ct)
+    {
+        byte[] buffer = new byte[CopyBufferBytes];
+        long total = 0;
+        while (true)
+        {
+            int read = await input.ReadAsync(buffer.AsMemory(0, buffer.Length), ct).ConfigureAwait(false);
+            if (read == 0)
+                return;
+
+            total += read;
+            if (total > maxBytes)
+                throw new InvalidDataException($"The selected file exceeds the maximum supported import size of {maxBytes:n0} bytes.");
+
+            await output.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
+        }
+    }
+
     private static void TryDeleteFile(string path)
     {
         try { File.Delete(path); } catch { /* best-effort cleanup */ }
@@ -186,24 +262,83 @@ public sealed class ImportPipeline
 
     private static async Task ValidateLocalFileSignatureAsync(string localPath, string extension, CancellationToken ct)
     {
+        long fileLength = new FileInfo(localPath).Length;
+        if (fileLength == 0)
+            throw new InvalidDataException("The selected file is empty.");
+
         byte[] buffer = new byte[256];
         int read;
         await using (var input = File.OpenRead(localPath))
             read = await input.ReadAsync(buffer.AsMemory(0, buffer.Length), ct).ConfigureAwait(false);
 
-        if (read == 0)
-            throw new InvalidDataException("The selected file is empty.");
-
-        bool valid = extension switch
+        bool signatureValid = extension switch
         {
-            ".glb" => read >= 4 && buffer[0] == (byte)'g' && buffer[1] == (byte)'l' && buffer[2] == (byte)'T' && buffer[3] == (byte)'F',
+            ".glb" => IsValidGlbHeader(buffer, read, fileLength),
             ".gltf" => FirstNonWhitespace(buffer, read) is (byte)'{',
             ".fa" => read >= 2 && buffer[0] == (byte)'P' && buffer[1] == (byte)'K',
             _ => true,
         };
 
-        if (!valid)
+        if (!signatureValid)
             throw new InvalidDataException($"The selected {extension} file does not look like a valid supported model.");
+
+        if (extension == ".gltf")
+            await ValidateGltfJsonAsync(localPath, ct).ConfigureAwait(false);
+        else if (extension == ".fa")
+            await ValidateFaArchiveAsync(localPath, ct).ConfigureAwait(false);
+    }
+
+    private static bool IsValidGlbHeader(byte[] buffer, int read, long fileLength)
+    {
+        if (read < GlbHeaderBytes || fileLength < GlbMinimumBytes)
+            return false;
+
+        uint magic = BinaryPrimitives.ReadUInt32LittleEndian(buffer.AsSpan(0, 4));
+        uint version = BinaryPrimitives.ReadUInt32LittleEndian(buffer.AsSpan(4, 4));
+        uint declaredLength = BinaryPrimitives.ReadUInt32LittleEndian(buffer.AsSpan(8, 4));
+        return magic == GlbMagic
+               && version == GlbVersion
+               && declaredLength == fileLength;
+    }
+
+    private static async Task ValidateGltfJsonAsync(string localPath, CancellationToken ct)
+    {
+        try
+        {
+            await using var input = File.OpenRead(localPath);
+            using JsonDocument document = await JsonDocument.ParseAsync(input, cancellationToken: ct).ConfigureAwait(false);
+            if (document.RootElement.ValueKind != JsonValueKind.Object
+                || !document.RootElement.TryGetProperty("asset", out JsonElement asset)
+                || asset.ValueKind != JsonValueKind.Object)
+            {
+                throw new InvalidDataException("The selected .gltf file is missing a valid asset object.");
+            }
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidDataException("The selected .gltf file is not valid JSON.", ex);
+        }
+    }
+
+    private static async Task ValidateFaArchiveAsync(string localPath, CancellationToken ct)
+    {
+        try
+        {
+            using var archive = FaArchive.Open(localPath);
+            string manifestJson = await archive.ReadEntryAsTextAsync(FaArchiveManifest.ManifestEntryName, ct).ConfigureAwait(false);
+            FaArchiveManifest manifest = FaArchiveManifest.Parse(manifestJson);
+            manifest.Validate();
+            _ = archive.RequireEntry(manifest.GeometryEntryName);
+            _ = archive.RequireEntry(manifest.ComponentsEntryName);
+        }
+        catch (InvalidDataException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            throw new InvalidDataException("The selected .fa file is not a valid Fabrication Assistant archive.", ex);
+        }
     }
 
     private static byte FirstNonWhitespace(byte[] buffer, int length)

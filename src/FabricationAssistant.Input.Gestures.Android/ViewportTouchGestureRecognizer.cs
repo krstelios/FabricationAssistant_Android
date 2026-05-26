@@ -106,6 +106,9 @@ public sealed class ViewportTouchGestureRecognizer
             return new[] { begin };
         }
 
+        // Three or more active pointers are intentionally ignored. Android
+        // sends them during palm/contact transitions; locking the current
+        // gesture avoids accidental navigation jumps.
         return Empty;
     }
 

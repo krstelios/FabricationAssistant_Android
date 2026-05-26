@@ -13,7 +13,7 @@ namespace FabricationAssistant.Rendering.Gles;
 public sealed class GpuScene : IDisposable
 {
     private readonly GL _gl;
-    private readonly List<GpuMesh> _meshes = new();
+    private IReadOnlyList<GpuMesh> _meshes = Array.Empty<GpuMesh>();
     private DocumentDto? _document;
 
     public GpuScene(GL gl)
@@ -29,7 +29,8 @@ public sealed class GpuScene : IDisposable
 
     public bool TryGetSourceNodeIdForMeshIndex(int meshIndex, out int nodeId)
     {
-        foreach (GpuMesh mesh in _meshes)
+        IReadOnlyList<GpuMesh> meshes = _meshes;
+        foreach (GpuMesh mesh in meshes)
         {
             if (mesh.MeshIndex == meshIndex && mesh.SourceNodeId >= 0)
             {
@@ -44,7 +45,8 @@ public sealed class GpuScene : IDisposable
 
     public bool TryGetMeshIndexForSourceNodeId(int nodeId, out int meshIndex)
     {
-        foreach (GpuMesh mesh in _meshes)
+        IReadOnlyList<GpuMesh> meshes = _meshes;
+        foreach (GpuMesh mesh in meshes)
         {
             if (mesh.SourceNodeId == nodeId)
             {
@@ -65,11 +67,12 @@ public sealed class GpuScene : IDisposable
         BoundingBox bounds = document.Bounds.IsValid ? document.Bounds : ComputeBoundsFromMeshes(document);
         List<GpuMesh> meshes = SceneUploader.Upload(_gl, document);
 
-        Clear();
+        IReadOnlyList<GpuMesh> oldMeshes = _meshes;
         _document = document;
         MillimetersPerSceneUnit = millimetersPerSceneUnit;
-        _meshes.AddRange(meshes);
         Bounds = bounds;
+        _meshes = meshes;
+        DisposeMeshes(oldMeshes);
     }
 
     public void RebuildEdges(
@@ -81,7 +84,8 @@ public sealed class GpuScene : IDisposable
         if (_document is null)
             return;
 
-        foreach (var mesh in _meshes)
+        IReadOnlyList<GpuMesh> meshes = _meshes;
+        foreach (var mesh in meshes)
         {
             int sourceMeshId = mesh.SourceMeshId;
             if (sourceMeshId < 0 || sourceMeshId >= _document.Meshes.Count)
@@ -104,7 +108,8 @@ public sealed class GpuScene : IDisposable
         ArgumentNullException.ThrowIfNull(scene);
 
         BoundingBox bounds = BoundingBox.Empty;
-        foreach (GpuMesh mesh in _meshes)
+        IReadOnlyList<GpuMesh> meshes = _meshes;
+        foreach (GpuMesh mesh in meshes)
         {
             if (mesh.SourceNodeId < 0
                 || mesh.SourceMeshId < 0
@@ -115,14 +120,16 @@ public sealed class GpuScene : IDisposable
             }
 
             MeshDto sourceMesh = _document.Meshes[mesh.SourceMeshId];
-            float[] world = ToRowMajorFloatArray(node.EffectiveWorldTransform);
-            mesh.WorldTransform = IsIdentity(world) ? null : world;
+            Matrix4d worldMatrix = node.EffectiveWorldTransform;
+            bool isIdentity = IsIdentity(worldMatrix);
+            float[]? world = isIdentity ? null : ToRowMajorFloatArray(worldMatrix);
+            mesh.WorldTransform = world;
             mesh.WorldNormalMatrix = mesh.WorldTransform is null
                 ? null
                 : GlesRenderUtil.NormalMatrixFromWorld(mesh.WorldTransform);
             mesh.HasMirroredHandedness = GlesRenderUtil.HasMirroredHandedness(mesh.WorldTransform);
-            mesh.WorldCenter = ComputeWorldCenter(sourceMesh.Bounds, mesh.WorldTransform);
-            mesh.WorldBounds = ComputeWorldBounds(sourceMesh.Bounds, mesh.WorldTransform);
+            mesh.WorldCenter = ComputeWorldCenter(sourceMesh.Bounds, worldMatrix, isIdentity);
+            mesh.WorldBounds = ComputeWorldBounds(sourceMesh.Bounds, worldMatrix, isIdentity);
             bounds.Merge(mesh.WorldBounds);
         }
 
@@ -138,7 +145,8 @@ public sealed class GpuScene : IDisposable
             .Select(node => node.Id)
             .ToHashSet();
 
-        foreach (GpuMesh mesh in _meshes)
+        IReadOnlyList<GpuMesh> meshes = _meshes;
+        foreach (GpuMesh mesh in meshes)
             mesh.Visible = mesh.SourceNodeId < 0 || visibleNodeIds.Contains(mesh.SourceNodeId);
     }
 
@@ -164,16 +172,16 @@ public sealed class GpuScene : IDisposable
         return any ? new BoundingBox(min, max) : BoundingBox.Empty;
     }
 
-    private static Vector3d ComputeWorldCenter(BoundingBox localBounds, float[]? worldTransformRowMajor)
+    private static Vector3d ComputeWorldCenter(BoundingBox localBounds, Matrix4d worldTransform, bool isIdentity)
     {
         if (!localBounds.IsValid) return Vector3d.Zero;
-        return TransformPoint(localBounds.Center, worldTransformRowMajor);
+        return isIdentity ? localBounds.Center : worldTransform.TransformPoint(localBounds.Center);
     }
 
-    private static BoundingBox ComputeWorldBounds(BoundingBox localBounds, float[]? worldTransformRowMajor)
+    private static BoundingBox ComputeWorldBounds(BoundingBox localBounds, Matrix4d worldTransform, bool isIdentity)
     {
         if (!localBounds.IsValid) return BoundingBox.Empty;
-        if (worldTransformRowMajor is null) return localBounds;
+        if (isIdentity) return localBounds;
 
         Vector3d min = new(double.PositiveInfinity, double.PositiveInfinity, double.PositiveInfinity);
         Vector3d max = new(double.NegativeInfinity, double.NegativeInfinity, double.NegativeInfinity);
@@ -183,7 +191,7 @@ public sealed class GpuScene : IDisposable
                 (i & 1) == 0 ? localBounds.Min.X : localBounds.Max.X,
                 (i & 2) == 0 ? localBounds.Min.Y : localBounds.Max.Y,
                 (i & 4) == 0 ? localBounds.Min.Z : localBounds.Max.Z);
-            Vector3d w = TransformPoint(corner, worldTransformRowMajor);
+            Vector3d w = worldTransform.TransformPoint(corner);
             if (w.X < min.X) min = new Vector3d(w.X, min.Y, min.Z);
             if (w.Y < min.Y) min = new Vector3d(min.X, w.Y, min.Z);
             if (w.Z < min.Z) min = new Vector3d(min.X, min.Y, w.Z);
@@ -193,15 +201,6 @@ public sealed class GpuScene : IDisposable
         }
 
         return new BoundingBox(min, max);
-    }
-
-    private static Vector3d TransformPoint(Vector3d p, float[]? m)
-    {
-        if (m is null) return p;
-        return new Vector3d(
-            m[0] * p.X + m[1] * p.Y + m[2] * p.Z + m[3],
-            m[4] * p.X + m[5] * p.Y + m[6] * p.Z + m[7],
-            m[8] * p.X + m[9] * p.Y + m[10] * p.Z + m[11]);
     }
 
     private static float[] ToRowMajorFloatArray(Matrix4d matrix)
@@ -232,18 +231,38 @@ public sealed class GpuScene : IDisposable
         return true;
     }
 
+    private static bool IsIdentity(Matrix4d matrix)
+        => System.Math.Abs(matrix.M11 - 1.0) <= 0.000001
+           && System.Math.Abs(matrix.M22 - 1.0) <= 0.000001
+           && System.Math.Abs(matrix.M33 - 1.0) <= 0.000001
+           && System.Math.Abs(matrix.M44 - 1.0) <= 0.000001
+           && System.Math.Abs(matrix.M12) <= 0.000001
+           && System.Math.Abs(matrix.M13) <= 0.000001
+           && System.Math.Abs(matrix.M14) <= 0.000001
+           && System.Math.Abs(matrix.M21) <= 0.000001
+           && System.Math.Abs(matrix.M23) <= 0.000001
+           && System.Math.Abs(matrix.M24) <= 0.000001
+           && System.Math.Abs(matrix.M31) <= 0.000001
+           && System.Math.Abs(matrix.M32) <= 0.000001
+           && System.Math.Abs(matrix.M34) <= 0.000001
+           && System.Math.Abs(matrix.M41) <= 0.000001
+           && System.Math.Abs(matrix.M42) <= 0.000001
+           && System.Math.Abs(matrix.M43) <= 0.000001;
+
     public void Draw()
     {
-        foreach (var m in _meshes) m.Draw();
+        IReadOnlyList<GpuMesh> meshes = _meshes;
+        foreach (var m in meshes) m.Draw();
     }
 
     public void Clear()
     {
-        foreach (var m in _meshes) m.Dispose();
-        _meshes.Clear();
+        IReadOnlyList<GpuMesh> oldMeshes = _meshes;
+        _meshes = Array.Empty<GpuMesh>();
         Bounds = BoundingBox.Empty;
         MillimetersPerSceneUnit = 1000.0;
         _document = null;
+        DisposeMeshes(oldMeshes);
     }
 
     public void Dispose() => Clear();
@@ -255,5 +274,11 @@ public sealed class GpuScene : IDisposable
             return 1000.0;
 
         return metersPerUnit * 1000.0;
+    }
+
+    private static void DisposeMeshes(IReadOnlyList<GpuMesh> meshes)
+    {
+        foreach (var mesh in meshes)
+            mesh.Dispose();
     }
 }

@@ -19,6 +19,7 @@ public sealed class ViewportSurfaceView : GLSurfaceView
 {
     private const double SlowGlCommandMs = 8.0;
     private const double SlowGlCommandWaitMs = 25.0;
+    private const int SoftPendingCommandWarningCount = 256;
 
     private readonly GlesViewportRenderer _renderer;
     private readonly GlesRendererBridge _bridge;
@@ -28,6 +29,8 @@ public sealed class ViewportSurfaceView : GLSurfaceView
     private int _renderRequestPending;
     private int _renderRequestScheduled;
     private int _rendererDisposeQueued;
+    private int _queueSoftCapWarningArmed;
+    private int _paused;
 
     public GlesViewportRenderer Renderer => _renderer;
 
@@ -53,6 +56,9 @@ public sealed class ViewportSurfaceView : GLSurfaceView
 
     public new void RequestRender()
     {
+        if (Volatile.Read(ref _paused) != 0)
+            return;
+
         Volatile.Write(ref _renderRequestPending, 1);
         if (Interlocked.Exchange(ref _renderRequestScheduled, 1) != 0)
             return;
@@ -66,8 +72,7 @@ public sealed class ViewportSurfaceView : GLSurfaceView
     protected override void OnDetachedFromWindow()
     {
         DisposeRendererOnGlThread();
-        Interlocked.Exchange(ref _renderRequestPending, 0);
-        Interlocked.Exchange(ref _renderRequestScheduled, 0);
+        ClearPendingRenderCallbacks();
 
         if (Looper.MyLooper() == Looper.MainLooper)
             MainChoreographer.RemoveFrameCallback(_vsyncRenderCallback);
@@ -75,6 +80,24 @@ public sealed class ViewportSurfaceView : GLSurfaceView
             _mainHandler.Post(() => MainChoreographer.RemoveFrameCallback(_vsyncRenderCallback));
 
         base.OnDetachedFromWindow();
+    }
+
+    public new void OnPause()
+    {
+        Volatile.Write(ref _paused, 1);
+        ClearPendingRenderCallbacks();
+        ClearPendingRendererCommands("pause");
+        if (Looper.MyLooper() == Looper.MainLooper)
+            MainChoreographer.RemoveFrameCallback(_vsyncRenderCallback);
+        else
+            _mainHandler.Post(() => MainChoreographer.RemoveFrameCallback(_vsyncRenderCallback));
+        base.OnPause();
+    }
+
+    public new void OnResume()
+    {
+        Volatile.Write(ref _paused, 0);
+        base.OnResume();
     }
 
     public void QueueRendererCommand(Action<GL> action)
@@ -105,6 +128,20 @@ public sealed class ViewportSurfaceView : GLSurfaceView
                 }
             }
         });
+        int pendingCount = _pending.Count;
+        if (pendingCount > SoftPendingCommandWarningCount)
+        {
+            if (Interlocked.Exchange(ref _queueSoftCapWarningArmed, 1) == 0)
+            {
+                Log.Warn(
+                    "FA.RenderQueue",
+                    $"GL command queue above soft cap: count={pendingCount}, cap={SoftPendingCommandWarningCount}, newest={commandName}.");
+            }
+        }
+        else
+        {
+            Interlocked.Exchange(ref _queueSoftCapWarningArmed, 0);
+        }
         RequestRender();
     }
 
@@ -182,11 +219,10 @@ public sealed class ViewportSurfaceView : GLSurfaceView
     public void PickAsync(int x, int y, string reason, Action<int?> callback)
     {
         ArgumentNullException.ThrowIfNull(callback);
-        var mainHandler = new Handler(Looper.MainLooper!);
         QueueRendererCommand("pick:" + reason, _ =>
         {
             int? hit = _renderer.Pick(x, y);
-            mainHandler.Post(() => callback(hit));
+            _mainHandler.Post(() => callback(hit));
         });
     }
 
@@ -214,15 +250,38 @@ public sealed class ViewportSurfaceView : GLSurfaceView
 
     private void PostVsyncRenderCallback()
     {
-        if (Volatile.Read(ref _renderRequestScheduled) != 0)
+        if (Volatile.Read(ref _paused) == 0
+            && Volatile.Read(ref _renderRequestScheduled) != 0)
             MainChoreographer.PostFrameCallback(_vsyncRenderCallback);
     }
 
     private void OnVsyncRender(long frameTimeNanos)
     {
         Interlocked.Exchange(ref _renderRequestScheduled, 0);
+        if (Volatile.Read(ref _paused) != 0)
+        {
+            Interlocked.Exchange(ref _renderRequestPending, 0);
+            return;
+        }
+
         if (Interlocked.Exchange(ref _renderRequestPending, 0) != 0)
             base.RequestRender();
+    }
+
+    private void ClearPendingRenderCallbacks()
+    {
+        Interlocked.Exchange(ref _renderRequestPending, 0);
+        Interlocked.Exchange(ref _renderRequestScheduled, 0);
+    }
+
+    private void ClearPendingRendererCommands(string reason)
+    {
+        int count = 0;
+        while (_pending.TryDequeue(out _))
+            count++;
+
+        if (count > 0)
+            Log.Warn("FA.RenderQueue", $"Dropped {count} pending GL command(s): reason={reason}.");
     }
 
     private sealed class VsyncRenderCallback : Java.Lang.Object, Choreographer.IFrameCallback

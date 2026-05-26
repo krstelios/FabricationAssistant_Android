@@ -1,3 +1,4 @@
+using System.Buffers;
 using FabricationAssistant.Core.Math;
 using Silk.NET.OpenGLES;
 
@@ -92,9 +93,6 @@ public sealed class GpuMesh : IDisposable
     public GpuMesh(GL gl)
     {
         _gl = gl ?? throw new ArgumentNullException(nameof(gl));
-        Vao = _gl.GenVertexArray();
-        Vbo = _gl.GenBuffer();
-        Ebo = _gl.GenBuffer();
     }
 
     private static float ResolveAlpha(float[] color)
@@ -117,7 +115,19 @@ public sealed class GpuMesh : IDisposable
             throw new ArgumentException("normals length must match positions length or be empty", nameof(normals));
 
         int vertexCount = positions.Length / 3;
-        var interleaved = new float[vertexCount * 6];
+        for (int i = 0; i < indices.Length; i++)
+        {
+            if (indices[i] < 0 || indices[i] >= vertexCount)
+                throw new InvalidDataException($"Mesh index {indices[i]} is outside the vertex range 0..{vertexCount - 1}.");
+        }
+
+        EnsureSurfaceResources();
+
+        int interleavedLength = checked(vertexCount * 6);
+        float[] interleaved = ArrayPool<float>.Shared.Rent(interleavedLength);
+        uint[] uintIndices = ArrayPool<uint>.Shared.Rent(indices.Length);
+        try
+        {
         bool haveNormals = normals.Length == positions.Length;
         for (int i = 0; i < vertexCount; i++)
         {
@@ -129,7 +139,6 @@ public sealed class GpuMesh : IDisposable
             interleaved[i * 6 + 5] = haveNormals ? normals[i * 3 + 2] : 1.0f;
         }
 
-        var uintIndices = new uint[indices.Length];
         for (int i = 0; i < indices.Length; i++)
             uintIndices[i] = (uint)indices[i];
 
@@ -137,11 +146,11 @@ public sealed class GpuMesh : IDisposable
 
         _gl.BindBuffer(BufferTargetARB.ArrayBuffer, Vbo);
         fixed (float* p = interleaved)
-            _gl.BufferData(BufferTargetARB.ArrayBuffer, (nuint)(interleaved.Length * sizeof(float)), p, BufferUsageARB.StaticDraw);
+            _gl.BufferData(BufferTargetARB.ArrayBuffer, (nuint)(interleavedLength * sizeof(float)), p, BufferUsageARB.StaticDraw);
 
         _gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, Ebo);
         fixed (uint* p = uintIndices)
-            _gl.BufferData(BufferTargetARB.ElementArrayBuffer, (nuint)(uintIndices.Length * sizeof(uint)), p, BufferUsageARB.StaticDraw);
+            _gl.BufferData(BufferTargetARB.ElementArrayBuffer, (nuint)(indices.Length * sizeof(uint)), p, BufferUsageARB.StaticDraw);
 
         const int stride = 6 * sizeof(float);
         _gl.EnableVertexAttribArray(0);
@@ -153,6 +162,12 @@ public sealed class GpuMesh : IDisposable
 
         VertexCount = vertexCount;
         IndexCount = indices.Length;
+        }
+        finally
+        {
+            ArrayPool<float>.Shared.Return(interleaved);
+            ArrayPool<uint>.Shared.Return(uintIndices);
+        }
     }
 
     public void Draw()
@@ -194,9 +209,12 @@ public sealed class GpuMesh : IDisposable
             throw new ArgumentException("Edge endpoint buffer must contain pairs of 10-float vertices.", nameof(edgeVertices));
 
         int segmentCount = edgeVertices.Length / endpointPairFloatCount;
-        var ribbon = new float[segmentCount * 6 * EdgeRibbonFloatCount];
+        int ribbonLength = checked(segmentCount * 6 * EdgeRibbonFloatCount);
+        float[] ribbon = ArrayPool<float>.Shared.Rent(ribbonLength);
         int output = 0;
 
+        try
+        {
         for (int segment = 0; segment < segmentCount; segment++)
         {
             int p0 = segment * endpointPairFloatCount;
@@ -219,7 +237,7 @@ public sealed class GpuMesh : IDisposable
         _gl.BindBuffer(BufferTargetARB.ArrayBuffer, EdgeVbo);
         fixed (float* p = ribbon)
             _gl.BufferData(BufferTargetARB.ArrayBuffer,
-                (nuint)(ribbon.Length * sizeof(float)), p, BufferUsageARB.StaticDraw);
+                (nuint)(output * sizeof(float)), p, BufferUsageARB.StaticDraw);
 
         _gl.EnableVertexAttribArray(0);
         _gl.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, EdgeRibbonStrideBytes, (void*)0);
@@ -238,7 +256,22 @@ public sealed class GpuMesh : IDisposable
 
         _gl.BindVertexArray(0);
         EdgeSegmentCount = segmentCount;
-        EdgeVertexCount = ribbon.Length / EdgeRibbonFloatCount;
+        EdgeVertexCount = output / EdgeRibbonFloatCount;
+        }
+        finally
+        {
+            ArrayPool<float>.Shared.Return(ribbon);
+        }
+    }
+
+    private void EnsureSurfaceResources()
+    {
+        if (Vao == 0)
+            Vao = _gl.GenVertexArray();
+        if (Vbo == 0)
+            Vbo = _gl.GenBuffer();
+        if (Ebo == 0)
+            Ebo = _gl.GenBuffer();
     }
 
     public void DrawEdges()

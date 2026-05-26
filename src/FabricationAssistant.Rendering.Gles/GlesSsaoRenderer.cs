@@ -70,6 +70,9 @@ public sealed class GlesSsaoRenderer : IDisposable
         AoTexture = _ssaoFbo != 0 ? _ssaoTex : 0;
     }
 
+    public void TrimFramebuffers()
+        => DestroyResources();
+
     /// <summary>
     /// Runs the SSAO pass against the supplied normal + depth textures, then
     /// optional horizontal/vertical bilateral blur passes.
@@ -87,7 +90,12 @@ public sealed class GlesSsaoRenderer : IDisposable
         LastRenderInfo = default;
         if (_ssaoFbo == 0 || normalTexture == 0 || depthTexture == 0) return;
         if (linearDepthMax <= linearDepthMin)
+        {
+            Android.Util.Log.Warn(
+                "FA.SSAO",
+                $"Invalid linear depth range; clamping max. min={linearDepthMin:0.###}, max={linearDepthMax:0.###}.");
             linearDepthMax = linearDepthMin + 1f;
+        }
 
         float aspect = (float)_width / _height;
         ViewportCameraMath.FillProjectionMatrix(camera, aspect, _projectionScratch);
@@ -297,6 +305,7 @@ public sealed class GlesSsaoRenderer : IDisposable
         int x0 = System.Math.Max(0, (_width - roiWidth) / 2);
         int y0 = System.Math.Max(0, (_height - roiHeight) / 2);
         var pixels = new byte[roiWidth * roiHeight];
+        _gl.Finish();
         fixed (byte* p = pixels)
         {
             _gl.ReadPixels(x0, y0, (uint)roiWidth, (uint)roiHeight, PixelFormat.Red, PixelType.UnsignedByte, p);

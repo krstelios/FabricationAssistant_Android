@@ -153,14 +153,20 @@ public sealed class GlesGridRenderer : IDisposable
         // meshes that sit above it - we want them to overwrite the grid.
         _gl.DepthMask(false);
         _gl.Disable(EnableCap.CullFace); // grid is double-sided
-        _gl.BindVertexArray(_vao);
-        unsafe
+        try
         {
-            _gl.DrawElements(PrimitiveType.Triangles, 6u, DrawElementsType.UnsignedInt, (void*)0);
+            _gl.BindVertexArray(_vao);
+            unsafe
+            {
+                _gl.DrawElements(PrimitiveType.Triangles, 6u, DrawElementsType.UnsignedInt, (void*)0);
+            }
         }
-        _gl.BindVertexArray(0);
-        _gl.Enable(EnableCap.CullFace);
-        _gl.DepthMask(true);
+        finally
+        {
+            _gl.BindVertexArray(0);
+            _gl.Enable(EnableCap.CullFace);
+            _gl.DepthMask(true);
+        }
     }
 
     private static double RoundToNiceNumber(double v)

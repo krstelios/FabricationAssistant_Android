@@ -15,6 +15,7 @@ namespace FabricationAssistant.Input.Gestures.Android;
 public sealed class AndroidPointerSource : IDisposable
 {
     private const int MotionEventFlagCanceled = 0x20;
+    private static int _actionPointerFallbackLogged;
 
     private readonly ViewportTouchGestureRecognizer _recognizer = new();
     private readonly Handler _handler = new(Looper.MainLooper!);
@@ -89,9 +90,13 @@ public sealed class AndroidPointerSource : IDisposable
                 int historySize = motionEvent.HistorySize;
 
                 for (int h = 0; h < historySize; h++)
-                    Fire(_recognizer.PointerMoveBatch(SampleBatch(motionEvent, pointerCount, h), time));
+                    Fire(_recognizer.PointerMoveBatch(
+                        SampleBatch(motionEvent, pointerCount, h),
+                        MotionEventTimeUtc(motionEvent, motionEvent.GetHistoricalEventTime(h))));
 
-                Fire(_recognizer.PointerMoveBatch(SampleBatch(motionEvent, pointerCount, historyIndex: null), time));
+                Fire(_recognizer.PointerMoveBatch(
+                    SampleBatch(motionEvent, pointerCount, historyIndex: null),
+                    MotionEventTimeUtc(motionEvent, motionEvent.EventTime)));
                 break;
             }
 
@@ -230,11 +235,16 @@ public sealed class AndroidPointerSource : IDisposable
         if (!SpenPalmRejectionEnabled)
             return false;
 
-        if (ContainsStylusOrEraser(ev))
+        if (!_suppressFingerPointers
+            && IsStylusDownAction(ev)
+            && ContainsStylusOrEraser(ev))
             NotifyStylusInput();
 
         return _suppressFingerPointers;
     }
+
+    private static bool IsStylusDownAction(MotionEvent ev)
+        => ev.ActionMasked is MotionEventActions.Down or MotionEventActions.PointerDown;
 
     private static bool IsFingerPointer(MotionEvent ev, int pointerIndex)
         => pointerIndex >= 0
@@ -290,7 +300,17 @@ public sealed class AndroidPointerSource : IDisposable
             return 0;
 
         int index = ev.ActionIndex;
-        return index >= 0 && index < pointerCount ? index : 0;
+        if (index >= 0 && index < pointerCount)
+            return index;
+
+        if (Interlocked.Exchange(ref _actionPointerFallbackLogged, 1) == 0)
+        {
+            global::Android.Util.Log.Warn(
+                "FA.Input",
+                $"MotionEvent action pointer index out of range; falling back to pointer 0. actionIndex={index}, pointerCount={pointerCount}.");
+        }
+
+        return 0;
     }
 
     private Point2D Sample(MotionEvent ev, int pointerIndex)
@@ -339,6 +359,12 @@ public sealed class AndroidPointerSource : IDisposable
         }
 
         return (ev.GetPointerId(pointerIndex), new Point2D(x / _density, y / _density));
+    }
+
+    private static DateTime MotionEventTimeUtc(MotionEvent ev, long eventTimeMs)
+    {
+        long deltaMs = eventTimeMs - ev.EventTime;
+        return DateTime.UtcNow.AddMilliseconds(deltaMs);
     }
 
     private void ScheduleLongPressTick()

@@ -52,6 +52,16 @@
              LinkBase="Linked\Gestures" />
     <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\Measurement\AndroidSectionClipper.cs"
              LinkBase="Linked\Android.Measurement" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\AndroidPathComparer.cs"
+             LinkBase="Linked\Android" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\AppSettingsValueGuards.cs"
+             LinkBase="Linked\Android" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\ImportFileTypeResolver.cs"
+             LinkBase="Linked\Android" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\RecentFileEntry.cs"
+             LinkBase="Linked\Android" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\RecentFilesList.cs"
+             LinkBase="Linked\Android" />
   </ItemGroup>
 
   <!--

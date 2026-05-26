@@ -257,6 +257,9 @@ internal sealed class GlesSectionOverlay : IDisposable
             _gl.Disable(EnableCap.Blend);
         }
 
+        if (_vao == 0 || _vbo == 0)
+            CreateBuffers();
+
         _gl.LineWidth(lineWidth);
         _gl.BindVertexArray(_vao);
         _gl.BindBuffer(BufferTargetARB.ArrayBuffer, _vbo);

@@ -4,6 +4,8 @@ namespace FabricationAssistant.Platform.Android;
 
 public sealed class AndroidPlatformPaths : IPlatformPaths
 {
+    private static readonly object CreateDirectoryGate = new();
+
     public AndroidPlatformPaths(Context context)
     {
         ArgumentNullException.ThrowIfNull(context);
@@ -15,8 +17,11 @@ public sealed class AndroidPlatformPaths : IPlatformPaths
         TempDir = Path.Combine(CacheDir, "temp");
         LogsDir = Path.Combine(CacheDir, "logs");
 
-        Directory.CreateDirectory(TempDir);
-        Directory.CreateDirectory(LogsDir);
+        lock (CreateDirectoryGate)
+        {
+            Directory.CreateDirectory(TempDir);
+            Directory.CreateDirectory(LogsDir);
+        }
     }
 
     public string AppDataRoot { get; }

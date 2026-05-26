@@ -1,3 +1,4 @@
+using System.Buffers;
 using Android.App;
 using Android.Content;
 using Android.Graphics;
@@ -18,6 +19,7 @@ internal sealed class AndroidQrScannerDialog : Dialog, ISurfaceHolderCallback, g
     private const int AndroidStateFocused = 16842908;
     private const int AndroidStatePressed = 16842919;
     private const int AndroidStateHovered = 16843623;
+    private const int MaxQrPayloadLength = 4096;
 
     private readonly Func<string?, AndroidQrScanResult> _resolvePayload;
     private readonly Action<int> _selectMatch;
@@ -161,9 +163,15 @@ internal sealed class AndroidQrScannerDialog : Dialog, ISurfaceHolderCallback, g
             return;
 
         long now = System.Diagnostics.Stopwatch.GetTimestamp();
-        double elapsedMs = (now - Interlocked.Read(ref _lastDecodeTicks)) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
-        if (elapsedMs < 180.0 || Interlocked.CompareExchange(ref _decoding, 1, 0) != 0)
+        if (Interlocked.CompareExchange(ref _decoding, 1, 0) != 0)
             return;
+
+        double elapsedMs = (now - Interlocked.Read(ref _lastDecodeTicks)) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+        if (elapsedMs < 180.0)
+        {
+            Interlocked.Exchange(ref _decoding, 0);
+            return;
+        }
 
         Interlocked.Exchange(ref _lastDecodeTicks, now);
         global::Android.Hardware.Camera.Size? size;
@@ -183,10 +191,11 @@ internal sealed class AndroidQrScannerDialog : Dialog, ISurfaceHolderCallback, g
             return;
         }
 
-        byte[] frame = new byte[data.Length];
+        byte[] frame = ArrayPool<byte>.Shared.Rent(data.Length);
         Buffer.BlockCopy(data, 0, frame, 0, data.Length);
         int width = size.Width;
         int height = size.Height;
+        SurfaceView? preview = _preview;
 
         Task.Run(() =>
         {
@@ -194,7 +203,7 @@ internal sealed class AndroidQrScannerDialog : Dialog, ISurfaceHolderCallback, g
             {
                 string? decoded = DecodeFrame(frame, width, height);
                 if (!string.IsNullOrWhiteSpace(decoded))
-                    _preview?.Post(() => AcceptPayload(decoded));
+                    preview?.Post(() => AcceptPayload(decoded));
             }
             catch (Exception ex)
             {
@@ -202,6 +211,7 @@ internal sealed class AndroidQrScannerDialog : Dialog, ISurfaceHolderCallback, g
             }
             finally
             {
+                ArrayPool<byte>.Shared.Return(frame);
                 Interlocked.Exchange(ref _decoding, 0);
             }
         });
@@ -436,7 +446,8 @@ internal sealed class AndroidQrScannerDialog : Dialog, ISurfaceHolderCallback, g
     private string? DecodeFrame(byte[] frame, int width, int height)
     {
         var source = new PlanarYUVLuminanceSource(frame, width, height, 0, 0, width, height, false);
-        return _reader.Decode(source)?.Text;
+        string? payload = _reader.Decode(source)?.Text;
+        return payload is { Length: > MaxQrPayloadLength } ? null : payload;
     }
 
     private void StartCamera()
@@ -516,6 +527,12 @@ internal sealed class AndroidQrScannerDialog : Dialog, ISurfaceHolderCallback, g
     {
         if (string.IsNullOrWhiteSpace(payload))
             return;
+
+        if (payload.Length > MaxQrPayloadLength)
+        {
+            SetStatus($"QR payload is too large ({payload.Length} bytes).");
+            return;
+        }
 
         _cameraPausedForResult = true;
         StopCamera();
@@ -807,7 +824,7 @@ internal sealed class AndroidQrScannerDialog : Dialog, ISurfaceHolderCallback, g
     {
         var fill = new GradientDrawable();
         fill.SetShape(ShapeType.Rectangle);
-        fill.SetColor(Color.Argb(54, 45, 212, 191));
+        fill.SetColor(ColorRes(Resource.Color.fa_context_menu_row_fill));
         fill.SetCornerRadius(Dp(3));
         return fill;
     }
@@ -868,8 +885,23 @@ internal sealed class AndroidQrScannerDialog : Dialog, ISurfaceHolderCallback, g
         if (_isWideLayout)
             orientation = (orientation + 270) % 360;
 
+        orientation = NormalizeRightAngle(orientation);
+
         global::Android.Util.Log.Info("FA.QR", $"Camera orientation camera={cameraId} sensor={info.Orientation} display={degrees} applied={orientation} wide={_isWideLayout}");
         return orientation;
+    }
+
+    private static int NormalizeRightAngle(int degrees)
+    {
+        int normalized = ((degrees % 360) + 360) % 360;
+        return normalized switch
+        {
+            < 45 => 0,
+            < 135 => 90,
+            < 225 => 180,
+            < 315 => 270,
+            _ => 0,
+        };
     }
 
     private int GetDisplayRotationDegrees()

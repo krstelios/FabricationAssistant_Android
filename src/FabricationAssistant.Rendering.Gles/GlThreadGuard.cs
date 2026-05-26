@@ -9,16 +9,25 @@ public sealed class GlThreadGuard
     private int _renderThreadId = -1;
 
     public void Initialize()
+        => InitializeOnCurrentThread();
+
+    public void InitializeOnCurrentThread()
+        => Interlocked.Exchange(ref _renderThreadId, Environment.CurrentManagedThreadId);
+
+    public void Reset()
     {
-        _renderThreadId = Environment.CurrentManagedThreadId;
+        Interlocked.Exchange(ref _renderThreadId, -1);
     }
 
     public void EnsureOnRenderThread()
     {
-        if (_renderThreadId < 0)
-            throw new InvalidOperationException("GlThreadGuard.Initialize() has not been called.");
-        if (Environment.CurrentManagedThreadId != _renderThreadId)
+        int currentThreadId = Environment.CurrentManagedThreadId;
+        int renderThreadId = Volatile.Read(ref _renderThreadId);
+        if (renderThreadId < 0)
+            throw new InvalidOperationException("GL render thread guard was used before initialization.");
+
+        if (currentThreadId != renderThreadId)
             throw new InvalidOperationException(
-                $"GL call from thread {Environment.CurrentManagedThreadId}; render thread is {_renderThreadId}.");
+                $"GL call from thread {currentThreadId}; render thread is {renderThreadId}.");
     }
 }

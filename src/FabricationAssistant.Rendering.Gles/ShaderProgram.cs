@@ -21,7 +21,16 @@ public sealed class ShaderProgram : IDisposable
         Name = name ?? throw new ArgumentNullException(nameof(name));
 
         var vs = CompileShader(ShaderType.VertexShader, vertexSource, $"{name}.vert");
-        var fs = CompileShader(ShaderType.FragmentShader, fragmentSource, $"{name}.frag");
+        uint fs;
+        try
+        {
+            fs = CompileShader(ShaderType.FragmentShader, fragmentSource, $"{name}.frag");
+        }
+        catch
+        {
+            _gl.DeleteShader(vs);
+            throw;
+        }
 
         Handle = _gl.CreateProgram();
         _gl.AttachShader(Handle, vs);
@@ -32,7 +41,12 @@ public sealed class ShaderProgram : IDisposable
         if (linked == 0)
         {
             string log = _gl.GetProgramInfoLog(Handle);
+            _gl.DetachShader(Handle, vs);
+            _gl.DetachShader(Handle, fs);
+            _gl.DeleteShader(vs);
+            _gl.DeleteShader(fs);
             _gl.DeleteProgram(Handle);
+            Handle = 0;
             throw new InvalidOperationException($"Program {name} link failed:\n{log}");
         }
 
@@ -77,6 +91,9 @@ public sealed class ShaderProgram : IDisposable
         int loc = UniformLocation(name);
         return loc >= 0 ? loc : UniformLocation(name + "[0]");
     }
+
+    public void ClearUniformCache()
+        => _uniformLocations.Clear();
 
     public void Dispose()
     {

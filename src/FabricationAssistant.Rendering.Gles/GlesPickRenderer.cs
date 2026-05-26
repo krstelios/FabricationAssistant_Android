@@ -8,6 +8,8 @@ namespace FabricationAssistant.Rendering.Gles;
 /// with per-mesh uMeshIndex as the fragment output, then reads back the pixel
 /// at the tap location to recover which mesh was hit. Index 0 is the
 /// background / no-hit value (set by glClear).
+/// Mesh IDs are encoded as 1-based unsigned integers because R32UI cannot
+/// distinguish "mesh 0" from the cleared no-hit value.
 ///
 /// All entry points must run on the GL render thread. The host typically
 /// calls Pick from a render-thread command queued via
@@ -22,6 +24,7 @@ public sealed class GlesPickRenderer : IDisposable
     private uint _depthRb;
     private int _width;
     private int _height;
+    private readonly float[] _sectionUniformScratch = new float[32];
     private HashSet<int> _xrayBackgroundNodeIdLookup = new();
     public IReadOnlyList<GlesSectionPlane> SectionPlanes { get; set; } = Array.Empty<GlesSectionPlane>();
 
@@ -157,8 +160,16 @@ public sealed class GlesPickRenderer : IDisposable
 
         // glReadPixels uses bottom-up Y. Tap input is top-down. Flip.
         int glY = _height - 1 - y;
+        if (glY < 0 || glY >= _height)
+        {
+            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0u);
+            return null;
+        }
+
         uint pixel = 0u;
+        DrainGlErrors("before-readpixels");
         _gl.ReadPixels(x, glY, 1u, 1u, PixelFormat.RedInteger, PixelType.UnsignedInt, &pixel);
+        DrainGlErrors("readpixels");
 
         // Restore the surface (default) framebuffer. The renderer always
         // draws the main frame to FBO 0, so Pick can safely re-bind 0 here
@@ -190,7 +201,8 @@ public sealed class GlesPickRenderer : IDisposable
         if (planesLoc < 0 || count <= 0)
             return;
 
-        float[] values = new float[32];
+        float[] values = _sectionUniformScratch;
+        Array.Clear(values, 0, values.Length);
         for (int i = 0; i < count; i++)
         {
             GlesSectionPlane plane = SectionPlanes[i];
@@ -215,6 +227,20 @@ public sealed class GlesPickRenderer : IDisposable
         if (_depthRb != 0) { _gl.DeleteRenderbuffer(_depthRb); _depthRb = 0; }
         _width = 0;
         _height = 0;
+    }
+
+    private void DrainGlErrors(string reason)
+    {
+        for (int i = 0; i < 32; i++)
+        {
+            GLEnum error = _gl.GetError();
+            if (error == GLEnum.NoError)
+                return;
+
+            Android.Util.Log.Warn("FA.Pick", $"GL error during {reason}: 0x{(int)error:X4}");
+        }
+
+        Android.Util.Log.Warn("FA.Pick", $"GL error drain reached cap during {reason}.");
     }
 
     public void Dispose()

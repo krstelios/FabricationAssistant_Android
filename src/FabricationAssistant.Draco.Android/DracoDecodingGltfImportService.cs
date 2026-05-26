@@ -45,14 +45,17 @@ public sealed class DracoDecodingGltfImportService : ISceneImportService
             }
             catch (DllNotFoundException ex)
             {
+                global::Android.Util.Log.Warn("FA.Draco", "Native Draco library not found: " + ex);
                 throw new NotSupportedException("Draco compression is not supported on this device.", ex);
             }
             catch (EntryPointNotFoundException ex)
             {
+                global::Android.Util.Log.Warn("FA.Draco", "Native Draco entry point not found: " + ex);
                 throw new NotSupportedException("Draco compression is not supported on this device.", ex);
             }
             catch (BadImageFormatException ex)
             {
+                global::Android.Util.Log.Warn("FA.Draco", "Native Draco library ABI mismatch: " + ex);
                 throw new NotSupportedException("Draco compression is not supported on this device.", ex);
             }
 

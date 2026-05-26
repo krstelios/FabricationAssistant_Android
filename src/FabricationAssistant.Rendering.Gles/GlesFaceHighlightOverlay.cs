@@ -61,18 +61,23 @@ internal sealed class GlesFaceHighlightOverlay : IDisposable
         SetFloat("uPointSize", 1.0f);
         SetInt("uRoundPoints", 0);
 
-        _gl.Disable(EnableCap.CullFace);
-        _gl.Disable(EnableCap.DepthTest);
-        _gl.DepthMask(false);
-        _gl.Enable(EnableCap.Blend);
-        _gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+        try
+        {
+            _gl.Disable(EnableCap.CullFace);
+            _gl.Disable(EnableCap.DepthTest);
+            _gl.DepthMask(false);
+            _gl.Enable(EnableCap.Blend);
+            _gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
 
-        UploadAndDraw(_vertexData, vertexCount);
-
-        _gl.DepthMask(true);
-        _gl.Disable(EnableCap.Blend);
-        _gl.Enable(EnableCap.DepthTest);
-        _gl.Enable(EnableCap.CullFace);
+            UploadAndDraw(_vertexData, vertexCount);
+        }
+        finally
+        {
+            _gl.DepthMask(true);
+            _gl.Disable(EnableCap.Blend);
+            _gl.Enable(EnableCap.DepthTest);
+            _gl.Enable(EnableCap.CullFace);
+        }
     }
 
     private unsafe void CreateBuffers()
@@ -93,6 +98,9 @@ internal sealed class GlesFaceHighlightOverlay : IDisposable
 
     private unsafe void UploadAndDraw(List<float> data, int vertexCount)
     {
+        if (_vao == 0 || _vbo == 0)
+            CreateBuffers();
+
         _gl.BindVertexArray(_vao);
         _gl.BindBuffer(BufferTargetARB.ArrayBuffer, _vbo);
         Span<float> span = CollectionsMarshal.AsSpan(data);

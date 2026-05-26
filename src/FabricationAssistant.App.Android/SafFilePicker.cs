@@ -12,22 +12,21 @@ namespace FabricationAssistant.App.Android;
 /// be called repeatedly afterwards. The returned task completes with the picked
 /// content URI or null if the user cancelled.
 /// </summary>
-public sealed class SafFilePicker
+public sealed class SafFilePicker : IDisposable
 {
+    private static readonly TimeSpan PickTimeout = TimeSpan.FromMinutes(5);
+    private readonly object _gate = new();
     private readonly ActivityResultLauncher _launcher;
     private TaskCompletionSource<AndroidUri?>? _pending;
+    private CancellationTokenSource? _timeoutCts;
+    private bool _disposed;
 
     public SafFilePicker(AppCompatActivity activity)
     {
         ArgumentNullException.ThrowIfNull(activity);
 
         var contract = new ActivityResultContracts.OpenDocument();
-        var callback = new ResultCallback(uri =>
-        {
-            var p = _pending;
-            _pending = null;
-            p?.TrySetResult(uri);
-        });
+        var callback = new ResultCallback(CompletePending);
 
         _launcher = activity.RegisterForActivityResult(contract, callback)
             ?? throw new InvalidOperationException("RegisterForActivityResult returned null");
@@ -36,12 +35,104 @@ public sealed class SafFilePicker
     public Task<AndroidUri?> PickAsync(string[] mimeTypes)
     {
         ArgumentNullException.ThrowIfNull(mimeTypes);
-        if (_pending is not null)
-            throw new InvalidOperationException("A file picker is already active.");
+        TaskCompletionSource<AndroidUri?> pending;
+        CancellationTokenSource timeoutCts;
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_pending is not null)
+                throw new InvalidOperationException("A file picker is already active.");
 
-        _pending = new TaskCompletionSource<AndroidUri?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _launcher.Launch(mimeTypes);
-        return _pending.Task;
+            pending = new TaskCompletionSource<AndroidUri?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            timeoutCts = new CancellationTokenSource();
+            _pending = pending;
+            _timeoutCts = timeoutCts;
+        }
+
+        try
+        {
+            _launcher.Launch(mimeTypes);
+        }
+        catch
+        {
+            CancelPending("launch failed");
+            throw;
+        }
+        _ = CancelPendingAfterTimeoutAsync(timeoutCts.Token);
+        return pending.Task;
+    }
+
+    public void Dispose()
+    {
+        TaskCompletionSource<AndroidUri?>? pending;
+        CancellationTokenSource? timeoutCts;
+        lock (_gate)
+        {
+            if (_disposed)
+                return;
+
+            _disposed = true;
+            pending = _pending;
+            timeoutCts = _timeoutCts;
+            _pending = null;
+            _timeoutCts = null;
+        }
+
+        timeoutCts?.Cancel();
+        timeoutCts?.Dispose();
+        pending?.TrySetCanceled();
+        try { _launcher.Unregister(); }
+        catch (Exception ex)
+        {
+            global::Android.Util.Log.Warn("FA.Import", "Failed to unregister file picker: " + ex.Message);
+        }
+    }
+
+    private async Task CancelPendingAfterTimeoutAsync(CancellationToken token)
+    {
+        try
+        {
+            await Task.Delay(PickTimeout, token).ConfigureAwait(false);
+            CancelPending("file picker timed out");
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private void CompletePending(AndroidUri? uri)
+    {
+        TaskCompletionSource<AndroidUri?>? pending;
+        CancellationTokenSource? timeoutCts;
+        lock (_gate)
+        {
+            pending = _pending;
+            timeoutCts = _timeoutCts;
+            _pending = null;
+            _timeoutCts = null;
+        }
+
+        timeoutCts?.Cancel();
+        timeoutCts?.Dispose();
+        pending?.TrySetResult(uri);
+    }
+
+    private void CancelPending(string reason)
+    {
+        TaskCompletionSource<AndroidUri?>? pending;
+        CancellationTokenSource? timeoutCts;
+        lock (_gate)
+        {
+            pending = _pending;
+            timeoutCts = _timeoutCts;
+            _pending = null;
+            _timeoutCts = null;
+        }
+
+        timeoutCts?.Cancel();
+        timeoutCts?.Dispose();
+        if (pending?.TrySetCanceled() == true)
+            global::Android.Util.Log.Warn("FA.Import", "Canceled pending file picker: " + reason);
     }
 
     private sealed class ResultCallback : Java.Lang.Object, IActivityResultCallback

@@ -287,6 +287,24 @@ public sealed class ViewportInteractionAdapterTests
         Assert.True(camera.FarPlane > 100000.0);
     }
 
+    [Fact]
+    public void FitToScene_WithWideAspectFitsVerticalExtent()
+    {
+        var camera = OrthographicCamera(distance: 100.0, orthoWidth: 10.0);
+        var bounds = new BoundingBox(new Vector3d(-5, 0, -50), new Vector3d(5, 0, 50));
+
+        var adapter = new ViewportInteractionAdapter(
+            camera,
+            boundsAccessor: () => bounds,
+            aspectAccessor: () => 16.0 / 9.0,
+            requestRender: () => { });
+
+        adapter.FitToScene();
+
+        Assert.Equal(bounds.Center.Z, camera.Target.Z, precision: 9);
+        Assert.Equal(100.0 * (16.0 / 9.0) * 1.1, camera.OrthoWidth, precision: 9);
+    }
+
     private static CameraState NarrowFovCamera()
         => new()
         {

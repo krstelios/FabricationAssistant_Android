@@ -34,6 +34,7 @@ internal sealed class GlesMeasurementOverlay : IDisposable
     private readonly List<float> _pointData = new();
     private readonly List<float> _diskData = new();
     private readonly float[] _mvpScratch = new float[16];
+    private readonly float[] _diskViewScratch = new float[16];
 
     public GlesMeasurementOverlay(
         GL gl,
@@ -55,10 +56,14 @@ internal sealed class GlesMeasurementOverlay : IDisposable
         float[] view,
         float[] projection,
         int viewportHeight,
+        Vector3d diskOrigin,
         IReadOnlyList<PresentationSnapshot> snapshots)
     {
         if (snapshots.Count == 0)
             return;
+
+        if (!IsFinite(diskOrigin))
+            diskOrigin = Vector3d.Zero;
 
         _lineData.Clear();
         _pointData.Clear();
@@ -71,7 +76,7 @@ internal sealed class GlesMeasurementOverlay : IDisposable
                 AddLine(_lineData, line.Start, line.End, color);
 
             foreach (DiskPrimitive disk in snapshot.Disks)
-                AppendDisk(_diskData, disk, color);
+                AppendDisk(_diskData, disk, color, diskOrigin);
 
             foreach (BallPrimitive ball in snapshot.Balls)
                 AddPoint(_pointData, ball.Center, color);
@@ -109,10 +114,16 @@ internal sealed class GlesMeasurementOverlay : IDisposable
         if (_diskData.Count > 0)
         {
             _diskProgram.Use();
-            SetDiskMat4("uMVP", MultiplyProjectionView(projection, view, _mvpScratch));
+            SetDiskMat4("uMVP", MultiplyProjectionView(
+                projection,
+                ViewMatrixTranslatedByOrigin(view, diskOrigin, _diskViewScratch),
+                _mvpScratch));
             float projectionY = MathF.Abs(projection.Length > 5 ? projection[5] : 0f);
             float worldPerPixelFactor = projectionY > 0.000001f && viewportHeight > 0
                 ? 2.0f / (projectionY * viewportHeight)
+                : 0.0f;
+            worldPerPixelFactor = float.IsFinite(worldPerPixelFactor)
+                ? Math.Clamp(worldPerPixelFactor, 0.0f, 1.0e6f)
                 : 0.0f;
             SetDiskFloat("uWorldPerPixelFactor", worldPerPixelFactor);
             SetDiskFloat("uPixelRadius", DiskPixelRadius);
@@ -264,16 +275,17 @@ internal sealed class GlesMeasurementOverlay : IDisposable
         AddVertex(data, center, color);
     }
 
-    private static void AppendDisk(List<float> data, DiskPrimitive disk, Color4 color)
+    private static void AppendDisk(List<float> data, DiskPrimitive disk, Color4 color, Vector3d origin)
     {
         if (!IsFinite(disk.Center) || !TryBuildDiskBasis(disk, out Vector3d u, out Vector3d v))
             return;
 
+        Vector3d localCenter = disk.Center - origin;
         for (int i = 0; i < QuadCorners.GetLength(0); i++)
         {
-            data.Add((float)disk.Center.X);
-            data.Add((float)disk.Center.Y);
-            data.Add((float)disk.Center.Z);
+            data.Add((float)localCenter.X);
+            data.Add((float)localCenter.Y);
+            data.Add((float)localCenter.Z);
             data.Add(color.R);
             data.Add(color.G);
             data.Add(color.B);
@@ -325,6 +337,19 @@ internal sealed class GlesMeasurementOverlay : IDisposable
             return false;
         v = v.Normalized();
         return true;
+    }
+
+    private static float[] ViewMatrixTranslatedByOrigin(float[] view, Vector3d origin, float[] result)
+    {
+        Array.Copy(view, result, Math.Min(view.Length, result.Length));
+        if (view.Length < 16 || result.Length < 16)
+            return result;
+
+        result[3] = (float)(view[0] * origin.X + view[1] * origin.Y + view[2] * origin.Z + view[3]);
+        result[7] = (float)(view[4] * origin.X + view[5] * origin.Y + view[6] * origin.Z + view[7]);
+        result[11] = (float)(view[8] * origin.X + view[9] * origin.Y + view[10] * origin.Z + view[11]);
+        result[15] = (float)(view[12] * origin.X + view[13] * origin.Y + view[14] * origin.Z + view[15]);
+        return result;
     }
 
     private static Vector3d FallbackU(Vector3d normal)

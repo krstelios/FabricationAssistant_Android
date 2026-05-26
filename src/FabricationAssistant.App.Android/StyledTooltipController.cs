@@ -17,12 +17,13 @@ internal sealed class StyledTooltipController : Java.Lang.Object, View.IOnHoverL
     private const int CornerRadiusDp = 10;
 
     private readonly Context _context;
-    private readonly View _anchor;
+    private readonly WeakReference<View> _anchor;
     private readonly Handler _handler = new(Looper.MainLooper!);
     private readonly Action _requestDismissOthers;
     private PopupWindow? _popup;
     private string _text;
     private bool _disposed;
+    private int _showGeneration;
 
     public StyledTooltipController(Context context, View anchor, string text, Action requestDismissOthers)
     {
@@ -31,7 +32,7 @@ internal sealed class StyledTooltipController : Java.Lang.Object, View.IOnHoverL
         ArgumentNullException.ThrowIfNull(requestDismissOthers);
 
         _context = context;
-        _anchor = anchor;
+        _anchor = new WeakReference<View>(anchor);
         _text = text;
         _requestDismissOthers = requestDismissOthers;
 
@@ -45,7 +46,10 @@ internal sealed class StyledTooltipController : Java.Lang.Object, View.IOnHoverL
     {
         _text = text;
         if (Build.VERSION.SdkInt >= BuildVersionCodes.O)
-            _anchor.TooltipText = null;
+        {
+            if (_anchor.TryGetTarget(out View? anchor))
+                anchor.TooltipText = null;
+        }
     }
 
     public bool OnHover(View? v, MotionEvent? e)
@@ -83,6 +87,11 @@ internal sealed class StyledTooltipController : Java.Lang.Object, View.IOnHoverL
     public void Dismiss()
     {
         CancelPendingShow();
+        DismissPopupOnly();
+    }
+
+    private void DismissPopupOnly()
+    {
         if (_popup is null)
             return;
 
@@ -104,28 +113,54 @@ internal sealed class StyledTooltipController : Java.Lang.Object, View.IOnHoverL
             return;
 
         _disposed = true;
-        Dismiss();
         _handler.RemoveCallbacksAndMessages(null);
-        _anchor.SetOnHoverListener(null);
-        _anchor.SetOnLongClickListener(null);
+        if (_anchor.TryGetTarget(out View? anchor))
+        {
+            anchor.SetOnHoverListener(null);
+            anchor.SetOnLongClickListener(null);
+        }
+        Dismiss();
     }
 
     private void ScheduleShow()
     {
         CancelPendingShow();
-        _handler.PostDelayed(Show, ShowDelayMs);
+        int generation = Interlocked.Increment(ref _showGeneration);
+        _handler.PostDelayed(() => Show(generation), ShowDelayMs);
     }
 
     private void CancelPendingShow()
-        => _handler.RemoveCallbacksAndMessages(null);
+    {
+        Interlocked.Increment(ref _showGeneration);
+        _handler.RemoveCallbacksAndMessages(null);
+    }
 
     private void Show()
+        => Show(Volatile.Read(ref _showGeneration));
+
+    private void Show(int generation)
     {
-        if (_disposed || !_anchor.IsShown || !_anchor.Enabled || string.IsNullOrWhiteSpace(_text))
+        if (_disposed
+            || generation != Volatile.Read(ref _showGeneration)
+            || !_anchor.TryGetTarget(out View? anchor)
+            || !anchor.IsShown
+            || !anchor.Enabled
+            || string.IsNullOrWhiteSpace(_text))
+        {
             return;
+        }
 
         _requestDismissOthers();
-        Dismiss();
+        generation = Volatile.Read(ref _showGeneration);
+        if (_disposed
+            || generation != Volatile.Read(ref _showGeneration)
+            || !_anchor.TryGetTarget(out anchor)
+            || !anchor.IsShown
+            || !anchor.Enabled)
+        {
+            return;
+        }
+        DismissPopupOnly();
 
         TextView label = CreateLabel();
         int maxWidth = Dp(MaxWidthDp);
@@ -151,8 +186,12 @@ internal sealed class StyledTooltipController : Java.Lang.Object, View.IOnHoverL
         _popup = popup;
         try
         {
-            popup.ShowAtLocation(_anchor.RootView, GravityFlags.NoGravity, x, y);
-            _handler.PostDelayed(Dismiss, AutoDismissMs);
+            popup.ShowAtLocation(anchor.RootView, GravityFlags.NoGravity, x, y);
+            _handler.PostDelayed(() =>
+            {
+                if (generation == Volatile.Read(ref _showGeneration))
+                    Dismiss();
+            }, AutoDismissMs);
         }
         catch
         {
@@ -172,7 +211,7 @@ internal sealed class StyledTooltipController : Java.Lang.Object, View.IOnHoverL
         };
         label.SetSingleLine(true);
         label.SetIncludeFontPadding(false);
-        label.SetTextColor(new Color(0xE8, 0xE9, 0xED));
+        label.SetTextColor(ColorRes(Resource.Color.fa_text_primary));
         label.SetPadding(Dp(9), Dp(6), Dp(9), Dp(6));
         label.Background = CreateBackground();
         return label;
@@ -182,22 +221,25 @@ internal sealed class StyledTooltipController : Java.Lang.Object, View.IOnHoverL
     {
         var background = new GradientDrawable();
         background.SetShape(ShapeType.Rectangle);
-        background.SetColor(Color.Argb(218, 31, 32, 36));
+        background.SetColor(ColorRes(Resource.Color.fa_context_menu_background));
         background.SetCornerRadius(Dp(CornerRadiusDp));
-        background.SetStroke(Dp(1), Color.Argb(132, 82, 84, 94));
+        background.SetStroke(Dp(1), ColorRes(Resource.Color.fa_context_menu_border));
         return background;
     }
+
+    private Color ColorRes(int resourceId)
+        => new(global::AndroidX.Core.Content.ContextCompat.GetColor(_context, resourceId));
 
     private bool TryComputeLocation(int width, int height, out int x, out int y)
     {
         x = 0;
         y = 0;
 
-        if (_anchor.RootView is null)
+        if (!_anchor.TryGetTarget(out View? anchor) || anchor.RootView is null)
             return false;
 
         int[] location = new int[2];
-        _anchor.GetLocationOnScreen(location);
+        anchor.GetLocationOnScreen(location);
         int screenWidth = _context.Resources?.DisplayMetrics?.WidthPixels ?? 0;
         int screenHeight = _context.Resources?.DisplayMetrics?.HeightPixels ?? 0;
         if (screenWidth <= 0 || screenHeight <= 0)
@@ -205,11 +247,11 @@ internal sealed class StyledTooltipController : Java.Lang.Object, View.IOnHoverL
 
         int margin = Dp(8);
         int gap = Dp(7);
-        int anchorCenterX = location[0] + _anchor.Width / 2;
+        int anchorCenterX = location[0] + anchor.Width / 2;
         x = Math.Clamp(anchorCenterX - width / 2, margin, Math.Max(margin, screenWidth - width - margin));
 
         int aboveY = location[1] - height - gap;
-        int belowY = location[1] + _anchor.Height + gap;
+        int belowY = location[1] + anchor.Height + gap;
         y = aboveY >= margin || aboveY >= screenHeight - belowY
             ? aboveY
             : belowY;

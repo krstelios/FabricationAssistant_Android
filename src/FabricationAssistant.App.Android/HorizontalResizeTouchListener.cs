@@ -53,7 +53,7 @@ internal sealed class HorizontalResizeTouchListener : Java.Lang.Object, View.IOn
                 return true;
 
             default:
-                return _dragging;
+                return false;
         }
     }
 }

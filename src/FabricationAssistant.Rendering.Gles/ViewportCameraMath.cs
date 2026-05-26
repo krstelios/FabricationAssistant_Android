@@ -11,6 +11,8 @@ namespace FabricationAssistant.Rendering.Gles;
 /// </summary>
 public static class ViewportCameraMath
 {
+    private static int _aspectClampLogged;
+
     private static readonly float[] s_identityModelMatrix =
     [
         1, 0, 0, 0,
@@ -29,7 +31,7 @@ public static class ViewportCameraMath
     public static float[] ViewMatrix(CameraState camera)
     {
         ArgumentNullException.ThrowIfNull(camera);
-        var m = Matrix4d.CreateLookAt(camera.Position, camera.Target, camera.UpDirection);
+        var m = CreateSafeViewMatrix(camera);
         return ToFloats(m);
     }
 
@@ -40,7 +42,7 @@ public static class ViewportCameraMath
         if (destination.Length < 16)
             throw new ArgumentException("Destination must contain at least 16 elements.", nameof(destination));
 
-        var m = Matrix4d.CreateLookAt(camera.Position, camera.Target, camera.UpDirection);
+        var m = CreateSafeViewMatrix(camera);
         ToFloats(m, destination);
     }
 
@@ -48,13 +50,14 @@ public static class ViewportCameraMath
     {
         ArgumentNullException.ThrowIfNull(camera);
         Matrix4d m;
+        aspect = ClampAspect(aspect);
         if (camera.IsPerspective)
         {
             m = Matrix4d.CreatePerspectiveFieldOfView(camera.FieldOfView, aspect, camera.NearPlane, camera.FarPlane);
         }
         else
         {
-            double height = camera.OrthoWidth / System.Math.Max(aspect, 1e-6);
+            double height = camera.OrthoWidth / aspect;
             m = Matrix4d.CreateOrthographic(camera.OrthoWidth, height, camera.NearPlane, camera.FarPlane);
         }
         return ToFloats(m);
@@ -68,13 +71,14 @@ public static class ViewportCameraMath
             throw new ArgumentException("Destination must contain at least 16 elements.", nameof(destination));
 
         Matrix4d m;
+        aspect = ClampAspect(aspect);
         if (camera.IsPerspective)
         {
             m = Matrix4d.CreatePerspectiveFieldOfView(camera.FieldOfView, aspect, camera.NearPlane, camera.FarPlane);
         }
         else
         {
-            double height = camera.OrthoWidth / System.Math.Max(aspect, 1e-6);
+            double height = camera.OrthoWidth / aspect;
             m = Matrix4d.CreateOrthographic(camera.OrthoWidth, height, camera.NearPlane, camera.FarPlane);
         }
         ToFloats(m, destination);
@@ -83,6 +87,48 @@ public static class ViewportCameraMath
     public static float[] IdentityModelMatrix() => s_identityModelMatrix;
 
     public static float[] NormalMatrixFromIdentity() => s_identityNormalMatrix;
+
+    private static Matrix4d CreateSafeViewMatrix(CameraState camera)
+    {
+        Vector3d position = camera.Position;
+        Vector3d target = camera.Target;
+        Vector3d up = camera.UpDirection;
+        if (!IsFinite(position) || !IsFinite(target) || !IsFinite(up))
+            return Matrix4d.Identity;
+
+        Vector3d forward = target - position;
+        if (forward.LengthSquared <= 1e-18 || up.LengthSquared <= 1e-18)
+            return Matrix4d.Identity;
+
+        return Matrix4d.CreateLookAt(position, target, up);
+    }
+
+    private static float ClampAspect(float aspect)
+    {
+        if (!float.IsFinite(aspect))
+        {
+            LogAspectClamp(aspect, 1.0f);
+            return 1.0f;
+        }
+
+        float clamped = System.Math.Clamp(aspect, 0.1f, 10.0f);
+        if (System.Math.Abs(clamped - aspect) > 0.000001f)
+            LogAspectClamp(aspect, clamped);
+        return clamped;
+    }
+
+    private static void LogAspectClamp(float input, float output)
+    {
+        if (Interlocked.Exchange(ref _aspectClampLogged, 1) != 0)
+            return;
+
+        Android.Util.Log.Warn(
+            "FA.Renderer",
+            $"Viewport aspect ratio clamped: input={input}, output={output}.");
+    }
+
+    private static bool IsFinite(Vector3d value)
+        => double.IsFinite(value.X) && double.IsFinite(value.Y) && double.IsFinite(value.Z);
 
     private static float[] ToFloats(Matrix4d m) => new float[]
     {

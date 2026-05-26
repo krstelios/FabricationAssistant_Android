@@ -67,7 +67,8 @@ public static class CadEdgeBuilder
         double coplanarAngle = System.Math.Max(0.0, coplanarToleranceDegrees);
         double silhouetteCandidateDotThreshold = System.Math.Cos(coplanarAngle * System.Math.PI / 180.0);
 
-        var topologyEdges = new Dictionary<TopologyEdgeKey, TopologyEdgeInfo>(mesh.Indices.Length);
+        var topologyEdges = new Dictionary<TopologyEdgeKey, TopologyEdgeInfo>(
+            System.Math.Max(64, mesh.Indices.Length / 6));
 
         for (int i = 0; i + 2 < mesh.Indices.Length; i += 3)
         {

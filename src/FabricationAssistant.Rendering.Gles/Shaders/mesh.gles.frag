@@ -62,10 +62,10 @@ void main()
     }
 
     vec3 normal = normalize(vNormal);
-    // Back-face flip: section cuts + double-sided meshes expose back faces
-    // (gl_FrontFacing == false). Flipping prevents them from collapsing to
-    // dark ambient.
-    if (!gl_FrontFacing) normal = -normal;
+    // Back-face flip: section cuts expose back faces. Keep normal winding
+    // strict when no section is active so single-sided mesh issues stay
+    // visible during debugging.
+    if (uSectionPlaneCount > 0 && !gl_FrontFacing) normal = -normal;
 
     vec3 viewDir = normalize(uCameraPos - vWorldPos);
     vec3 worldUpDir = uWorldUpDir;

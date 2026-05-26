@@ -37,7 +37,6 @@ public struct SceneAppearance
     public float GridLineThickness;
     public float[] GridLineColor;       // RGB, 0-1
     public bool ShowAxes;
-    public bool ShowViewCube;
     public bool IsPerspective;
     public bool LightweightNavigationEnabled;
 
@@ -118,21 +117,20 @@ public struct SceneAppearance
         ShowGrid = true,
         ShiftGridToModelMin = true,
         UseAutomaticGridSpacing = true,
-        GridSpacingMm = 100.0f,
+        GridSpacingMm = 100.8f,
         GridLineThickness = 1.0f,
         GridLineColor = new[] { 0.35f, 0.35f, 0.35f },
         ShowAxes = true,
-        ShowViewCube = true,
         IsPerspective = true,
         LightweightNavigationEnabled = false,
 
-        BackgroundColor = new[] { 1.0f, 1.0f, 1.0f },
+        BackgroundColor = new[] { 0.079f, 0.086f, 0.097f },
         SurfaceColor = new[] { 0.82f, 0.82f, 0.82f },
         SurfaceOpacity = 1.0f,
 
         EdgesEnabled = true,
         EdgeColor = new[] { 0.24028806f, 0.24f, 0.26f },
-        EdgeWidth = 0.78f,
+        EdgeWidth = 1.0f,
         CadEdgeFeatureAngleDegrees = 28.0f,
         CadEdgeCoplanarToleranceDegrees = 5.0f,
         CadEdgeWeldToleranceScale = 1.0e-5f,
@@ -141,7 +139,7 @@ public struct SceneAppearance
         SurfaceOffsetFactor = 1.0f,
         SurfaceOffsetUnits = 1.0f,
 
-        ClaySurfaceColor = new[] { 1.0f, 1.0f, 1.0f },
+        ClaySurfaceColor = new[] { 0.804f, 0.796f, 0.797f },
         ClayBackgroundColor = new[] { 1.0f, 1.0f, 1.0f },
         ClayFeatureEdgesEnabled = true,
         ClayFeatureEdgeColor = new[] { 0.11975311f, 0.12004116f, 0.11650209f, 0.48666665f },
@@ -149,14 +147,14 @@ public struct SceneAppearance
         ClayFeatureEdgeDepthBias = 0.0f,
         ClayFeatureEdgeCreaseAngleDegrees = 35.0f,
 
-        BaseColorLift = 0.0f,
-        AmbientStrength = 0.63f,
+        BaseColorLift = 0.1095f,
+        AmbientStrength = 0.306f,
         HeadlightStrength = 0.14f,
         KeyLightStrength = 0.34f,
         FillLightStrength = 0.24f,
         BounceLightStrength = 0.0f,
         HemisphereStrength = 0.28f,
-        SpecularStrength = 0.54f,
+        SpecularStrength = 0.354f,
         SpecularPower = 77.0f,
 
         AmbientOcclusionEnabled = true,
@@ -174,9 +172,9 @@ public struct SceneAppearance
         AoBlurSharpness = 10.9f,
         AoBlurPasses = 1,
         AoNoiseScale = 8.0f,
-        ContourStrength = 0.30f,
-        ContourPower = 3.28f,
-        MsaaSamples = 4,
+        ContourStrength = 0.16080001f,
+        ContourPower = 4.4105f,
+        MsaaSamples = 0,
 
         OutlineEnabled = true,
         OutlineColor = new[] { 1.0f, 0.0f, 0.0f },

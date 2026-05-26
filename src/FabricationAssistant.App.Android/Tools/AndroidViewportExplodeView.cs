@@ -73,7 +73,10 @@ internal static class AndroidViewportExplodeView
         foreach (AndroidViewportExplodeUnit unit in layout.Units)
         {
             if (scene.GetNode(unit.NodeId) is not SceneNode node)
+            {
+                global::Android.Util.Log.Warn("FA.Explode", $"Skipping missing node in explode layout: nodeId={unit.NodeId}.");
                 continue;
+            }
 
             Matrix4d translation = Matrix4d.CreateTranslation(unit.FullOffsetWorld * clampedAmount);
             node.TransientTransform = translation * unit.BaseTransientTransform;

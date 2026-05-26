@@ -12,7 +12,7 @@ namespace FabricationAssistant.App.Android;
 public static class AppSettings
 {
     private const string FileName = "fa_settings";
-    private const int SettingsSchemaVersion = 13;
+    private const int SettingsSchemaVersion = 14;
 
     private const int DefaultAoSampleCount = 32;
     private const int MinAoSampleCount = 1;
@@ -68,24 +68,33 @@ public static class AppSettings
     private const float MinDimensionTextScale = 0.5f;
     private const float MaxDimensionTextScale = 4.0f;
     private const float DefaultSectionGizmoSizeFraction = 0.10f;
+    private const float LegacySectionGizmoSizeFractionBase = 0.10f;
     private const float MinSectionGizmoSizeFraction = 0.005f;
     private const float MaxSectionGizmoSizeFraction = 0.5f;
+    private const float DefaultSectionGizmoScale = 1.0f;
+    private const float MinSectionGizmoScale = 0.5f;
+    private const float MaxSectionGizmoScale = 4.0f;
 
+    private static readonly object _initLock = new();
     private static ISharedPreferences? _prefs;
 
     public static void Initialize(Context context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        _prefs ??= context.GetSharedPreferences(FileName, FileCreationMode.Private);
-        MigrateDefaultsIfNeeded();
+        lock (_initLock)
+        {
+            _prefs ??= context.GetSharedPreferences(FileName, FileCreationMode.Private);
+            MigrateDefaultsIfNeeded();
+        }
     }
 
     public static void ResetToDefaults()
     {
-        var editor = Prefs.Edit()!;
-        editor.Clear();
-        editor.PutInt("settings_schema_version", SettingsSchemaVersion);
-        editor.Apply();
+        Edit(editor =>
+        {
+            editor.Clear();
+            editor.PutInt("settings_schema_version", SettingsSchemaVersion);
+        });
     }
 
     private static ISharedPreferences Prefs =>
@@ -98,6 +107,7 @@ public static class AppSettings
     public static float ZoomSensitivity { get => Get("zoom_sensitivity", 1.0f); set => Put("zoom_sensitivity", System.Math.Clamp(value, 0.1f, 5.0f)); }
     public static bool LightweightNavigationEnabled { get => Get("lightweight_navigation_enabled", false); set => Put("lightweight_navigation_enabled", value); }
     public static bool SpenPalmRejectionEnabled { get => Get("spen_palm_rejection", false); set => Put("spen_palm_rejection", value); }
+    public static float SectionGizmoScale { get => GetFloatInRange("section_gizmo_scale", DefaultSectionGizmoScale, MinSectionGizmoScale, MaxSectionGizmoScale); set => Put("section_gizmo_scale", System.Math.Clamp(value, MinSectionGizmoScale, MaxSectionGizmoScale)); }
 
     // ── Mode ───────────────────────────────────────────────────────────
     // Upper bound is ModeRealistic (4) so a persisted Realistic value
@@ -128,75 +138,75 @@ public static class AppSettings
     public static bool ShiftGridToModelMin { get => Get("shift_grid", true); set => Put("shift_grid", value); }
     public static bool UseAutomaticGridSpacing { get => Get("auto_grid_spacing", true); set => Put("auto_grid_spacing", value); }
     public static float GridSpacingMm { get => GetFloatInRange("grid_spacing_mm", 100.8f, 0.001f, 1_000_000.0f); set => Put("grid_spacing_mm", System.Math.Clamp(value, 0.001f, 1_000_000.0f)); }
-    public static float GridLineThickness { get => Get("grid_thickness", 1.0f); set => Put("grid_thickness", value); }
-    public static float GridLineColorR { get => Get("grid_r", 0.35f); set => Put("grid_r", value); }
-    public static float GridLineColorG { get => Get("grid_g", 0.35f); set => Put("grid_g", value); }
-    public static float GridLineColorB { get => Get("grid_b", 0.35f); set => Put("grid_b", value); }
+    public static float GridLineThickness { get => GetFloatInRange("grid_thickness", 1.0f, 1.0f, 8.0f); set => Put("grid_thickness", System.Math.Clamp(value, 1.0f, 8.0f)); }
+    public static float GridLineColorR { get => Get("grid_r", 0.35f); set => Put("grid_r", Clamp01(value)); }
+    public static float GridLineColorG { get => Get("grid_g", 0.35f); set => Put("grid_g", Clamp01(value)); }
+    public static float GridLineColorB { get => Get("grid_b", 0.35f); set => Put("grid_b", Clamp01(value)); }
     public static bool ShowAxes { get => Get("show_axes", true); set => Put("show_axes", value); }
-    public static bool ShowViewCube { get => Get("show_viewcube", true); set => Put("show_viewcube", value); }
     public static bool IsPerspective { get => Get("is_perspective", true); set => Put("is_perspective", value); }
 
     // ── Background + surface ───────────────────────────────────────────
-    public static float BackgroundR { get => Get("bg_r", 0.079f); set => Put("bg_r", value); }
-    public static float BackgroundG { get => Get("bg_g", 0.086f); set => Put("bg_g", value); }
-    public static float BackgroundB { get => Get("bg_b", 0.097f); set => Put("bg_b", value); }
-    public static float SurfaceR { get => Get("surface_r", 0.82f); set => Put("surface_r", value); }
-    public static float SurfaceG { get => Get("surface_g", 0.82f); set => Put("surface_g", value); }
-    public static float SurfaceB { get => Get("surface_b", 0.82f); set => Put("surface_b", value); }
-    public static float SurfaceOpacity { get => Get("surface_opacity", 1.0f); set => Put("surface_opacity", value); }
+    public static float BackgroundR { get => Get("bg_r", 0.079f); set => Put("bg_r", Clamp01(value)); }
+    public static float BackgroundG { get => Get("bg_g", 0.086f); set => Put("bg_g", Clamp01(value)); }
+    public static float BackgroundB { get => Get("bg_b", 0.097f); set => Put("bg_b", Clamp01(value)); }
+    public static float SurfaceR { get => Get("surface_r", 0.82f); set => Put("surface_r", Clamp01(value)); }
+    public static float SurfaceG { get => Get("surface_g", 0.82f); set => Put("surface_g", Clamp01(value)); }
+    public static float SurfaceB { get => Get("surface_b", 0.82f); set => Put("surface_b", Clamp01(value)); }
+    public static float SurfaceOpacity { get => GetFloatInRange("surface_opacity", 1.0f, 0.0f, 1.0f); set => Put("surface_opacity", Clamp01(value)); }
 
     // ── CAD Edges ──────────────────────────────────────────────────────
     public static bool EdgesEnabled { get => Get("edges_enabled", true); set => Put("edges_enabled", value); }
 
     public static void SetEdgesEnabledFromUi(bool enabled)
     {
-        var editor = Prefs.Edit()!;
-        editor.PutBoolean("edges_enabled", enabled);
-        if (enabled && EdgeWidth < MinimumVisibleEdgeWidth)
-            editor.PutFloat("edge_width", DefaultEdgeWidth);
-        int renderMode = RenderMode;
-        if (IsShadedRenderMode(renderMode))
-            editor.PutInt("render_mode", enabled ? ModeShadedWithEdges : ModeShaded);
-        editor.Apply();
+        Edit(editor =>
+        {
+            editor.PutBoolean("edges_enabled", enabled);
+            if (enabled && EdgeWidth < MinimumVisibleEdgeWidth)
+                editor.PutFloat("edge_width", DefaultEdgeWidth);
+            int renderMode = RenderMode;
+            if (IsShadedRenderMode(renderMode))
+                editor.PutInt("render_mode", enabled ? ModeShadedWithEdges : ModeShaded);
+        });
     }
-    public static float EdgeR { get => Get("edge_r", 0.24028806f); set => Put("edge_r", value); }
-    public static float EdgeG { get => Get("edge_g", 0.24f); set => Put("edge_g", value); }
-    public static float EdgeB { get => Get("edge_b", 0.26f); set => Put("edge_b", value); }
+    public static float EdgeR { get => Get("edge_r", 0.24028806f); set => Put("edge_r", Clamp01(value)); }
+    public static float EdgeG { get => Get("edge_g", 0.24f); set => Put("edge_g", Clamp01(value)); }
+    public static float EdgeB { get => Get("edge_b", 0.26f); set => Put("edge_b", Clamp01(value)); }
     public static float EdgeWidth { get => GetFloatInRange("edge_width", DefaultEdgeWidth, 0.05f, 2.0f); set => Put("edge_width", System.Math.Clamp(value, 0.05f, 2.0f)); }
-    public static float CadEdgeFeatureAngleDegrees { get => Get("edge_feature_angle", 28.0f); set => Put("edge_feature_angle", value); }
-    public static float CadEdgeCoplanarToleranceDegrees { get => Get("edge_coplanar_tol", 5.0f); set => Put("edge_coplanar_tol", value); }
-    public static float CadEdgeWeldToleranceScale { get => Get("edge_weld_tol", 1.0e-5f); set => Put("edge_weld_tol", value); }
+    public static float CadEdgeFeatureAngleDegrees { get => GetFloatInRange("edge_feature_angle", 28.0f, 1.0f, 150.0f); set => Put("edge_feature_angle", System.Math.Clamp(value, 1.0f, 150.0f)); }
+    public static float CadEdgeCoplanarToleranceDegrees { get => GetFloatInRange("edge_coplanar_tol", 5.0f, 0.0f, 30.0f); set => Put("edge_coplanar_tol", System.Math.Clamp(value, 0.0f, 30.0f)); }
+    public static float CadEdgeWeldToleranceScale { get => GetFloatInRange("edge_weld_tol", 1.0e-5f, 1.0e-6f, 1.0e-4f); set => Put("edge_weld_tol", System.Math.Clamp(value, 1.0e-6f, 1.0e-4f)); }
     public static bool CadEdgeSilhouetteEnabled { get => Get("edge_silhouette", true); set => Put("edge_silhouette", value); }
-    public static float EdgeDepthBias { get => Get("edge_depth_bias", 0.0f); set => Put("edge_depth_bias", value); }
-    public static float SurfaceOffsetFactor { get => Get("surface_offset_f", 1.0f); set => Put("surface_offset_f", value); }
-    public static float SurfaceOffsetUnits { get => Get("surface_offset_u", 1.0f); set => Put("surface_offset_u", value); }
+    public static float EdgeDepthBias { get => GetFloatInRange("edge_depth_bias", 0.0f, 0.0f, 0.002f); set => Put("edge_depth_bias", System.Math.Clamp(value, 0.0f, 0.002f)); }
+    public static float SurfaceOffsetFactor { get => GetFloatInRange("surface_offset_f", 1.0f, 0.0f, 4.0f); set => Put("surface_offset_f", System.Math.Clamp(value, 0.0f, 4.0f)); }
+    public static float SurfaceOffsetUnits { get => GetFloatInRange("surface_offset_u", 1.0f, 0.0f, 4.0f); set => Put("surface_offset_u", System.Math.Clamp(value, 0.0f, 4.0f)); }
 
     // ── Clay ───────────────────────────────────────────────────────────
-    public static float ClaySurfaceR { get => Get("clay_surface_r", 0.804f); set => Put("clay_surface_r", value); }
-    public static float ClaySurfaceG { get => Get("clay_surface_g", 0.796f); set => Put("clay_surface_g", value); }
-    public static float ClaySurfaceB { get => Get("clay_surface_b", 0.797f); set => Put("clay_surface_b", value); }
-    public static float ClayBackgroundR { get => Get("clay_bg_r", 1.0f); set => Put("clay_bg_r", value); }
-    public static float ClayBackgroundG { get => Get("clay_bg_g", 1.0f); set => Put("clay_bg_g", value); }
-    public static float ClayBackgroundB { get => Get("clay_bg_b", 1.0f); set => Put("clay_bg_b", value); }
+    public static float ClaySurfaceR { get => Get("clay_surface_r", 0.804f); set => Put("clay_surface_r", Clamp01(value)); }
+    public static float ClaySurfaceG { get => Get("clay_surface_g", 0.796f); set => Put("clay_surface_g", Clamp01(value)); }
+    public static float ClaySurfaceB { get => Get("clay_surface_b", 0.797f); set => Put("clay_surface_b", Clamp01(value)); }
+    public static float ClayBackgroundR { get => Get("clay_bg_r", 1.0f); set => Put("clay_bg_r", Clamp01(value)); }
+    public static float ClayBackgroundG { get => Get("clay_bg_g", 1.0f); set => Put("clay_bg_g", Clamp01(value)); }
+    public static float ClayBackgroundB { get => Get("clay_bg_b", 1.0f); set => Put("clay_bg_b", Clamp01(value)); }
     public static bool ClayFeatureEdgesEnabled { get => Get("clay_feature_edges", true); set => Put("clay_feature_edges", value); }
-    public static float ClayFeatureEdgeR { get => Get("clay_edge_r", 0.11975311f); set => Put("clay_edge_r", value); }
-    public static float ClayFeatureEdgeG { get => Get("clay_edge_g", 0.12004116f); set => Put("clay_edge_g", value); }
-    public static float ClayFeatureEdgeB { get => Get("clay_edge_b", 0.11650209f); set => Put("clay_edge_b", value); }
+    public static float ClayFeatureEdgeR { get => Get("clay_edge_r", 0.11975311f); set => Put("clay_edge_r", Clamp01(value)); }
+    public static float ClayFeatureEdgeG { get => Get("clay_edge_g", 0.12004116f); set => Put("clay_edge_g", Clamp01(value)); }
+    public static float ClayFeatureEdgeB { get => Get("clay_edge_b", 0.11650209f); set => Put("clay_edge_b", Clamp01(value)); }
     public static float ClayFeatureEdgeA { get => GetFloatInRange("clay_edge_a", 0.48666665f, 0.0f, 1.0f); set => Put("clay_edge_a", System.Math.Clamp(value, 0.0f, 1.0f)); }
     public static float ClayFeatureEdgeWidth { get => GetFloatInRange("clay_edge_width", 0.95f, 0.05f, 4.0f); set => Put("clay_edge_width", System.Math.Clamp(value, 0.05f, 4.0f)); }
     public static float ClayFeatureEdgeDepthBias { get => GetFloatInRange("clay_edge_depth_bias", 0.0f, 0.0f, 0.01f); set => Put("clay_edge_depth_bias", System.Math.Clamp(value, 0.0f, 0.01f)); }
     public static float ClayFeatureEdgeCreaseAngleDegrees { get => GetFloatInRange("clay_edge_crease_angle", 35.0f, 1.0f, 150.0f); set => Put("clay_edge_crease_angle", System.Math.Clamp(value, 1.0f, 150.0f)); }
 
     // ── Lighting ───────────────────────────────────────────────────────
-    public static float BaseColorLift { get => Get("light_base_lift", 0.1095f); set => Put("light_base_lift", value); }
-    public static float AmbientStrength { get => Get("light_ambient", 0.306f); set => Put("light_ambient", value); }
-    public static float HeadlightStrength { get => Get("light_headlight", 0.14f); set => Put("light_headlight", value); }
-    public static float KeyLightStrength { get => Get("light_key", 0.34f); set => Put("light_key", value); }
-    public static float FillLightStrength { get => Get("light_fill", 0.24f); set => Put("light_fill", value); }
-    public static float BounceLightStrength { get => Get("light_bounce", 0.0f); set => Put("light_bounce", value); }
-    public static float HemisphereStrength { get => Get("light_hemisphere", 0.28f); set => Put("light_hemisphere", value); }
-    public static float SpecularStrength { get => Get("light_spec_strength", 0.354f); set => Put("light_spec_strength", value); }
-    public static float SpecularPower { get => Get("light_spec_power", 77.0f); set => Put("light_spec_power", value); }
+    public static float BaseColorLift { get => GetFloatInRange("light_base_lift", 0.1095f, 0.0f, 0.25f); set => Put("light_base_lift", System.Math.Clamp(value, 0.0f, 0.25f)); }
+    public static float AmbientStrength { get => GetFloatInRange("light_ambient", 0.306f, 0.0f, 1.0f); set => Put("light_ambient", Clamp01(value)); }
+    public static float HeadlightStrength { get => GetFloatInRange("light_headlight", 0.14f, 0.0f, 1.0f); set => Put("light_headlight", Clamp01(value)); }
+    public static float KeyLightStrength { get => GetFloatInRange("light_key", 0.34f, 0.0f, 1.0f); set => Put("light_key", Clamp01(value)); }
+    public static float FillLightStrength { get => GetFloatInRange("light_fill", 0.24f, 0.0f, 1.0f); set => Put("light_fill", Clamp01(value)); }
+    public static float BounceLightStrength { get => GetFloatInRange("light_bounce", 0.0f, 0.0f, 1.0f); set => Put("light_bounce", Clamp01(value)); }
+    public static float HemisphereStrength { get => GetFloatInRange("light_hemisphere", 0.28f, 0.0f, 1.0f); set => Put("light_hemisphere", Clamp01(value)); }
+    public static float SpecularStrength { get => GetFloatInRange("light_spec_strength", 0.354f, 0.0f, 1.0f); set => Put("light_spec_strength", Clamp01(value)); }
+    public static float SpecularPower { get => GetFloatInRange("light_spec_power", 77.0f, 1.0f, 128.0f); set => Put("light_spec_power", System.Math.Clamp(value, 1.0f, 128.0f)); }
 
     // ── AO + contour + MSAA ───────────────────────────────────────────
     public static bool AmbientOcclusionEnabled { get => Get("ao_enabled", true); set => Put("ao_enabled", value); }
@@ -214,25 +224,26 @@ public static class AppSettings
     public static float AoBlurSharpness { get => GetFloatInRange("ao_blur_sharpness", DefaultAoBlurSharpness, MinAoBlurSharpness, MaxAoBlurSharpness); set => Put("ao_blur_sharpness", System.Math.Clamp(value, MinAoBlurSharpness, MaxAoBlurSharpness)); }
     public static int AoBlurPasses { get => GetIntInRange("ao_blur_passes", DefaultAoBlurPasses, MinAoBlurPasses, MaxAoBlurPasses); set => Put("ao_blur_passes", System.Math.Clamp(value, MinAoBlurPasses, MaxAoBlurPasses)); }
     public static float AoNoiseScale { get => GetFloatInRange("ao_noise_scale", DefaultAoNoiseScale, MinAoNoiseScale, MaxAoNoiseScale); set => Put("ao_noise_scale", System.Math.Clamp(value, MinAoNoiseScale, MaxAoNoiseScale)); }
-    public static float ContourStrength { get => Get("contour_strength", 0.16080001f); set => Put("contour_strength", value); }
-    public static float ContourPower { get => Get("contour_power", 4.4105f); set => Put("contour_power", value); }
+    public static float ContourStrength { get => GetFloatInRange("contour_strength", 0.16080001f, 0.0f, 1.2f); set => Put("contour_strength", System.Math.Clamp(value, 0.0f, 1.2f)); }
+    public static float ContourPower { get => GetFloatInRange("contour_power", 4.4105f, 0.5f, 6.0f); set => Put("contour_power", System.Math.Clamp(value, 0.5f, 6.0f)); }
+    // Read-side clamp keeps forward-incompatible persisted MSAA values from poisoning startup.
     public static int MsaaSamples { get => ClampAndroidMsaaSamples(Get("msaa_samples", 0)); set => Put("msaa_samples", ClampAndroidMsaaSamples(value)); }
 
     // ── Selection ──────────────────────────────────────────────────────
     public static bool ShowSelectionHighlight { get => Get("show_selection", true); set => Put("show_selection", value); }
     public static bool OutlineEnabled { get => Get("outline_enabled", true); set => Put("outline_enabled", value); }
-    public static float OutlineR { get => Get("outline_r", 1.0f); set => Put("outline_r", value); }
-    public static float OutlineG { get => Get("outline_g", 0.0f); set => Put("outline_g", value); }
-    public static float OutlineB { get => Get("outline_b", 0.0f); set => Put("outline_b", value); }
-    public static float OutlineThicknessPx { get => Get("outline_thickness", 3.2098765f); set => Put("outline_thickness", value); }
-    public static float HoverOutlineR { get => Get("hover_outline_r", 0.0f); set => Put("hover_outline_r", value); }
-    public static float HoverOutlineG { get => Get("hover_outline_g", 1.0f); set => Put("hover_outline_g", value); }
-    public static float HoverOutlineB { get => Get("hover_outline_b", 0.0f); set => Put("hover_outline_b", value); }
+    public static float OutlineR { get => Get("outline_r", 1.0f); set => Put("outline_r", Clamp01(value)); }
+    public static float OutlineG { get => Get("outline_g", 0.0f); set => Put("outline_g", Clamp01(value)); }
+    public static float OutlineB { get => Get("outline_b", 0.0f); set => Put("outline_b", Clamp01(value)); }
+    public static float OutlineThicknessPx { get => GetFloatInRange("outline_thickness", 3.2098765f, 1.0f, 8.0f); set => Put("outline_thickness", System.Math.Clamp(value, 1.0f, 8.0f)); }
+    public static float HoverOutlineR { get => Get("hover_outline_r", 0.0f); set => Put("hover_outline_r", Clamp01(value)); }
+    public static float HoverOutlineG { get => Get("hover_outline_g", 1.0f); set => Put("hover_outline_g", Clamp01(value)); }
+    public static float HoverOutlineB { get => Get("hover_outline_b", 0.0f); set => Put("hover_outline_b", Clamp01(value)); }
     public static float HoverOutlineThicknessPx { get => GetFloatInRange("hover_outline_thickness", 0.37757202f, 0.05f, 8.0f); set => Put("hover_outline_thickness", System.Math.Clamp(value, 0.05f, 8.0f)); }
     public static float HoverTintStrength { get => GetFloatInRange("hover_tint_strength", 0.2f, 0.0f, 1.0f); set => Put("hover_tint_strength", System.Math.Clamp(value, 0.0f, 1.0f)); }
-    public static float DimensionHighlightR { get => Get("dimension_highlight_r", 1.0f); set => Put("dimension_highlight_r", System.Math.Clamp(value, 0.0f, 1.0f)); }
-    public static float DimensionHighlightG { get => Get("dimension_highlight_g", 0.5019608f); set => Put("dimension_highlight_g", System.Math.Clamp(value, 0.0f, 1.0f)); }
-    public static float DimensionHighlightB { get => Get("dimension_highlight_b", 0.2509804f); set => Put("dimension_highlight_b", System.Math.Clamp(value, 0.0f, 1.0f)); }
+    public static float DimensionHighlightR { get => Get("dimension_highlight_r", 1.0f); set => Put("dimension_highlight_r", Clamp01(value)); }
+    public static float DimensionHighlightG { get => Get("dimension_highlight_g", 0.5019608f); set => Put("dimension_highlight_g", Clamp01(value)); }
+    public static float DimensionHighlightB { get => Get("dimension_highlight_b", 0.2509804f); set => Put("dimension_highlight_b", Clamp01(value)); }
 
     // Measurement tools
     public static int MeasureModeSelectionIndex { get => GetIntInRange("measure_mode", MeasureModePointToPoint, MeasureModePointToPoint, MeasureModeFaceToFace); set => Put("measure_mode", System.Math.Clamp(value, MeasureModePointToPoint, MeasureModeFaceToFace)); }
@@ -258,7 +269,11 @@ public static class AppSettings
     public static float SectionCapG { get => Get("section_cap_g", 0.8509804f); set => Put("section_cap_g", System.Math.Clamp(value, 0.0f, 1.0f)); }
     public static float SectionCapB { get => Get("section_cap_b", 0.80f); set => Put("section_cap_b", System.Math.Clamp(value, 0.0f, 1.0f)); }
     public static float SectionPlaneSizeFraction { get => GetFloatInRange("section_plane_size", 0.025f, 0.001f, 1.0f); set => Put("section_plane_size", System.Math.Clamp(value, 0.001f, 1.0f)); }
-    public static float SectionGizmoSizeFraction { get => GetFloatInRange("section_gizmo_size", DefaultSectionGizmoSizeFraction, MinSectionGizmoSizeFraction, MaxSectionGizmoSizeFraction); set => Put("section_gizmo_size", System.Math.Clamp(value, MinSectionGizmoSizeFraction, MaxSectionGizmoSizeFraction)); }
+    public static float SectionGizmoSizeFraction
+    {
+        get => System.Math.Clamp(DefaultSectionGizmoSizeFraction * SectionGizmoScale, MinSectionGizmoSizeFraction, MaxSectionGizmoSizeFraction);
+        set => SectionGizmoScale = value / LegacySectionGizmoSizeFractionBase;
+    }
 
     /// <summary>
     /// Populates <paramref name="appearance"/> with every persisted value in
@@ -281,7 +296,6 @@ public static class AppSettings
         appearance.GridLineThickness = GridLineThickness;
         appearance.GridLineColor = new[] { GridLineColorR, GridLineColorG, GridLineColorB };
         appearance.ShowAxes = ShowAxes;
-        appearance.ShowViewCube = ShowViewCube;
         appearance.IsPerspective = IsPerspective;
         appearance.LightweightNavigationEnabled = LightweightNavigationEnabled;
 
@@ -348,9 +362,17 @@ public static class AppSettings
     private static float Get(string k, float def) => Prefs.GetFloat(k, def);
     private static bool Get(string k, bool def) => Prefs.GetBoolean(k, def);
     private static int Get(string k, int def) => Prefs.GetInt(k, def);
-    private static void Put(string k, float v) { var ed = Prefs.Edit()!; ed.PutFloat(k, v); ed.Apply(); }
-    private static void Put(string k, bool v) { var ed = Prefs.Edit()!; ed.PutBoolean(k, v); ed.Apply(); }
-    private static void Put(string k, int v) { var ed = Prefs.Edit()!; ed.PutInt(k, v); ed.Apply(); }
+    public static void Edit(Action<ISharedPreferencesEditor> edit)
+    {
+        ArgumentNullException.ThrowIfNull(edit);
+        var editor = Prefs.Edit()!;
+        edit(editor);
+        editor.Apply();
+    }
+
+    private static void Put(string k, float v) => Edit(ed => ed.PutFloat(k, float.IsFinite(v) ? v : 0.0f));
+    private static void Put(string k, bool v) => Edit(ed => ed.PutBoolean(k, v));
+    private static void Put(string k, int v) => Edit(ed => ed.PutInt(k, v));
 
     private static int EffectiveRenderMode(int renderMode, bool edgesEnabled)
         => IsShadedRenderMode(renderMode)
@@ -375,6 +397,9 @@ public static class AppSettings
 
         if (previousSchema < 13)
             DoubleSectionGizmoSize(editor);
+
+        if (previousSchema < 14)
+            ConvertSectionGizmoSizeToScale(editor);
 
         if (Prefs.Contains("edge_feature_angle") && Approximately(Get("edge_feature_angle", 25.0f), 25.0f))
         {
@@ -471,9 +496,11 @@ public static class AppSettings
         RemoveIntIfOutOfRange(editor, "ao_blur_passes", MinAoBlurPasses, MaxAoBlurPasses);
         RemoveFloatIfOutOfRange(editor, "ao_noise_scale", MinAoNoiseScale, MaxAoNoiseScale);
         RemoveFloatIfOutOfRange(editor, "dimension_text_scale", MinDimensionTextScale, MaxDimensionTextScale);
+        RemoveFloatIfOutOfRange(editor, "section_gizmo_scale", MinSectionGizmoScale, MaxSectionGizmoScale);
 
         editor.PutInt("settings_schema_version", SettingsSchemaVersion);
-        editor.Apply();
+        if (!editor.Commit())
+            global::Android.Util.Log.Warn("FA.Settings", "Failed to commit settings schema migration.");
     }
 
     private static bool Approximately(float left, float right)
@@ -561,7 +588,7 @@ public static class AppSettings
         if (!Prefs.Contains("section_gizmo_size"))
             return;
 
-        float value = Get("section_gizmo_size", DefaultSectionGizmoSizeFraction);
+        float value = Get("section_gizmo_size", LegacySectionGizmoSizeFractionBase);
         if (!float.IsFinite(value))
         {
             editor.Remove("section_gizmo_size");
@@ -573,11 +600,23 @@ public static class AppSettings
             System.Math.Clamp(value * 2.0f, MinSectionGizmoSizeFraction, MaxSectionGizmoSizeFraction));
     }
 
-    private static int ClampAndroidMsaaSamples(int value)
+    private static void ConvertSectionGizmoSizeToScale(ISharedPreferencesEditor editor)
     {
-        if (value <= 0)
-            return 0;
+        if (!Prefs.Contains("section_gizmo_size"))
+            return;
 
-        return value <= 2 ? 2 : 4;
+        float value = Get("section_gizmo_size", LegacySectionGizmoSizeFractionBase);
+        editor.Remove("section_gizmo_size");
+        if (!float.IsFinite(value))
+            return;
+
+        float scale = value / LegacySectionGizmoSizeFractionBase;
+        editor.PutFloat("section_gizmo_scale", System.Math.Clamp(scale, MinSectionGizmoScale, MaxSectionGizmoScale));
     }
+
+    private static float Clamp01(float value)
+        => AppSettingsValueGuards.Clamp01(value);
+
+    private static int ClampAndroidMsaaSamples(int value)
+        => AppSettingsValueGuards.ClampAndroidMsaaSamples(value);
 }

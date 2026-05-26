@@ -16,11 +16,19 @@ public static class AppServices
     {
         ArgumentNullException.ThrowIfNull(applicationContext);
 
+        var platformPaths = new AndroidPlatformPaths(applicationContext);
+        FabricationAssistantPaths.Configure(
+            rootDirectory: platformPaths.AppDataRoot,
+            cacheDirectory: platformPaths.CacheDir,
+            tempDirectory: platformPaths.TempDir,
+            logsDirectory: platformPaths.LogsDir);
+        ImportPipeline.PruneImportCache(platformPaths.AppDataRoot);
+
         var services = new ServiceCollection();
 
         services.AddSingleton<Context>(applicationContext);
         services.AddSingleton<IDispatcher, AndroidDispatcher>();
-        services.AddSingleton<IPlatformPaths>(_ => new AndroidPlatformPaths(applicationContext));
+        services.AddSingleton<IPlatformPaths>(platformPaths);
         services.AddSingleton<ImportPipeline>();
         services.AddSingleton<CameraState>();
         services.AddSingleton<SectionService>();
@@ -32,13 +40,6 @@ public static class AppServices
             ValidateScopes = true,
             ValidateOnBuild = true,
         });
-
-        var paths = provider.GetRequiredService<IPlatformPaths>();
-        FabricationAssistantPaths.Configure(
-            rootDirectory: paths.AppDataRoot,
-            cacheDirectory: paths.CacheDir,
-            tempDirectory: paths.TempDir,
-            logsDirectory: paths.LogsDir);
 
         return provider;
     }

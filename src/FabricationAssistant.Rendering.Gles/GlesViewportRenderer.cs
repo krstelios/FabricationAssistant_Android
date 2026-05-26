@@ -35,6 +35,7 @@ public sealed class GlesViewportRenderer : IDisposable
     private GlesMeasurementOverlay? _measurementOverlay;
     private GlesFaceHighlightOverlay? _faceHighlightOverlay;
     private GlesSectionOverlay? _sectionOverlay;
+    private GlesAxisTriadOverlay? _axisTriadOverlay;
     private ShaderProgram? _sectionStencilProgram;
     private MsaaSceneFramebuffer? _msaaFbo;
     private uint _whiteAoTexture;
@@ -56,8 +57,12 @@ public sealed class GlesViewportRenderer : IDisposable
     private readonly FrameTimingAccumulator _frameTiming = new();
     private readonly float[] _viewMatrixScratch = new float[16];
     private readonly float[] _projectionMatrixScratch = new float[16];
+    private readonly float[] _sectionUniformScratch = new float[32];
     private readonly List<GpuMesh> _opaqueSurfaceMeshes = new();
     private readonly List<GpuMesh> _transparentSurfaceMeshes = new();
+    private int _selectedMeshIndex;
+    private IReadOnlyList<int> _selectedMeshIndices = Array.Empty<int>();
+    private HashSet<int> _selectedMeshIndexLookup = new();
     private IReadOnlyList<int> _xrayOpaqueNodeIds = Array.Empty<int>();
     private IReadOnlyList<int> _xrayBackgroundNodeIds = Array.Empty<int>();
     private HashSet<int> _xrayOpaqueNodeIdLookup = new();
@@ -77,7 +82,39 @@ public sealed class GlesViewportRenderer : IDisposable
     /// 1-based mesh index to highlight in the next frame, or 0 for none.
     /// Set by the host (MainActivity) after a successful tap-pick.
     /// </summary>
-    public int SelectedMeshIndex { get; set; }
+    public int SelectedMeshIndex
+    {
+        get => _selectedMeshIndex;
+        set
+        {
+            _selectedMeshIndex = System.Math.Max(0, value);
+            SelectedMeshIndices = _selectedMeshIndex > 0
+                ? new[] { _selectedMeshIndex }
+                : Array.Empty<int>();
+        }
+    }
+
+    /// <summary>
+    /// 1-based mesh indices that belong to the current logical selection.
+    /// Group and assembly selections can cover more than one rendered mesh.
+    /// </summary>
+    public IReadOnlyList<int> SelectedMeshIndices
+    {
+        get => _selectedMeshIndices;
+        set
+        {
+            int[] snapshot = value is null
+                ? Array.Empty<int>()
+                : value.Where(index => index > 0).Distinct().OrderBy(index => index).ToArray();
+            _selectedMeshIndices = snapshot;
+            _selectedMeshIndexLookup = snapshot.ToHashSet();
+            _selectedMeshIndex = snapshot.Length == 0
+                ? 0
+                : _selectedMeshIndex > 0 && _selectedMeshIndexLookup.Contains(_selectedMeshIndex)
+                    ? _selectedMeshIndex
+                    : snapshot[0];
+        }
+    }
 
     /// <summary>
     /// 1-based mesh index under a hover-capable pointer such as Samsung S Pen,
@@ -186,6 +223,20 @@ public sealed class GlesViewportRenderer : IDisposable
 
     public GlesTransformGizmoHandle SectionGizmoActive { get; set; }
 
+    public Vector3 BodyMoveGizmoAnchor { get; set; }
+
+    public Vector3 BodyMoveGizmoAxisX { get; set; } = Vector3.UnitX;
+
+    public Vector3 BodyMoveGizmoAxisY { get; set; } = Vector3.UnitY;
+
+    public Vector3 BodyMoveGizmoAxisZ { get; set; } = Vector3.UnitZ;
+
+    public float BodyMoveGizmoScale { get; set; }
+
+    public GlesTransformGizmoHandle BodyMoveGizmoHovered { get; set; }
+
+    public GlesTransformGizmoHandle BodyMoveGizmoActive { get; set; }
+
     // Backwards-compatible aliases (read by callers that haven't migrated to
     // Appearance yet). Removed once nothing references them.
     public bool ShowGrid { get => Appearance.ShowGrid; set { var a = Appearance; a.ShowGrid = value; Appearance = a; } }
@@ -198,7 +249,8 @@ public sealed class GlesViewportRenderer : IDisposable
 
     public void OnSurfaceCreated()
     {
-        _guard.Initialize();
+        _guard.InitializeOnCurrentThread();
+        _msaaFbo?.Reset();
         DisposeResources(disposeScene: false);
 
         _gl = GL.GetApi(new SurfaceViewGlContext());
@@ -258,6 +310,10 @@ public sealed class GlesViewportRenderer : IDisposable
         _faceHighlightOverlay = new GlesFaceHighlightOverlay(_gl, measureVs, measureFs);
         _sectionOverlay = new GlesSectionOverlay(_gl, measureVs, measureFs);
 
+        var axisTriadVs = LoadEmbeddedShader("axis_triad.gles.vert");
+        var axisTriadFs = LoadEmbeddedShader("axis_triad.gles.frag");
+        _axisTriadOverlay = new GlesAxisTriadOverlay(_gl, axisTriadVs, axisTriadFs);
+
         var sectionStencilVs = LoadEmbeddedShader("section_stencil.gles.vert");
         var sectionStencilFs = LoadEmbeddedShader("section_stencil.gles.frag");
         _sectionStencilProgram = new ShaderProgram(_gl, "section.stencil", sectionStencilVs, sectionStencilFs);
@@ -293,6 +349,13 @@ public sealed class GlesViewportRenderer : IDisposable
         _initialized = true;
     }
 
+    private void ClearProgramUniformCaches()
+    {
+        _meshProgram?.ClearUniformCache();
+        _edgeProgram?.ClearUniformCache();
+        _sectionStencilProgram?.ClearUniformCache();
+    }
+
     public void OnSurfaceChanged(int width, int height)
     {
         _guard.EnsureOnRenderThread();
@@ -316,6 +379,20 @@ public sealed class GlesViewportRenderer : IDisposable
             _msaaFbo?.Destroy();
     }
 
+    public void TrimTransientGpuResources()
+    {
+        _guard.EnsureOnRenderThread();
+        if (_gl is null)
+            return;
+
+        _normalDepthRenderer?.TrimFramebuffers();
+        _ssaoRenderer?.TrimFramebuffers();
+        _outlineRenderer?.TrimFramebuffers();
+        _msaaFbo?.Destroy();
+        _lastSsaoDiagnostics = default;
+        Android.Util.Log.Info("FA.Renderer", "Trimmed transient GPU framebuffers under memory pressure.");
+    }
+
     public void OnDrawFrame()
     {
         _guard.EnsureOnRenderThread();
@@ -329,7 +406,7 @@ public sealed class GlesViewportRenderer : IDisposable
             {
                 queuedCommandCount++;
                 try { cmd(_gl); }
-                catch (Exception ex) { Android.Util.Log.Error("FA.Renderer", Java.Lang.Throwable.FromException(ex), "GL command failed: " + ex.Message); }
+                catch (Exception ex) { Android.Util.Log.Error("FA.Renderer", Java.Lang.Throwable.FromException(ex), $"GL command failed ({ex.GetType().Name}): {ex.Message}"); }
             }
         }
         long afterQueue = Stopwatch.GetTimestamp();
@@ -389,6 +466,7 @@ public sealed class GlesViewportRenderer : IDisposable
         bool useMsaaFbo = TryPrepareMsaaFramebuffer(a);
         bool drawEdgesThisFrame = false;
         long sceneStart = afterSsao;
+        bool retriedWithoutMsaa = false;
 
         while (true)
         {
@@ -493,7 +571,6 @@ public sealed class GlesViewportRenderer : IDisposable
         SetFloat(activeProgram, "uContourPower", clay ? 3.0f : a.ContourPower);
         SetVec3(activeProgram, "uTintColor", 0f, 0f, 0f);
         SetFloat(activeProgram, "uTintStrength", 0f);
-        SetInt(activeProgram, "uSelectedMeshIndex", HighlightSelection ? SelectedMeshIndex : 0);
         SetInt(activeProgram, "uHoveredMeshIndex", HighlightSelection ? HoveredMeshIndex : 0);
         SetVec3(activeProgram, "uHighlightColor", a.OutlineColor[0], a.OutlineColor[1], a.OutlineColor[2]);
         SetVec3(activeProgram, "uHoverColor", a.HoverOutlineColor[0], a.HoverOutlineColor[1], a.HoverOutlineColor[2]);
@@ -519,6 +596,9 @@ public sealed class GlesViewportRenderer : IDisposable
         int normalLoc = activeProgram.UniformLocation("uNormalMatrix");
         int meshIndexLoc = activeProgram.UniformLocation("uMeshIndex");
         int colorLoc = activeProgram.UniformLocation("uColor");
+        int selectedMeshIndexLoc = activeProgram.UniformLocation("uSelectedMeshIndex");
+        if (selectedMeshIndexLoc >= 0)
+            _gl.Uniform1(selectedMeshIndexLoc, HighlightSelection ? SelectedMeshIndex : 0);
 
         bool clayEdges = a.Mode == RenderMode.Clay && a.ClayFeatureEdgesEnabled;
         bool sectionClippingActive = SectionPlanes.Count > 0;
@@ -553,7 +633,7 @@ public sealed class GlesViewportRenderer : IDisposable
                 _gl.Disable(EnableCap.Blend);
                 _gl.DepthMask(true);
                 foreach (var m in _opaqueSurfaceMeshes)
-                    DrawSurfaceMesh(m, a, clay, modelLoc, normalLoc, colorLoc, meshIndexLoc, identityModel, identityNormal);
+                    DrawSurfaceMesh(m, a, clay, modelLoc, normalLoc, colorLoc, meshIndexLoc, selectedMeshIndexLoc, identityModel, identityNormal);
             }
             else
             {
@@ -562,7 +642,7 @@ public sealed class GlesViewportRenderer : IDisposable
                     _gl.Disable(EnableCap.Blend);
                     _gl.DepthMask(true);
                     foreach (var m in _opaqueSurfaceMeshes)
-                        DrawSurfaceMesh(m, a, clay, modelLoc, normalLoc, colorLoc, meshIndexLoc, identityModel, identityNormal);
+                        DrawSurfaceMesh(m, a, clay, modelLoc, normalLoc, colorLoc, meshIndexLoc, selectedMeshIndexLoc, identityModel, identityNormal);
                 }
 
                 SortTransparentMeshesBackToFront(_transparentSurfaceMeshes, camera);
@@ -570,7 +650,7 @@ public sealed class GlesViewportRenderer : IDisposable
                 _gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
                 _gl.DepthMask(false);
                 foreach (var m in _transparentSurfaceMeshes)
-                    DrawSurfaceMesh(m, a, clay, modelLoc, normalLoc, colorLoc, meshIndexLoc, identityModel, identityNormal);
+                    DrawSurfaceMesh(m, a, clay, modelLoc, normalLoc, colorLoc, meshIndexLoc, selectedMeshIndexLoc, identityModel, identityNormal);
 
                 _gl.DepthMask(true);
                 _gl.Disable(EnableCap.Blend);
@@ -689,13 +769,28 @@ public sealed class GlesViewportRenderer : IDisposable
             ResetMainFramebufferState();
         }
 
+        if (BodyMoveGizmoScale > 0f)
+        {
+            _sectionOverlay?.RenderGizmo(
+                view,
+                proj,
+                BodyMoveGizmoAnchor,
+                BodyMoveGizmoAxisX,
+                BodyMoveGizmoAxisY,
+                BodyMoveGizmoAxisZ,
+                BodyMoveGizmoScale,
+                BodyMoveGizmoHovered,
+                BodyMoveGizmoActive);
+            ResetMainFramebufferState();
+        }
+
         if (FaceHighlights.Count > 0)
             _faceHighlightOverlay?.Render(view, proj, FaceHighlights);
         if (MeasurementPresentation.Count > 0)
         {
             if (_measurementOverlay is not null)
                 _measurementOverlay.DimensionHighlightColor = DimensionHighlightColor;
-            _measurementOverlay?.Render(view, proj, _height, MeasurementPresentation);
+            _measurementOverlay?.Render(view, proj, _height, camera.Position, MeasurementPresentation);
         }
         ResetMainFramebufferState();
 
@@ -707,6 +802,10 @@ public sealed class GlesViewportRenderer : IDisposable
         {
             if (!TryResolveMsaaFramebuffer(a))
             {
+                if (retriedWithoutMsaa)
+                    break;
+
+                retriedWithoutMsaa = true;
                 useMsaaFbo = false;
                 continue;
             }
@@ -724,7 +823,7 @@ public sealed class GlesViewportRenderer : IDisposable
             && a.OutlineEnabled
             && HighlightSelection
             && HoveredMeshIndex > 0
-            && HoveredMeshIndex != SelectedMeshIndex
+            && !IsSelectedMesh(HoveredMeshIndex)
             && _outlineRenderer is not null)
         {
             _outlineRenderer.SectionPlanes = SectionPlanes;
@@ -736,12 +835,18 @@ public sealed class GlesViewportRenderer : IDisposable
         if (!lightweightNavigationActive
             && a.OutlineEnabled
             && HighlightSelection
-            && SelectedMeshIndex > 0
+            && SelectedMeshIndices.Count > 0
             && _outlineRenderer is not null)
         {
             _outlineRenderer.SectionPlanes = SectionPlanes;
-            _outlineRenderer.Render(Scene, camera, SelectedMeshIndex,
+            _outlineRenderer.Render(Scene, camera, SelectedMeshIndices,
                 a.OutlineColor, a.OutlineThicknessPx, _width, _height);
+            ResetMainFramebufferState();
+        }
+
+        if (a.ShowAxes)
+        {
+            _axisTriadOverlay?.Render(camera, _width, _height);
             ResetMainFramebufferState();
         }
 
@@ -774,6 +879,7 @@ public sealed class GlesViewportRenderer : IDisposable
         int normalLoc,
         int colorLoc,
         int meshIndexLoc,
+        int selectedMeshIndexLoc,
         float[] identityModel,
         float[] identityNormal)
     {
@@ -803,9 +909,14 @@ public sealed class GlesViewportRenderer : IDisposable
         }
 
         if (meshIndexLoc >= 0) gl.Uniform1(meshIndexLoc, mesh.MeshIndex);
+        if (selectedMeshIndexLoc >= 0)
+            gl.Uniform1(selectedMeshIndexLoc, HighlightSelection && IsSelectedMesh(mesh.MeshIndex) ? mesh.MeshIndex : 0);
         GlesRenderUtil.ApplyMeshCulling(gl, mesh);
         mesh.Draw();
     }
+
+    private bool IsSelectedMesh(int meshIndex)
+        => meshIndex > 0 && _selectedMeshIndexLookup.Contains(meshIndex);
 
     private void PrepareSurfacePassMeshes(
         IReadOnlyList<GpuMesh> meshes,
@@ -1189,20 +1300,20 @@ public sealed class GlesViewportRenderer : IDisposable
         if (planesLoc < 0 || count <= 0)
             return;
 
-        float[] values = new float[32];
+        Array.Clear(_sectionUniformScratch, 0, _sectionUniformScratch.Length);
         for (int i = 0; i < count; i++)
         {
             GlesSectionPlane plane = SectionPlanes[i];
             int offset = i * 4;
-            values[offset + 0] = plane.NormalX;
-            values[offset + 1] = plane.NormalY;
-            values[offset + 2] = plane.NormalZ;
-            values[offset + 3] = plane.Offset;
+            _sectionUniformScratch[offset + 0] = plane.NormalX;
+            _sectionUniformScratch[offset + 1] = plane.NormalY;
+            _sectionUniformScratch[offset + 2] = plane.NormalZ;
+            _sectionUniformScratch[offset + 3] = plane.Offset;
         }
 
         unsafe
         {
-            fixed (float* ptr = values)
+            fixed (float* ptr = _sectionUniformScratch)
                 _gl!.Uniform4(planesLoc, (uint)count, ptr);
         }
     }
@@ -1492,9 +1603,17 @@ public sealed class GlesViewportRenderer : IDisposable
         // FBO 0 here - that would discard the MSAA target the caller just
         // selected. This method now only resets pipeline state.
         _gl!.Enable(EnableCap.DepthTest);
+        if (_width > 0 && _height > 0)
+            _gl.Viewport(0, 0, (uint)_width, (uint)_height);
         _gl.DepthFunc(DepthFunction.Lequal);
         _gl.DepthMask(true);
+        _gl.ColorMask(true, true, true, true);
         _gl.Disable(EnableCap.Blend);
+        _gl.Disable(EnableCap.ScissorTest);
+        _gl.Disable(EnableCap.StencilTest);
+        _gl.StencilMask(0xFF);
+        _gl.StencilFunc(StencilFunction.Always, 0, 0xFF);
+        _gl.StencilOp(StencilOp.Keep, StencilOp.Keep, StencilOp.Keep);
         _gl.Enable(EnableCap.CullFace);
         _gl.CullFace(TriangleFace.Back);
         _gl.FrontFace(FrontFaceDirection.Ccw);
@@ -1555,34 +1674,6 @@ public sealed class GlesViewportRenderer : IDisposable
         return _pickRenderer.Pick(x, y, Scene, camera);
     }
 
-    private void SetMat4(string name, float[] m)
-    {
-        int loc = _meshProgram!.UniformLocation(name);
-        if (loc < 0) return;
-        _gl!.UniformMatrix4(loc, true, m);
-    }
-
-    private void SetMat3(string name, float[] m)
-    {
-        int loc = _meshProgram!.UniformLocation(name);
-        if (loc < 0) return;
-        _gl!.UniformMatrix3(loc, true, m);
-    }
-
-    private void SetVec3(string name, float x, float y, float z)
-    {
-        int loc = _meshProgram!.UniformLocation(name);
-        if (loc < 0) return;
-        _gl!.Uniform3(loc, x, y, z);
-    }
-
-    private void SetInt(string name, int value)
-    {
-        int loc = _meshProgram!.UniformLocation(name);
-        if (loc < 0) return;
-        _gl!.Uniform1(loc, value);
-    }
-
     /// <summary>
     /// Creates a 1x1 white R8 (single-channel) texture. Bound when SSAO is
     /// disabled so the mesh shader's AO sample returns 1.0 and the multiply
@@ -1607,7 +1698,12 @@ public sealed class GlesViewportRenderer : IDisposable
         var asm = typeof(GlesViewportRenderer).Assembly;
         var name = "FabricationAssistant.Rendering.Gles.Shaders." + fileName;
         using var s = asm.GetManifestResourceStream(name)
-            ?? throw new InvalidOperationException("Embedded shader not found: " + name);
+            ?? throw new InvalidOperationException(
+                "Embedded shader not found: " + name
+                + ". Available shader resources: "
+                + string.Join(", ", asm.GetManifestResourceNames()
+                    .Where(resource => resource.StartsWith("FabricationAssistant.Rendering.Gles.Shaders.", StringComparison.Ordinal))
+                    .OrderBy(resource => resource, StringComparer.Ordinal)));
         using var r = new StreamReader(s);
         return r.ReadToEnd();
     }
@@ -1641,6 +1737,7 @@ public sealed class GlesViewportRenderer : IDisposable
         TryDispose(_measurementOverlay);
         TryDispose(_faceHighlightOverlay);
         TryDispose(_sectionOverlay);
+        TryDispose(_axisTriadOverlay);
         TryDispose(_sectionStencilProgram);
         TryDispose(_msaaFbo);
 
@@ -1654,6 +1751,7 @@ public sealed class GlesViewportRenderer : IDisposable
         _measurementOverlay = null;
         _faceHighlightOverlay = null;
         _sectionOverlay = null;
+        _axisTriadOverlay = null;
         _sectionStencilProgram = null;
         _msaaFbo = null;
 

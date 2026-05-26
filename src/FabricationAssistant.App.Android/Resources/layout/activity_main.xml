@@ -88,6 +88,20 @@
             style="@style/FA.IconButton" />
 
         <com.google.android.material.button.MaterialButton
+            android:id="@+id/navModelExplorerButton"
+            android:layout_width="@dimen/fa_nav_rail_item_width"
+            android:layout_height="@dimen/fa_nav_rail_item_height"
+            android:layout_marginTop="@dimen/fa_space_xs"
+            android:contentDescription="@string/cd_nav_model_explorer"
+            app:icon="@drawable/ic_model_explorer"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_nav_rail_item_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.IconButton" />
+
+        <com.google.android.material.button.MaterialButton
             android:id="@+id/navBomButton"
             android:layout_width="@dimen/fa_nav_rail_item_width"
             android:layout_height="@dimen/fa_nav_rail_item_height"
@@ -268,6 +282,21 @@
             android:layout_height="40dp"
             android:contentDescription="@string/cd_tool_select"
             app:icon="@drawable/ic_tool_select"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/toolMove"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:contentDescription="@string/cd_tool_move"
+            app:icon="@drawable/ic_tool_move"
             app:iconTint="@null"
             app:iconGravity="textStart"
             app:iconPadding="0dp"
