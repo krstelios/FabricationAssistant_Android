@@ -64,12 +64,19 @@ Updated 2026-05-26 after implementation and tablet verification.
 - **R9-section-cap stencil:** section cap stencil writes now depth-test against the scene depth buffer to keep cap parity in visible depth order.
 - **D2 / cleanup:** removed the unused viewport renderer uniform-cache reset helper.
 
+### Fixed in `942c234` (`Harden settings and transform sync cleanup`)
+
+- **R6:** `GpuScene.SyncNodeTransforms` now tracks the runtime scene's transform version counters and skips redundant full-scene matrix/bounds recomputation when no move or transient transform changed.
+- **S6:** settings color-picker dialogs now track active dialogs, clear owned backgrounds on dismiss, and dispose replaced swatch drawables instead of leaving dialog drawables live until process cleanup.
+- **C5:** settings schema migration default-removal and range-guard lists are centralized in typed tables, reducing the chance that future migration entries are missed or drift from the cleanup logic.
+
 ### Latest tablet verification
 
-- Installed the current debug APK on tablet `R52TA040AQT`.
+- Installed the debug APK containing `942c234` on tablet `R52TA040AQT`.
 - Opened the app, loaded recent file `50-0001916_00.fa`.
-- Logcat scan after load and scripted interaction: no fatal exception, ANR, import failure, GLES error, or pick FBO failure.
-- Steady-state scripted interaction still reports burst-pick slow-frame warnings on the 666-mesh model, but no Choreographer skipped-frame logs.
+- Load log scan: `documentNodes=1937`, `documentMeshes=666`, `visibleMeshNodes=666`, diagonal `4.622`; no fatal exception, ANR, import failure, GLES error, framebuffer failure, or JNI error.
+- Steady-state scripted interaction: 8 frame-timing blocks, top `pick:tap` run `69.1ms`, slow-frame log count `4`, Choreographer skipped-frame log count `0`.
+- Final logcat regression scan after scripted interaction: no crash, ANR, import, GLES, framebuffer, render, or load failure.
 
 ---
 
