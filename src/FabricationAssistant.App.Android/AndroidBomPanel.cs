@@ -34,7 +34,7 @@ internal sealed record AndroidBomPanelTarget(
     int PartOrdinal,
     int PartOccurrenceCount);
 
-internal sealed class AndroidBomPanel
+internal sealed class AndroidBomPanel : IDisposable
 {
     private readonly FaPackageQueryService _queryService;
     private readonly Func<Scene?> _sceneAccessor;
@@ -56,6 +56,9 @@ internal sealed class AndroidBomPanel
     private EditText? _search;
     private ListView? _list;
     private BomPanelAdapter? _adapter;
+    private HorizontalTableScrollTouchListener? _headerScrollTouchListener;
+    private HorizontalTableScrollTouchListener? _listScrollTouchListener;
+    private EventHandler<View.LayoutChangeEventArgs>? _tableScrollLayoutChangeHandler;
     private BomPanelRow? _selectedRow;
     private string? _selectedRowKey;
     private readonly Dictionary<string, int> _occurrenceCountByPartKey = new(StringComparer.Ordinal);
@@ -63,6 +66,7 @@ internal sealed class AndroidBomPanel
     private MaterialButton? _isolateButton;
     private MaterialButton? _isolateXrayButton;
     private string _filterText = string.Empty;
+    private bool _disposed;
 
     public AndroidBomPanel(
         FaPackageQueryService queryService,
@@ -79,6 +83,8 @@ internal sealed class AndroidBomPanel
 
     public View CreateView(Context ctx)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
         int pad = Dp(ctx, 14);
         _columnWidthsPx = DefaultColumnWidths(ctx);
         _tableWidthPx = _columnWidthsPx.Sum();
@@ -116,7 +122,8 @@ internal sealed class AndroidBomPanel
             Visibility = ViewStates.Gone,
         };
         tableScroll.Background = CreatePanelBackground(ctx);
-        tableScroll.LayoutChange += (_, _) => RefreshColumnWidths(ctx);
+        _tableScrollLayoutChangeHandler = (_, _) => RefreshColumnWidths(ctx);
+        tableScroll.LayoutChange += _tableScrollLayoutChangeHandler;
         _tableScroll = tableScroll;
 
         var tableRoot = new LinearLayout(ctx)
@@ -129,7 +136,8 @@ internal sealed class AndroidBomPanel
         _tableRoot = tableRoot;
 
         _headerRow = CreateHeaderRow(ctx);
-        _headerRow.SetOnTouchListener(new HorizontalTableScrollTouchListener(ctx, tableScroll));
+        _headerScrollTouchListener = new HorizontalTableScrollTouchListener(ctx, tableScroll);
+        _headerRow.SetOnTouchListener(_headerScrollTouchListener);
         tableRoot.AddView(_headerRow, new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MatchParent,
             Dp(ctx, 34)));
@@ -149,21 +157,10 @@ internal sealed class AndroidBomPanel
             DividerHeight = 1,
             FastScrollEnabled = true,
         };
-        _list.SetOnTouchListener(new HorizontalTableScrollTouchListener(ctx, tableScroll));
+        _listScrollTouchListener = new HorizontalTableScrollTouchListener(ctx, tableScroll);
+        _list.SetOnTouchListener(_listScrollTouchListener);
         _list.SetBackgroundColor(ColorRes(ctx, Resource.Color.fa_app_background));
-        _list.ItemClick += (_, e) =>
-        {
-            if (e.Position < 0 || e.Position >= _visibleRows.Count)
-                return;
-            BomPanelRow row = _visibleRows[e.Position];
-            if (!_visibleRows.Contains(row))
-                return;
-            _selectedRow = row;
-            _selectedRowKey = RowIdentity(row);
-            _adapter.NotifyDataSetChanged();
-            UpdateActionButtons();
-            HideKeyboard(ctx);
-        };
+        _list.ItemClick += OnListItemClick;
         tableRoot.AddView(_list, new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MatchParent,
             0,
@@ -193,6 +190,40 @@ internal sealed class AndroidBomPanel
         tableScroll.Post(() => RefreshColumnWidths(ctx));
         tableScroll.PostDelayed(() => RefreshColumnWidths(ctx), 120);
         return root;
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+        ActionRequested = null;
+
+        if (_tableScroll is not null && _tableScrollLayoutChangeHandler is not null)
+            _tableScroll.LayoutChange -= _tableScrollLayoutChangeHandler;
+        _tableScrollLayoutChangeHandler = null;
+
+        if (_search is not null)
+            _search.TextChanged -= OnSearchTextChanged;
+
+        if (_headerRow is not null)
+            _headerRow.SetOnTouchListener(null);
+
+        if (_list is not null)
+        {
+            _list.ItemClick -= OnListItemClick;
+            _list.SetOnTouchListener(null);
+        }
+
+        _selectButton?.SetOnClickListener(null);
+        _isolateButton?.SetOnClickListener(null);
+        _isolateXrayButton?.SetOnClickListener(null);
+
+        _headerScrollTouchListener?.Dispose();
+        _listScrollTouchListener?.Dispose();
+        _headerScrollTouchListener = null;
+        _listScrollTouchListener = null;
     }
 
     private void AddHeader(Context ctx, LinearLayout root)
@@ -244,17 +275,22 @@ internal sealed class AndroidBomPanel
         _search.SetHintTextColor(ColorRes(ctx, Resource.Color.fa_text_disabled));
         _search.Background = CreateInputBackground(ctx);
         _search.SetPadding(Dp(ctx, 12), 0, Dp(ctx, 12), 0);
-        _search.TextChanged += (_, e) =>
-        {
-            _filterText = e.Text?.ToString() ?? string.Empty;
-            ApplyFilter();
-        };
+        _search.TextChanged += OnSearchTextChanged;
 
         var lp = new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MatchParent,
             Dp(ctx, 42));
         lp.SetMargins(0, Dp(ctx, 12), 0, Dp(ctx, 10));
         root.AddView(_search, lp);
+    }
+
+    private void OnSearchTextChanged(object? sender, TextChangedEventArgs e)
+    {
+        if (_disposed)
+            return;
+
+        _filterText = e.Text?.ToString() ?? string.Empty;
+        ApplyFilter();
     }
 
     private LinearLayout CreateHeaderRow(Context ctx)
@@ -320,7 +356,7 @@ internal sealed class AndroidBomPanel
         button.SetAllCaps(false);
         button.SetMinHeight(0);
         button.SetPadding(Dp(ctx, 8), 0, Dp(ctx, 8), 0);
-        button.Click += (_, _) => RequestAction(action);
+        button.SetOnClickListener(new BomActionClickListener(this, action));
         return button;
     }
 
@@ -528,6 +564,9 @@ internal sealed class AndroidBomPanel
 
     private void ToggleRow(BomPanelRow row)
     {
+        if (_disposed)
+            return;
+
         if (row.Children.Count == 0)
             return;
 
@@ -537,6 +576,9 @@ internal sealed class AndroidBomPanel
 
     private void RequestAction(AndroidBomPanelAction action)
     {
+        if (_disposed)
+            return;
+
         BomPanelRow? selectedRow = ResolveSelectedRow();
         if (selectedRow is null)
             return;
@@ -617,7 +659,7 @@ internal sealed class AndroidBomPanel
 
     private void RefreshColumnWidths(Context ctx)
     {
-        if (_tableRoot is null || _columns.Length == 0)
+        if (_disposed || _tableRoot is null || _columns.Length == 0)
             return;
 
         int viewportWidth = _tableScroll?.Width ?? 0;
@@ -921,7 +963,39 @@ internal sealed class AndroidBomPanel
     private static int Dp(Context ctx, float value)
         => (int)MathF.Round(value * (ctx.Resources?.DisplayMetrics?.Density ?? 1f));
 
+    private void OnListItemClick(object? sender, AdapterView.ItemClickEventArgs e)
+    {
+        if (_disposed || e.Position < 0 || e.Position >= _visibleRows.Count)
+            return;
+
+        BomPanelRow row = _visibleRows[e.Position];
+        if (!_visibleRows.Contains(row))
+            return;
+
+        _selectedRow = row;
+        _selectedRowKey = RowIdentity(row);
+        _adapter?.NotifyDataSetChanged();
+        UpdateActionButtons();
+
+        if (_list?.Context is { } ctx)
+            HideKeyboard(ctx);
+    }
+
     private readonly record struct ColumnSpec(string Key, string Title, int MinWidthDp, int MaxWidthDp);
+
+    private sealed class BomActionClickListener : Java.Lang.Object, View.IOnClickListener
+    {
+        private readonly AndroidBomPanel _owner;
+        private readonly AndroidBomPanelAction _action;
+
+        public BomActionClickListener(AndroidBomPanel owner, AndroidBomPanelAction action)
+        {
+            _owner = owner;
+            _action = action;
+        }
+
+        public void OnClick(View? v) => _owner.RequestAction(_action);
+    }
 
     private sealed class BomPanelRow
     {

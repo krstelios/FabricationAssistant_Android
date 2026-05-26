@@ -215,6 +215,7 @@ public sealed class MainActivity : AppCompatActivity
     private LeftToolPanelKind _leftToolPanelKind = LeftToolPanelKind.None;
     private int _leftToolPanelAnimationVersion;
     private ValueAnimator? _leftToolPanelWidthAnimator;
+    private IDisposable? _leftToolPanelContent;
     private int _recentPanelWidthPx;
     private int _modelExplorerPanelWidthPx;
     private int _settingsPanelWidthPx;
@@ -957,7 +958,7 @@ public sealed class MainActivity : AppCompatActivity
         {
             ActionRequested = HandleBomPanelAction,
         };
-        ShowLeftToolPanel(panelKind, panel.CreateView(this));
+        ShowLeftToolPanel(panelKind, panel.CreateView(this), panel);
     }
 
     private void ToggleSettingsPanel()
@@ -1278,21 +1279,43 @@ public sealed class MainActivity : AppCompatActivity
 
     private bool IsImportUiBusy() => HasActiveLoad() || _openPickerInFlight;
 
-    private void ShowLeftToolPanel(LeftToolPanelKind kind, View content)
+    private void ShowLeftToolPanel(LeftToolPanelKind kind, View content, IDisposable? disposableContent = null)
     {
         if (_leftToolPanel is null)
+        {
+            disposableContent?.Dispose();
             return;
+        }
 
         bool wasClosed = _leftToolPanelKind == LeftToolPanelKind.None;
         _leftToolPanelKind = kind;
 
+        DisposeLeftToolPanelContent();
         _leftToolPanel.RemoveAllViews();
         _leftToolPanel.AddView(content, new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MatchParent,
             ViewGroup.LayoutParams.MatchParent));
+        _leftToolPanelContent = disposableContent;
         SetCurrentLeftToolPanelWidth(GetCurrentLeftToolPanelWidth());
         SetLeftToolPanelExpanded(true, animate: wasClosed);
         UpdateLeftToolPanelButtonStates();
+    }
+
+    private void DisposeLeftToolPanelContent()
+    {
+        IDisposable? content = _leftToolPanelContent;
+        _leftToolPanelContent = null;
+        if (content is null)
+            return;
+
+        try
+        {
+            content.Dispose();
+        }
+        catch (Exception ex)
+        {
+            global::Android.Util.Log.Warn("FA.UI", "Failed to dispose left-panel content: " + ex.Message);
+        }
     }
 
     private void SetLeftToolPanelExpanded(bool expanded, bool animate)
@@ -1309,6 +1332,7 @@ public sealed class MainActivity : AppCompatActivity
             int closingWidth = Math.Max(0, _leftToolPanel.Width);
             _leftToolPanelKind = LeftToolPanelKind.None;
             UpdateLeftToolPanelButtonStates();
+            DisposeLeftToolPanelContent();
 
             if (animate && _leftToolPanel.Visibility == ViewStates.Visible && closingWidth > 0)
             {
@@ -1330,6 +1354,7 @@ public sealed class MainActivity : AppCompatActivity
             _leftToolPanel.Visibility = ViewStates.Gone;
             _leftToolPanelDivider.Visibility = ViewStates.Gone;
             SetLeftToolPanelLayoutWidth(0);
+            DisposeLeftToolPanelContent();
             _leftToolPanel.RemoveAllViews();
             _viewport?.RequestLayout();
             _viewport?.RequestRender();
@@ -9520,6 +9545,7 @@ public sealed class MainActivity : AppCompatActivity
         if (_undoService is not null)
             _undoService.UndoFailed -= OnUndoFailed;
 
+        DisposeLeftToolPanelContent();
         ClearAndroidViewListeners();
         if (_pointerSource is not null)
             _pointerSource.GestureRecognized -= OnGestureForToolbarTools;
