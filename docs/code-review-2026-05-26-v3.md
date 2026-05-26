@@ -109,13 +109,18 @@ Updated 2026-05-27 after implementation and tablet verification.
 
 - **D4:** renderer slow-frame log throttling now resets when appearance state is replaced or renderer resources are torn down, so the first slow frame after settings/mode/context changes is not hidden by a stale throttle timestamp. The timestamp read/write is now atomic.
 
+### Fixed in `268bbb5` (`Snapshot renderer appearance boundary`)
+
+- **B5 follow-up:** `GlesViewportRenderer.Appearance` now snapshots `SceneAppearance` array fields on public get/set, so direct callers and backwards-compatible aliases cannot mutate renderer-owned arrays after assignment. Hot render paths read the private renderer snapshot directly to avoid per-frame clone allocations.
+
 ### Latest tablet verification
 
-- Installed the debug APK containing `f80d6bb` on tablet `R52TA040AQT`.
+- Installed the debug APK containing `268bbb5` on tablet `R52TA040AQT`.
 - Opened the app, loaded recent file `50-0001916_00.fa`.
-- Load log scan: `documentNodes=1937`, `documentMeshes=666`, `visibleMeshNodes=666`, diagonal `4.622`; tablet reports `GL_MAX_SAMPLES=4`, so the 8x-capable MSAA path clamps to 4x on this hardware. Initial `load-document` GL command run was `5151.3ms`.
-- Scripted interaction: no fatal exception, ANR, import failure, GLES error, framebuffer failure, or JNI error; sampled frame timing blocks averaged `13.7-17.0ms`, max `56.9ms`, with `1` frame timing block over `33ms` / `50ms` during pick-command queueing.
-- Render queue burst: top `pick:tap` run `29.5ms`, top wait `222.1ms`, slow-frame log count `3`, Choreographer skipped-frame log count during scripted interaction `0`.
+- Load log scan: `documentNodes=1937`, `documentMeshes=666`, `visibleMeshNodes=666`, diagonal `4.622`; tablet reports `GL_MAX_SAMPLES=4`, so the 8x-capable MSAA path clamps to 4x on this hardware. Initial `load-document` GL command run was `5115.3ms`.
+- Scripted interaction: no fatal exception, ANR, import failure, GLES error, framebuffer failure, or JNI error. The first scripted pass was functionally clean but logged one Choreographer skipped-frame warning during pick bursts; a rerun on the already-loaded model did not reproduce that warning.
+- Latest render-queue rerun: sampled frame timing blocks averaged `17.8-19.3ms`, max `53.0ms`, with `2` blocks over `33ms` and `1` over `50ms` during pick-command queueing.
+- Render queue burst: top `pick:tap` run `48.7ms`, top wait `51.6ms`, slow-frame log count `5`, Choreographer skipped-frame log count during the latest scripted interaction `0`.
 - Final app-PID logcat regression scan after scripted interaction: no crash, ANR, import, GLES, framebuffer, render, or load failure.
 
 ---
