@@ -134,13 +134,15 @@ public sealed class GlesViewportRenderer : IDisposable
     /// Per-frame appearance state. Mirrors the desktop SceneAppearanceViewModel.
     /// PreferencesBottomSheet writes through AppSettings; MainActivity rebuilds
     /// this struct on every change via AppSettings.Apply.
+    /// Public callers get and set defensive snapshots so array fields cannot
+    /// be mutated across UI/render-thread boundaries after assignment.
     /// </summary>
     public SceneAppearance Appearance
     {
-        get => _appearance;
+        get => _appearance.CreateRendererSnapshot();
         set
         {
-            _appearance = value;
+            _appearance = value.CreateRendererSnapshot();
             ResetSlowFrameLogThrottle();
         }
     }
@@ -375,8 +377,9 @@ public sealed class GlesViewportRenderer : IDisposable
         // Only allocate the MSAA FBO when MSAA is on. Mirrors the conditional
         // in OnDrawFrame so a resize while MSAA is Off does not eagerly
         // create the FBO.
-        if (Appearance.MsaaSamples > 1)
-            TryPrepareMsaaFramebuffer(Appearance);
+        var appearance = _appearance;
+        if (appearance.MsaaSamples > 1)
+            TryPrepareMsaaFramebuffer(appearance);
         else
             _msaaFbo?.Destroy();
     }
@@ -413,7 +416,7 @@ public sealed class GlesViewportRenderer : IDisposable
         }
         long afterQueue = Stopwatch.GetTimestamp();
 
-        var a = Appearance;
+        var a = _appearance;
         CameraState? camera = SnapshotCamera();
         bool interactive = InteractiveNavigationActive;
         bool lightweightNavigationActive = interactive && a.LightweightNavigationEnabled;
@@ -1135,8 +1138,9 @@ public sealed class GlesViewportRenderer : IDisposable
         if (IsXrayBackgroundMesh(mesh))
             return false;
 
-        bool clay = Appearance.Mode == RenderMode.Clay;
-        return GetEffectiveMeshAlpha(mesh, Appearance, clay) >= OpaqueAlphaThreshold;
+        var appearance = _appearance;
+        bool clay = appearance.Mode == RenderMode.Clay;
+        return GetEffectiveMeshAlpha(mesh, appearance, clay) >= OpaqueAlphaThreshold;
     }
 
     private static float ResolveSceneDiagonal(GpuScene scene)
