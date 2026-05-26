@@ -93,13 +93,17 @@ Updated 2026-05-27 after implementation and tablet verification.
 
 - **B19:** axis-triad, section, measurement, and measurement face-highlight overlays no longer create VAO/VBO resources in constructors. Each draw/upload path now ensures its GL buffers immediately before binding and uses shared cleanup helpers to clear partial handles, hardening overlay rendering after context recreation.
 
+### Fixed in `64c602d` (`Preserve recents on transient access probes`)
+
+- **I5:** recent-file access checks now distinguish accessible, revoked, and unknown states. Loading/promoting recents prunes definitively revoked entries but keeps entries whose SAF probe fails transiently, avoiding panel flicker or accidental recents loss when a provider cannot be verified at that moment. Unit coverage now locks this behavior.
+
 ### Latest tablet verification
 
-- Installed the debug APK containing `ba62126` on tablet `R52TA040AQT`.
+- Installed the debug APK containing `64c602d` on tablet `R52TA040AQT`.
 - Opened the app, loaded recent file `50-0001916_00.fa`.
-- Load log scan: `documentNodes=1937`, `documentMeshes=666`, `visibleMeshNodes=666`, diagonal `4.622`; tablet reports `GL_MAX_SAMPLES=4`, so the 8x-capable MSAA path clamps to 4x on this hardware. Initial `load-document` GL command run was `5253.8ms`.
-- Scripted interaction: no fatal exception, ANR, import failure, GLES error, framebuffer failure, or JNI error; sampled frame timing blocks averaged `16.2-16.9ms`, max `26.8ms`, with `0` frames over `33ms` / `50ms`.
-- Render queue burst: top `pick:tap` run `43.6ms`, top wait `33.1ms`, slow-frame log count `2`, Choreographer skipped-frame log count during scripted interaction `0`.
+- Load log scan: `documentNodes=1937`, `documentMeshes=666`, `visibleMeshNodes=666`, diagonal `4.622`; tablet reports `GL_MAX_SAMPLES=4`, so the 8x-capable MSAA path clamps to 4x on this hardware. Initial `load-document` GL command run was `5207.9ms`.
+- Scripted interaction: no fatal exception, ANR, import failure, GLES error, framebuffer failure, or JNI error; sampled frame timing blocks averaged `16.9-18.2ms`, max `51.1ms`, with `1` frame over `33ms` / `50ms`.
+- Render queue burst: top `pick:tap` run `73.3ms`, top wait `71.8ms`, slow-frame log count `4`, Choreographer skipped-frame log count during scripted interaction `1`.
 - Final app-PID logcat regression scan after scripted interaction: no crash, ANR, import, GLES, framebuffer, render, or load failure.
 
 ---
