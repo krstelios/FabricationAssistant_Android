@@ -11,7 +11,7 @@
 
 ## 0. Fix progress
 
-Updated 2026-05-26 after implementation and tablet verification.
+Updated 2026-05-27 after implementation and tablet verification.
 
 ### Fixed in `955147f` (`updates`)
 
@@ -70,12 +70,18 @@ Updated 2026-05-26 after implementation and tablet verification.
 - **S6:** settings color-picker dialogs now track active dialogs, clear owned backgrounds on dismiss, and dispose replaced swatch drawables instead of leaving dialog drawables live until process cleanup.
 - **C5:** settings schema migration default-removal and range-guard lists are centralized in typed tables, reducing the chance that future migration entries are missed or drift from the cleanup logic.
 
+### Fixed in `deac167` (`Serialize Android model loads`)
+
+- **B13 / I8:** user-initiated model opens now serialize through one model-load semaphore, so a canceled import must leave the critical load path before the next import can attach scene or renderer state.
+- **B9:** context-loss reload now acquires the same model-load gate and uses a non-replacing exclusive load when falling back to URI reload, so automatic reloads do not trample fresh user opens.
+- **U2 / L6:** active load CTS replacement and load-version assignment now happen under the same lock; pause/destroy cancellation reads the active CTS through the same gate.
+
 ### Latest tablet verification
 
-- Installed the debug APK containing `942c234` on tablet `R52TA040AQT`.
+- Installed the debug APK containing `deac167` on tablet `R52TA040AQT`.
 - Opened the app, loaded recent file `50-0001916_00.fa`.
 - Load log scan: `documentNodes=1937`, `documentMeshes=666`, `visibleMeshNodes=666`, diagonal `4.622`; no fatal exception, ANR, import failure, GLES error, framebuffer failure, or JNI error.
-- Steady-state scripted interaction: 8 frame-timing blocks, top `pick:tap` run `69.1ms`, slow-frame log count `4`, Choreographer skipped-frame log count `0`.
+- Steady-state scripted interaction: 7 frame-timing blocks, top `pick:tap` run `33.1ms`, slow-frame log count `1`, Choreographer skipped-frame log count `0`.
 - Final logcat regression scan after scripted interaction: no crash, ANR, import, GLES, framebuffer, render, or load failure.
 
 ---
