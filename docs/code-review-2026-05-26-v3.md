@@ -105,13 +105,17 @@ Updated 2026-05-27 after implementation and tablet verification.
 
 - **B12/I9/I10:** Draco GLB transcoding no longer loads the entire source BIN chunk into a managed `byte[]`. The original BIN chunk is streamed into the decoded temp file, and only the compressed Draco `bufferView` slice needed for each primitive is read into memory. The path now validates bad Draco `bufferView` indices/ranges before decode, and host tests cover non-Draco copy-through plus out-of-bounds Draco range rejection.
 
+### Fixed in `f80d6bb` (`Reset renderer slow-frame throttle on state changes`)
+
+- **D4:** renderer slow-frame log throttling now resets when appearance state is replaced or renderer resources are torn down, so the first slow frame after settings/mode/context changes is not hidden by a stale throttle timestamp. The timestamp read/write is now atomic.
+
 ### Latest tablet verification
 
-- Installed the debug APK containing `5dc1bd3` on tablet `R52TA040AQT`.
+- Installed the debug APK containing `f80d6bb` on tablet `R52TA040AQT`.
 - Opened the app, loaded recent file `50-0001916_00.fa`.
-- Load log scan: `documentNodes=1937`, `documentMeshes=666`, `visibleMeshNodes=666`, diagonal `4.622`; tablet reports `GL_MAX_SAMPLES=4`, so the 8x-capable MSAA path clamps to 4x on this hardware. Initial `load-document` GL command run was `5186.4ms`.
-- Scripted interaction: no fatal exception, ANR, import failure, GLES error, framebuffer failure, or JNI error; sampled frame timing blocks averaged `16.2-18.4ms`, max `27.3ms`, with `0` frame timing blocks over `33ms` / `50ms`.
-- Render queue burst: top `pick:tap` run `71.3ms`, top wait `53.5ms`, slow-frame log count `3`, Choreographer skipped-frame log count during scripted interaction `0`.
+- Load log scan: `documentNodes=1937`, `documentMeshes=666`, `visibleMeshNodes=666`, diagonal `4.622`; tablet reports `GL_MAX_SAMPLES=4`, so the 8x-capable MSAA path clamps to 4x on this hardware. Initial `load-document` GL command run was `5151.3ms`.
+- Scripted interaction: no fatal exception, ANR, import failure, GLES error, framebuffer failure, or JNI error; sampled frame timing blocks averaged `13.7-17.0ms`, max `56.9ms`, with `1` frame timing block over `33ms` / `50ms` during pick-command queueing.
+- Render queue burst: top `pick:tap` run `29.5ms`, top wait `222.1ms`, slow-frame log count `3`, Choreographer skipped-frame log count during scripted interaction `0`.
 - Final app-PID logcat regression scan after scripted interaction: no crash, ANR, import, GLES, framebuffer, render, or load failure.
 
 ---
