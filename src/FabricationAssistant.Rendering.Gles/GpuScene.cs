@@ -15,6 +15,9 @@ public sealed class GpuScene : IDisposable
     private readonly GL _gl;
     private IReadOnlyList<GpuMesh> _meshes = Array.Empty<GpuMesh>();
     private DocumentDto? _document;
+    private Scene? _lastTransformSyncScene;
+    private long _lastTransientTransformVersion = -1;
+    private long _lastMoveTransformVersion = -1;
 
     public GpuScene(GL gl)
     {
@@ -72,6 +75,7 @@ public sealed class GpuScene : IDisposable
         MillimetersPerSceneUnit = millimetersPerSceneUnit;
         Bounds = bounds;
         _meshes = meshes;
+        InvalidateTransformSyncTracking();
         DisposeMeshes(oldMeshes);
     }
 
@@ -107,6 +111,15 @@ public sealed class GpuScene : IDisposable
 
         ArgumentNullException.ThrowIfNull(scene);
 
+        long transientTransformVersion = scene.TransientTransformVersion;
+        long moveTransformVersion = scene.MoveTransformVersion;
+        if (ReferenceEquals(_lastTransformSyncScene, scene)
+            && _lastTransientTransformVersion == transientTransformVersion
+            && _lastMoveTransformVersion == moveTransformVersion)
+        {
+            return;
+        }
+
         BoundingBox bounds = BoundingBox.Empty;
         IReadOnlyList<GpuMesh> meshes = _meshes;
         foreach (GpuMesh mesh in meshes)
@@ -135,6 +148,20 @@ public sealed class GpuScene : IDisposable
 
         if (bounds.IsValid)
             Bounds = bounds;
+
+        long finalTransientTransformVersion = scene.TransientTransformVersion;
+        long finalMoveTransformVersion = scene.MoveTransformVersion;
+        if (finalTransientTransformVersion == transientTransformVersion
+            && finalMoveTransformVersion == moveTransformVersion)
+        {
+            _lastTransformSyncScene = scene;
+            _lastTransientTransformVersion = transientTransformVersion;
+            _lastMoveTransformVersion = moveTransformVersion;
+        }
+        else
+        {
+            InvalidateTransformSyncTracking();
+        }
     }
 
     public void SyncNodeVisibility(Scene scene)
@@ -262,6 +289,7 @@ public sealed class GpuScene : IDisposable
         Bounds = BoundingBox.Empty;
         MillimetersPerSceneUnit = 1000.0;
         _document = null;
+        InvalidateTransformSyncTracking();
         DisposeMeshes(oldMeshes);
     }
 
@@ -280,5 +308,12 @@ public sealed class GpuScene : IDisposable
     {
         foreach (var mesh in meshes)
             mesh.Dispose();
+    }
+
+    private void InvalidateTransformSyncTracking()
+    {
+        _lastTransformSyncScene = null;
+        _lastTransientTransformVersion = -1;
+        _lastMoveTransformVersion = -1;
     }
 }

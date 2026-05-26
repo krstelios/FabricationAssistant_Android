@@ -77,6 +77,83 @@ public static class AppSettings
 
     private static readonly object _initLock = new();
     private static ISharedPreferences? _prefs;
+    private static readonly (string Key, float Expected)[] LegacyFloatDefaultsToRemove =
+    [
+        ("edge_feature_angle", 25.0f),
+        ("edge_coplanar_tol", 1.5f),
+        ("edge_depth_bias", 0.00005f),
+        ("ao_radius", 0.50f),
+        ("ao_bias", 0.025f),
+        ("ao_intensity", 1.0f),
+        ("ao_radius", 0.009f),
+        ("ao_bias", 0.0002f),
+        ("ao_intensity", 1.45f),
+        ("ao_power", 1.33f),
+        ("ao_blur_sharpness", 10.9f),
+        ("ao_noise_scale", 8.0f),
+        ("grid_spacing_mm", 10.0f),
+        ("grid_r", 0.28f),
+        ("grid_g", 0.30f),
+        ("grid_b", 0.33f),
+        ("bg_r", 0.10f),
+        ("bg_g", 0.11f),
+        ("bg_b", 0.12f),
+        ("surface_r", 0.78f),
+        ("surface_g", 0.80f),
+        ("edge_r", 0.05f),
+        ("edge_g", 0.05f),
+        ("edge_b", 0.06f),
+        ("edge_width", 1.0f),
+        ("edge_width", 0.28595f),
+        ("clay_surface_r", 0.85f),
+        ("clay_surface_g", 0.78f),
+        ("clay_surface_b", 0.65f),
+        ("clay_bg_r", 0.14f),
+        ("clay_bg_g", 0.14f),
+        ("clay_bg_b", 0.16f),
+        ("light_base_lift", 0.04f),
+        ("light_ambient", 0.40f),
+        ("light_headlight", 0.30f),
+        ("light_key", 0.55f),
+        ("light_fill", 0.20f),
+        ("light_bounce", 0.15f),
+        ("light_hemisphere", 0.40f),
+        ("light_spec_strength", 0.10f),
+        ("light_spec_power", 32.0f),
+        ("contour_strength", 0.50f),
+        ("contour_power", 2.0f),
+        ("outline_g", 0.62f),
+        ("outline_b", 0.20f),
+        ("outline_thickness", 2.5f),
+    ];
+    private static readonly (string Key, int Expected)[] LegacyIntDefaultsToRemove =
+    [
+        ("ao_blur_passes", 2),
+        ("ao_sample_count", 32),
+        ("ao_blur_radius", 6),
+        ("ao_blur_passes", 1),
+    ];
+    private static readonly (string Key, float Min, float Max)[] FloatRangeGuards =
+    [
+        ("ao_radius", MinAoRadius, MaxAoRadius),
+        ("ao_bias", MinAoBias, MaxAoBias),
+        ("ao_intensity", MinAoIntensity, MaxAoIntensity),
+        ("ao_power", MinAoPower, MaxAoPower),
+        ("ao_contrast", MinAoContrast, MaxAoContrast),
+        ("ao_max_distance", MinAoMaxDistance, MaxAoMaxDistance),
+        ("ao_fade_start", MinAoFade, MaxAoFade),
+        ("ao_fade_end", MinAoFade, MaxAoFade),
+        ("ao_blur_sharpness", MinAoBlurSharpness, MaxAoBlurSharpness),
+        ("ao_noise_scale", MinAoNoiseScale, MaxAoNoiseScale),
+        ("dimension_text_scale", MinDimensionTextScale, MaxDimensionTextScale),
+        ("section_gizmo_scale", MinSectionGizmoScale, MaxSectionGizmoScale),
+    ];
+    private static readonly (string Key, int Min, int Max)[] IntRangeGuards =
+    [
+        ("ao_sample_count", MinAoSampleCount, MaxAoSampleCount),
+        ("ao_blur_radius", MinAoBlurRadius, MaxAoBlurRadius),
+        ("ao_blur_passes", MinAoBlurPasses, MaxAoBlurPasses),
+    ];
 
     public static void Initialize(Context context)
     {
@@ -401,106 +478,31 @@ public static class AppSettings
         if (previousSchema < 14)
             ConvertSectionGizmoSizeToScale(editor);
 
-        if (Prefs.Contains("edge_feature_angle") && Approximately(Get("edge_feature_angle", 25.0f), 25.0f))
-        {
-            editor.Remove("edge_feature_angle");
-        }
-
-        if (Prefs.Contains("edge_coplanar_tol") && Approximately(Get("edge_coplanar_tol", 1.5f), 1.5f))
-        {
-            editor.Remove("edge_coplanar_tol");
-        }
-
-        if (Prefs.Contains("edge_depth_bias") && Approximately(Get("edge_depth_bias", 0.00005f), 0.00005f))
-        {
-            editor.Remove("edge_depth_bias");
-        }
-
-        if (Prefs.Contains("ao_radius") && Approximately(Get("ao_radius", 0.50f), 0.50f))
-        {
-            editor.Remove("ao_radius");
-        }
-
-        if (Prefs.Contains("ao_bias") && Approximately(Get("ao_bias", 0.025f), 0.025f))
-        {
-            editor.Remove("ao_bias");
-        }
-
-        if (Prefs.Contains("ao_intensity") && Approximately(Get("ao_intensity", 1.0f), 1.0f))
-        {
-            editor.Remove("ao_intensity");
-        }
-
-        if (Prefs.Contains("ao_blur_passes") && Get("ao_blur_passes", 2) == 2)
-        {
-            editor.Remove("ao_blur_passes");
-        }
-
-        RemoveFloatIfApproximately(editor, "ao_radius", 0.009f);
-        RemoveFloatIfApproximately(editor, "ao_bias", 0.0002f);
-        RemoveFloatIfApproximately(editor, "ao_intensity", 1.45f);
-        RemoveFloatIfApproximately(editor, "ao_power", 1.33f);
-        RemoveIntIfEquals(editor, "ao_sample_count", 32);
-        RemoveIntIfEquals(editor, "ao_blur_radius", 6);
-        RemoveFloatIfApproximately(editor, "ao_blur_sharpness", 10.9f);
-        RemoveIntIfEquals(editor, "ao_blur_passes", 1);
-        RemoveFloatIfApproximately(editor, "ao_noise_scale", 8.0f);
-
-        RemoveFloatIfApproximately(editor, "grid_spacing_mm", 10.0f);
-        RemoveFloatIfApproximately(editor, "grid_r", 0.28f);
-        RemoveFloatIfApproximately(editor, "grid_g", 0.30f);
-        RemoveFloatIfApproximately(editor, "grid_b", 0.33f);
-        RemoveFloatIfApproximately(editor, "bg_r", 0.10f);
-        RemoveFloatIfApproximately(editor, "bg_g", 0.11f);
-        RemoveFloatIfApproximately(editor, "bg_b", 0.12f);
-        RemoveFloatIfApproximately(editor, "surface_r", 0.78f);
-        RemoveFloatIfApproximately(editor, "surface_g", 0.80f);
-        RemoveFloatIfApproximately(editor, "edge_r", 0.05f);
-        RemoveFloatIfApproximately(editor, "edge_g", 0.05f);
-        RemoveFloatIfApproximately(editor, "edge_b", 0.06f);
-        RemoveFloatIfApproximately(editor, "edge_width", 1.0f);
-        RemoveFloatIfApproximately(editor, "edge_width", 0.28595f);
+        RemoveLegacyDefaultValues(editor);
         RemoveFloatIfBelow(editor, "edge_width", MinimumVisibleEdgeWidth);
-        RemoveFloatIfApproximately(editor, "clay_surface_r", 0.85f);
-        RemoveFloatIfApproximately(editor, "clay_surface_g", 0.78f);
-        RemoveFloatIfApproximately(editor, "clay_surface_b", 0.65f);
-        RemoveFloatIfApproximately(editor, "clay_bg_r", 0.14f);
-        RemoveFloatIfApproximately(editor, "clay_bg_g", 0.14f);
-        RemoveFloatIfApproximately(editor, "clay_bg_b", 0.16f);
-        RemoveFloatIfApproximately(editor, "light_base_lift", 0.04f);
-        RemoveFloatIfApproximately(editor, "light_ambient", 0.40f);
-        RemoveFloatIfApproximately(editor, "light_headlight", 0.30f);
-        RemoveFloatIfApproximately(editor, "light_key", 0.55f);
-        RemoveFloatIfApproximately(editor, "light_fill", 0.20f);
-        RemoveFloatIfApproximately(editor, "light_bounce", 0.15f);
-        RemoveFloatIfApproximately(editor, "light_hemisphere", 0.40f);
-        RemoveFloatIfApproximately(editor, "light_spec_strength", 0.10f);
-        RemoveFloatIfApproximately(editor, "light_spec_power", 32.0f);
-        RemoveFloatIfApproximately(editor, "contour_strength", 0.50f);
-        RemoveFloatIfApproximately(editor, "contour_power", 2.0f);
-        RemoveFloatIfApproximately(editor, "outline_g", 0.62f);
-        RemoveFloatIfApproximately(editor, "outline_b", 0.20f);
-        RemoveFloatIfApproximately(editor, "outline_thickness", 2.5f);
-
-        RemoveFloatIfOutOfRange(editor, "ao_radius", MinAoRadius, MaxAoRadius);
-        RemoveFloatIfOutOfRange(editor, "ao_bias", MinAoBias, MaxAoBias);
-        RemoveFloatIfOutOfRange(editor, "ao_intensity", MinAoIntensity, MaxAoIntensity);
-        RemoveFloatIfOutOfRange(editor, "ao_power", MinAoPower, MaxAoPower);
-        RemoveFloatIfOutOfRange(editor, "ao_contrast", MinAoContrast, MaxAoContrast);
-        RemoveFloatIfOutOfRange(editor, "ao_max_distance", MinAoMaxDistance, MaxAoMaxDistance);
-        RemoveFloatIfOutOfRange(editor, "ao_fade_start", MinAoFade, MaxAoFade);
-        RemoveFloatIfOutOfRange(editor, "ao_fade_end", MinAoFade, MaxAoFade);
-        RemoveIntIfOutOfRange(editor, "ao_sample_count", MinAoSampleCount, MaxAoSampleCount);
-        RemoveIntIfOutOfRange(editor, "ao_blur_radius", MinAoBlurRadius, MaxAoBlurRadius);
-        RemoveFloatIfOutOfRange(editor, "ao_blur_sharpness", MinAoBlurSharpness, MaxAoBlurSharpness);
-        RemoveIntIfOutOfRange(editor, "ao_blur_passes", MinAoBlurPasses, MaxAoBlurPasses);
-        RemoveFloatIfOutOfRange(editor, "ao_noise_scale", MinAoNoiseScale, MaxAoNoiseScale);
-        RemoveFloatIfOutOfRange(editor, "dimension_text_scale", MinDimensionTextScale, MaxDimensionTextScale);
-        RemoveFloatIfOutOfRange(editor, "section_gizmo_scale", MinSectionGizmoScale, MaxSectionGizmoScale);
+        RemoveOutOfRangeValues(editor);
 
         editor.PutInt("settings_schema_version", SettingsSchemaVersion);
         if (!editor.Commit())
             global::Android.Util.Log.Warn("FA.Settings", "Failed to commit settings schema migration.");
+    }
+
+    private static void RemoveLegacyDefaultValues(ISharedPreferencesEditor editor)
+    {
+        foreach ((string key, float expected) in LegacyFloatDefaultsToRemove)
+            RemoveFloatIfApproximately(editor, key, expected);
+
+        foreach ((string key, int expected) in LegacyIntDefaultsToRemove)
+            RemoveIntIfEquals(editor, key, expected);
+    }
+
+    private static void RemoveOutOfRangeValues(ISharedPreferencesEditor editor)
+    {
+        foreach ((string key, float min, float max) in FloatRangeGuards)
+            RemoveFloatIfOutOfRange(editor, key, min, max);
+
+        foreach ((string key, int min, int max) in IntRangeGuards)
+            RemoveIntIfOutOfRange(editor, key, min, max);
     }
 
     private static bool Approximately(float left, float right)

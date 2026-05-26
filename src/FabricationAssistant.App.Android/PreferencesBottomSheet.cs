@@ -30,6 +30,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment
     private const float CompactPanelWidthDp = 420f;
     private int _sheetWidthOverridePx;
     private FrameLayout? _resizeHandle;
+    private readonly List<AlertDialog> _colorPickerDialogs = new();
 
     public Action? OnSettingsChanged { get; set; }
 
@@ -68,6 +69,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment
 
     public override void OnDestroy()
     {
+        DismissColorPickerDialogs();
         OnSettingsChanged = null;
         base.OnDestroy();
     }
@@ -1008,7 +1010,9 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment
             .Create()!;
 
         dialog.Show();
-        dialog.Window?.SetBackgroundDrawable(CreateColorDialogWindowBackground(ctx));
+        GradientDrawable? windowBackground = CreateColorDialogWindowBackground(ctx);
+        dialog.Window?.SetBackgroundDrawable(windowBackground);
+        TrackColorPickerDialog(dialog, windowBackground, root, preview, hexInput);
 
         Button? positive = dialog.GetButton((int)global::Android.Content.DialogButtonType.Positive);
         if (positive is not null)
@@ -1067,7 +1071,59 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment
         drawable.SetColor(new global::Android.Graphics.Color(ToArgb(r, g, b)));
         drawable.SetCornerRadius(Dp(ctx, 6));
         drawable.SetStroke(Dp(ctx, 1), GetColor(ctx, Resource.Color.fa_border));
+        Drawable? previous = swatch.Background;
         swatch.Background = drawable;
+        previous?.Dispose();
+    }
+
+    private void TrackColorPickerDialog(AlertDialog dialog, Drawable? windowBackground, params View[] ownedViews)
+    {
+        _colorPickerDialogs.Add(dialog);
+        dialog.SetOnDismissListener(new DialogDismissListener(() =>
+        {
+            _colorPickerDialogs.Remove(dialog);
+            DisposeColorPickerDrawables(dialog, windowBackground, ownedViews);
+        }));
+    }
+
+    private void DismissColorPickerDialogs()
+    {
+        foreach (AlertDialog dialog in _colorPickerDialogs.ToArray())
+        {
+            if (dialog.IsShowing)
+                dialog.Dismiss();
+            else
+                DisposeColorPickerDrawables(dialog, null);
+        }
+
+        _colorPickerDialogs.Clear();
+    }
+
+    private static void DisposeColorPickerDrawables(AlertDialog dialog, Drawable? windowBackground, params View[] ownedViews)
+    {
+        dialog.Window?.SetBackgroundDrawable(null);
+        windowBackground?.Dispose();
+
+        foreach (View view in ownedViews)
+        {
+            Drawable? background = view.Background;
+            if (background is null)
+                continue;
+
+            view.Background = null;
+            background.Dispose();
+        }
+    }
+
+    private sealed class DialogDismissListener : Java.Lang.Object, IDialogInterfaceOnDismissListener
+    {
+        private readonly Action _onDismiss;
+
+        public DialogDismissListener(Action onDismiss)
+            => _onDismiss = onDismiss;
+
+        public void OnDismiss(IDialogInterface? dialog)
+            => _onDismiss();
     }
 
     private static void RgbToHsv(int r, int g, int b, out float hue, out float saturation, out float value)
