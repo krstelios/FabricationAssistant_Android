@@ -1,8 +1,11 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Numerics;
 using FabricationAssistant.Core.Camera;
 using FabricationAssistant.Core.Math;
+using FabricationAssistant.Core.Measurement.Presentation;
 using Silk.NET.OpenGLES;
 
 namespace FabricationAssistant.Rendering.Gles;
@@ -14,9 +17,11 @@ namespace FabricationAssistant.Rendering.Gles;
 /// current CameraState. Plan 2E adds the offscreen pick FBO and selection
 /// highlight uniforms.
 /// </summary>
-public sealed class GlesViewportRenderer
+public sealed class GlesViewportRenderer : IDisposable
 {
     private const double CameraBasisEpsilon = 1e-8;
+    private const float HiddenAlphaThreshold = 0.003f;
+    private const float OpaqueAlphaThreshold = 0.999f;
 
     private readonly GlThreadGuard _guard = new();
     private GL? _gl;
@@ -27,6 +32,10 @@ public sealed class GlesViewportRenderer
     private GlesNormalDepthRenderer? _normalDepthRenderer;
     private GlesSsaoRenderer? _ssaoRenderer;
     private GlesOutlineRenderer? _outlineRenderer;
+    private GlesMeasurementOverlay? _measurementOverlay;
+    private GlesFaceHighlightOverlay? _faceHighlightOverlay;
+    private GlesSectionOverlay? _sectionOverlay;
+    private ShaderProgram? _sectionStencilProgram;
     private MsaaSceneFramebuffer? _msaaFbo;
     private uint _whiteAoTexture;
     private bool _initialized;
@@ -37,10 +46,32 @@ public sealed class GlesViewportRenderer
     private float _edgeCoplanarTolerance = float.NaN;
     private float _edgeWeldTolerance = float.NaN;
     private bool _edgeSilhouetteEnabled;
+    private int _failedMsaaWidth;
+    private int _failedMsaaHeight;
+    private int _failedMsaaSamples;
+    private int _lastLoggedMsaaRequested = int.MinValue;
+    private int _lastLoggedMsaaEffective = int.MinValue;
+    private int _lastLoggedMsaaMaxSamples = int.MinValue;
+    private long _lastSlowFrameLogTicks;
+    private readonly FrameTimingAccumulator _frameTiming = new();
+    private readonly float[] _viewMatrixScratch = new float[16];
+    private readonly float[] _projectionMatrixScratch = new float[16];
+    private readonly List<GpuMesh> _opaqueSurfaceMeshes = new();
+    private readonly List<GpuMesh> _transparentSurfaceMeshes = new();
+    private IReadOnlyList<int> _xrayOpaqueNodeIds = Array.Empty<int>();
+    private IReadOnlyList<int> _xrayBackgroundNodeIds = Array.Empty<int>();
+    private HashSet<int> _xrayOpaqueNodeIdLookup = new();
+    private HashSet<int> _xrayBackgroundNodeIdLookup = new();
+    private int _lastSurfaceTransparentMeshCount;
+    private int _lastSurfaceHiddenMeshCount;
+    private SsaoStateKey _lastLoggedSsaoState;
+    private SsaoDiagnosticsKey _lastSsaoDiagnostics;
+    private TransparencyStateKey _lastLoggedTransparencyState;
 
     public GpuScene? Scene { get; set; }
     public CameraState? Camera { get; set; }
     public ConcurrentQueue<Action<GL>>? CommandQueue { get; set; }
+    public event Action? FrameRendered;
 
     /// <summary>
     /// 1-based mesh index to highlight in the next frame, or 0 for none.
@@ -49,11 +80,111 @@ public sealed class GlesViewportRenderer
     public int SelectedMeshIndex { get; set; }
 
     /// <summary>
+    /// 1-based mesh index under a hover-capable pointer such as Samsung S Pen,
+    /// or 0 when no hover target is active.
+    /// </summary>
+    public int HoveredMeshIndex { get; set; }
+
+    /// <summary>
+    /// True while the UI thread is actively changing the camera from a touch
+    /// gesture. Expensive screen-space effects are skipped until the gesture
+    /// ends so camera motion stays responsive on mobile GPUs.
+    /// </summary>
+    public bool InteractiveNavigationActive { get; set; }
+
+    /// <summary>
     /// Per-frame appearance state. Mirrors the desktop SceneAppearanceViewModel.
     /// PreferencesBottomSheet writes through AppSettings; MainActivity rebuilds
     /// this struct on every change via AppSettings.Apply.
     /// </summary>
     public SceneAppearance Appearance { get; set; } = SceneAppearance.CreateDefault();
+
+    public float XrayIsolationOpacity { get; set; } = 0.18f;
+
+    public Vector3 DimensionHighlightColor { get; set; } = new(1.0f, 0.5019608f, 0.2509804f);
+
+    public float SectionPlaneSizeFraction { get; set; } = 0.025f;
+
+    public Vector4 SectionFillColor { get; set; } = new(0.20f, 0.80f, 0.40f, 0.18f);
+
+    public Vector4 SectionEdgeColor { get; set; } = new(0.20f, 0.80f, 0.40f, 0.80f);
+
+    public Vector4 SectionEdgeHighlightColor { get; set; } = new(1.00f, 1.00f, 1.00f, 1.00f);
+
+    public Vector4 SectionCapColor { get; set; } = new(0.85f, 0.85f, 0.80f, 1.00f);
+
+    public IReadOnlyList<int> XrayOpaqueNodeIds
+    {
+        get => _xrayOpaqueNodeIds;
+        set
+        {
+            _xrayOpaqueNodeIds = value is null ? Array.Empty<int>() : value.ToArray();
+            _xrayOpaqueNodeIdLookup = _xrayOpaqueNodeIds.ToHashSet();
+        }
+    }
+
+    public IReadOnlyList<int> XrayBackgroundNodeIds
+    {
+        get => _xrayBackgroundNodeIds;
+        set
+        {
+            _xrayBackgroundNodeIds = value is null ? Array.Empty<int>() : value.ToArray();
+            _xrayBackgroundNodeIdLookup = _xrayBackgroundNodeIds.ToHashSet();
+            if (_pickRenderer is not null)
+                _pickRenderer.XrayBackgroundNodeIds = _xrayBackgroundNodeIds;
+        }
+    }
+
+    public IReadOnlyList<PresentationSnapshot> MeasurementPresentation { get; set; }
+        = Array.Empty<PresentationSnapshot>();
+
+    public IReadOnlyList<FaceHighlight> FaceHighlights { get; set; }
+        = Array.Empty<FaceHighlight>();
+
+    private IReadOnlyList<GlesSectionPlane> _sectionPlanes = Array.Empty<GlesSectionPlane>();
+    private IReadOnlyList<GlesSectionVisualPlane> _sectionVisualPlanes = Array.Empty<GlesSectionVisualPlane>();
+
+    /// <summary>
+    /// Section clip planes read by the GL thread. The setter snapshots the
+    /// sequence so UI-thread gizmo edits cannot mutate data mid-frame.
+    /// </summary>
+    public IReadOnlyList<GlesSectionPlane> SectionPlanes
+    {
+        get => _sectionPlanes;
+        set => _sectionPlanes = value is null ? Array.Empty<GlesSectionPlane>() : value.ToArray();
+    }
+
+    /// <summary>
+    /// Visual section planes read by the GL thread. The setter snapshots the
+    /// sequence for the same cross-thread safety reason as SectionPlanes.
+    /// </summary>
+    public IReadOnlyList<GlesSectionVisualPlane> SectionVisualPlanes
+    {
+        get => _sectionVisualPlanes;
+        set => _sectionVisualPlanes = value is null ? Array.Empty<GlesSectionVisualPlane>() : value.ToArray();
+    }
+
+    public bool SectionFillVisible { get; set; } = true;
+
+    public bool SectionEdgesVisible { get; set; } = true;
+
+    public IReadOnlyList<Vector3> SectionPlacementCommittedPicks { get; set; } = Array.Empty<Vector3>();
+
+    public Vector3? SectionPlacementHoverPoint { get; set; }
+
+    public Vector3 SectionGizmoAnchor { get; set; }
+
+    public Vector3 SectionGizmoAxisX { get; set; } = Vector3.UnitX;
+
+    public Vector3 SectionGizmoAxisY { get; set; } = Vector3.UnitY;
+
+    public Vector3 SectionGizmoAxisZ { get; set; } = Vector3.UnitZ;
+
+    public float SectionGizmoScale { get; set; }
+
+    public GlesTransformGizmoHandle SectionGizmoHovered { get; set; }
+
+    public GlesTransformGizmoHandle SectionGizmoActive { get; set; }
 
     // Backwards-compatible aliases (read by callers that haven't migrated to
     // Appearance yet). Removed once nothing references them.
@@ -68,6 +199,7 @@ public sealed class GlesViewportRenderer
     public void OnSurfaceCreated()
     {
         _guard.Initialize();
+        DisposeResources(disposeScene: false);
 
         _gl = GL.GetApi(new SurfaceViewGlContext());
 
@@ -118,10 +250,45 @@ public sealed class GlesViewportRenderer
         var outlineFs = LoadEmbeddedShader("outline.gles.frag");
         _outlineRenderer = new GlesOutlineRenderer(_gl, pickVs, maskFs, fsVs, outlineFs);
 
+        var measureVs = LoadEmbeddedShader("measure_color.gles.vert");
+        var measureFs = LoadEmbeddedShader("measure_color.gles.frag");
+        var measureDiskVs = LoadEmbeddedShader("measure_disk.gles.vert");
+        var measureDiskFs = LoadEmbeddedShader("measure_disk.gles.frag");
+        _measurementOverlay = new GlesMeasurementOverlay(_gl, measureVs, measureFs, measureDiskVs, measureDiskFs);
+        _faceHighlightOverlay = new GlesFaceHighlightOverlay(_gl, measureVs, measureFs);
+        _sectionOverlay = new GlesSectionOverlay(_gl, measureVs, measureFs);
+
+        var sectionStencilVs = LoadEmbeddedShader("section_stencil.gles.vert");
+        var sectionStencilFs = LoadEmbeddedShader("section_stencil.gles.frag");
+        _sectionStencilProgram = new ShaderProgram(_gl, "section.stencil", sectionStencilVs, sectionStencilFs);
+
         // Plan 3B: offscreen multisample FBO. All scene passes (grid, mesh,
         // edge) render into this FBO and the resolved color is blitted to
         // the default backbuffer before the selection outline post-process.
         _msaaFbo = new MsaaSceneFramebuffer(_gl);
+        _failedMsaaWidth = 0;
+        _failedMsaaHeight = 0;
+        _failedMsaaSamples = 0;
+        _lastLoggedMsaaRequested = int.MinValue;
+        _lastLoggedMsaaEffective = int.MinValue;
+        _lastLoggedMsaaMaxSamples = int.MinValue;
+        _lastLoggedSsaoState = default;
+        _lastSsaoDiagnostics = default;
+        _lastLoggedTransparencyState = default;
+
+        bool hadSceneFromPreviousContext = Scene is not null;
+        GpuScene? staleScene = Scene;
+        Scene = null;
+        TryDispose(staleScene);
+        SelectedMeshIndex = 0;
+        HoveredMeshIndex = 0;
+        _edgeSettingsScene = null;
+        if (hadSceneFromPreviousContext)
+        {
+            Android.Util.Log.Warn(
+                "FA.Renderer",
+                "GL context recreated; dropped stale GPU scene handles and waiting for host re-upload.");
+        }
 
         _initialized = true;
     }
@@ -130,61 +297,106 @@ public sealed class GlesViewportRenderer
     {
         _guard.EnsureOnRenderThread();
         if (_gl is null) return;
-        _width = width;
-        _height = height;
-        _gl.Viewport(0, 0, (uint)width, (uint)height);
-        _pickRenderer?.Resize(width, height);
-        _normalDepthRenderer?.Resize(width, height);
-        _ssaoRenderer?.Resize(width, height);
-        _outlineRenderer?.Resize(width, height);
-        _msaaFbo?.Ensure(width, height, Appearance.MsaaSamples);
+        _width = System.Math.Max(0, width);
+        _height = System.Math.Max(0, height);
+        if (_width <= 0 || _height <= 0)
+            return;
+
+        _gl.Viewport(0, 0, (uint)_width, (uint)_height);
+        _pickRenderer?.Resize(_width, _height);
+        _normalDepthRenderer?.Resize(_width, _height);
+        _ssaoRenderer?.Resize(_width, _height);
+        _outlineRenderer?.Resize(_width, _height);
+        // Only allocate the MSAA FBO when MSAA is on. Mirrors the conditional
+        // in OnDrawFrame so a resize while MSAA is Off does not eagerly
+        // create the FBO.
+        if (Appearance.MsaaSamples > 1)
+            TryPrepareMsaaFramebuffer(Appearance);
+        else
+            _msaaFbo?.Destroy();
     }
 
     public void OnDrawFrame()
     {
         _guard.EnsureOnRenderThread();
         if (!_initialized || _gl is null || _meshProgram is null) return;
+        long frameStart = Stopwatch.GetTimestamp();
+        int queuedCommandCount = 0;
 
         if (CommandQueue is { } q)
         {
             while (q.TryDequeue(out var cmd))
             {
+                queuedCommandCount++;
                 try { cmd(_gl); }
                 catch (Exception ex) { Android.Util.Log.Error("FA.Renderer", Java.Lang.Throwable.FromException(ex), "GL command failed: " + ex.Message); }
             }
         }
+        long afterQueue = Stopwatch.GetTimestamp();
 
         var a = Appearance;
+        CameraState? camera = SnapshotCamera();
+        bool interactive = InteractiveNavigationActive;
+        bool lightweightNavigationActive = interactive && a.LightweightNavigationEnabled;
         EnsureEdgesMatchAppearance(a);
 
-        // Re-allocate the MSAA FBO if the user changed the sample count
-        // via the preferences sheet, or if the viewport was resized. Cheap
-        // when nothing has changed (Ensure compares cached dims + samples).
-        _msaaFbo?.Ensure(_width, _height, a.MsaaSamples);
+        if (_width <= 0 || _height <= 0)
+        {
+            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+            return;
+        }
 
         // SSAO pre-pass: render scene normals+depth, then compute occlusion.
         // Bound back to the default FBO before the main mesh pass, which
         // samples the resulting AO texture.
+        long ssaoStart = Stopwatch.GetTimestamp();
         uint aoTextureToBind = _whiteAoTexture;
-        if (a.AmbientOcclusionEnabled
-            && a.Mode != RenderMode.Clay
-            && a.Mode != RenderMode.Wireframe
-            && Scene is not null && Camera is not null
+        bool ssaoActive = false;
+        string ssaoInactiveReason = GetSsaoInactiveReason(a, camera);
+        if (ssaoInactiveReason.Length == 0 && lightweightNavigationActive)
+            ssaoInactiveReason = "interactive navigation";
+        if (ssaoInactiveReason.Length == 0
+            && Scene is not null && camera is not null
             && _normalDepthRenderer is not null && _ssaoRenderer is not null)
         {
-            _normalDepthRenderer.Render(Scene, Camera, _width, _height);
+            bool collectSsaoDiagnostics = ShouldCollectSsaoDiagnostics(a, true, "active");
+            ResetMainFramebufferState();
+            _normalDepthRenderer.SectionPlanes = SectionPlanes;
+            _normalDepthRenderer.Render(Scene, camera, _width, _height, a, collectSsaoDiagnostics);
             _ssaoRenderer.Render(
                 _normalDepthRenderer.NormalTexture,
                 _normalDepthRenderer.DepthTexture,
-                Camera, a);
-            aoTextureToBind = _ssaoRenderer.AoTexture;
+                _normalDepthRenderer.LinearDepthMin,
+                _normalDepthRenderer.LinearDepthMax,
+                camera,
+                Scene.Bounds,
+                a,
+                collectSsaoDiagnostics);
+            ResetMainFramebufferState();
+            if (_ssaoRenderer.AoTexture != 0)
+            {
+                aoTextureToBind = _ssaoRenderer.AoTexture;
+                ssaoActive = true;
+            }
+            else
+            {
+                ssaoInactiveReason = "renderer produced no AO texture";
+            }
         }
+        LogSsaoState(a, ssaoActive, ssaoInactiveReason, aoTextureToBind);
+        long afterSsao = Stopwatch.GetTimestamp();
 
+        bool useMsaaFbo = TryPrepareMsaaFramebuffer(a);
+        bool drawEdgesThisFrame = false;
+        long sceneStart = afterSsao;
+
+        while (true)
+        {
         _gl.Viewport(0, 0, (uint)_width, (uint)_height);
-        // Bind the offscreen MSAA FBO. ResetMainFramebufferState restores
-        // depth/blend/cull defaults; the bind itself happens here so all
-        // subsequent draw calls land in the multisample renderbuffer.
-        if (_msaaFbo is not null && _msaaFbo.FboHandle != 0)
+        // Bind the appropriate render target. With useMsaaFbo we render
+        // into the multisample FBO. Otherwise we render directly into the
+        // default backbuffer (FBO 0).
+        if (useMsaaFbo && _msaaFbo!.FboHandle != 0)
             _msaaFbo.Bind();
         else
             _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
@@ -194,17 +406,34 @@ public sealed class GlesViewportRenderer
         // matte studio shot rather than the operator's main background.
         float[] bg = a.Mode == RenderMode.Clay ? a.ClayBackgroundColor : a.BackgroundColor;
         _gl.ClearColor(bg[0], bg[1], bg[2], 1.0f);
-        _gl.ClearStencil(0);
-        _gl.Clear((uint)(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit | ClearBufferMask.StencilBufferBit));
+        if (useMsaaFbo)
+        {
+            // The MSAA FBO has a D24S8 attachment; clear stencil here so
+            // Plan 3A's section-cap stencil-parity algorithm starts each
+            // frame with a clean state.
+            _gl.ClearStencil(0);
+            _gl.Clear((uint)(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit | ClearBufferMask.StencilBufferBit));
+        }
+        else
+        {
+            // Default backbuffer path - identical to pre-Plan-3B behavior.
+            _gl.Clear((uint)(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit));
+        }
 
-        if (Scene is null || Camera is null || _width == 0 || _height == 0)
+        if (Scene is null || camera is null)
+        {
+            if (useMsaaFbo && _msaaFbo!.FboHandle != 0)
+                TryResolveMsaaFramebuffer(a);
+            else
+                _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
             return;
+        }
 
         // Ground grid first so the depth pre-fill sits behind opaque meshes
         // (which will overwrite the grid where they cover it). Skipped when
         // SceneAppearance.ShowGrid is false.
         if (a.ShowGrid)
-            _gridRenderer?.Draw(Scene.Bounds, Camera, _width, _height, a);
+            _gridRenderer?.Draw(Scene, camera, _width, _height, a);
 
         // Single mesh shader for both Shaded and Clay - per-mode uniform
         // overrides happen below (mirrors the desktop's
@@ -215,14 +444,16 @@ public sealed class GlesViewportRenderer
         var aspect = (float)_width / _height;
         var identityModel = ViewportCameraMath.IdentityModelMatrix();
         var identityNormal = ViewportCameraMath.NormalMatrixFromIdentity();
-        var view = ViewportCameraMath.ViewMatrix(Camera);
-        var proj = ViewportCameraMath.ProjectionMatrix(Camera, aspect);
+        ViewportCameraMath.FillViewMatrix(camera, _viewMatrixScratch);
+        ViewportCameraMath.FillProjectionMatrix(camera, aspect, _projectionMatrixScratch);
+        var view = _viewMatrixScratch;
+        var proj = _projectionMatrixScratch;
 
         // Build a stable camera basis (forward / right / up) and derive the
         // key / fill / bounce light directions from it - matches the desktop
         // SceneRenderer.ConfigureSurfaceShader exactly.
-        Vector3d worldUp = GetFallbackNormalizedAxis(Camera.WorldUpDirection, Camera.UpDirection);
-        var (forward, right, up) = BuildCameraLightBasis(Camera, worldUp);
+        Vector3d worldUp = GetFallbackNormalizedAxis(camera.WorldUpDirection, camera.UpDirection);
+        var (forward, right, up) = BuildCameraLightBasis(camera, worldUp);
         Vector3d keyLightDir = GetFallbackNormalizedAxis(
             forward * -0.70 + up * 0.55 + right * -0.45, forward * -1.0);
         Vector3d fillLightDir = GetFallbackNormalizedAxis(
@@ -233,7 +464,7 @@ public sealed class GlesViewportRenderer
         SetMat4(activeProgram, "uView", view);
         SetMat4(activeProgram, "uProjection", proj);
         SetVec3(activeProgram, "uCameraPos",
-            (float)Camera.Position.X, (float)Camera.Position.Y, (float)Camera.Position.Z);
+            (float)camera.Position.X, (float)camera.Position.Y, (float)camera.Position.Z);
         SetVec3(activeProgram, "uCameraForwardDir",
             (float)forward.X, (float)forward.Y, (float)forward.Z);
         SetVec3(activeProgram, "uWorldUpDir",
@@ -248,7 +479,7 @@ public sealed class GlesViewportRenderer
         // Lighting strengths - clay mode overrides each one per the desktop
         // ConfigureSurfaceShader clayLighting branch (lines 1917-1929).
         bool clay = a.Mode == RenderMode.Clay;
-        SetFloat(activeProgram, "uSurfaceOpacity", clay ? 1.0f : a.SurfaceOpacity);
+        SetFloat(activeProgram, "uSurfaceOpacity", 1.0f);
         SetFloat(activeProgram, "uBaseColorLift", clay ? 0.0f : a.BaseColorLift);
         SetFloat(activeProgram, "uAmbientStrength", clay ? 0.46f : a.AmbientStrength);
         SetFloat(activeProgram, "uHeadlightStrength", clay ? 0.08f : a.HeadlightStrength);
@@ -262,15 +493,19 @@ public sealed class GlesViewportRenderer
         SetFloat(activeProgram, "uContourPower", clay ? 3.0f : a.ContourPower);
         SetVec3(activeProgram, "uTintColor", 0f, 0f, 0f);
         SetFloat(activeProgram, "uTintStrength", 0f);
-        SetInt(activeProgram, "uSelectedMeshIndex", HighlightSelection && !a.OutlineEnabled ? SelectedMeshIndex : 0);
+        SetInt(activeProgram, "uSelectedMeshIndex", HighlightSelection ? SelectedMeshIndex : 0);
+        SetInt(activeProgram, "uHoveredMeshIndex", HighlightSelection ? HoveredMeshIndex : 0);
         SetVec3(activeProgram, "uHighlightColor", a.OutlineColor[0], a.OutlineColor[1], a.OutlineColor[2]);
+        SetVec3(activeProgram, "uHoverColor", a.HoverOutlineColor[0], a.HoverOutlineColor[1], a.HoverOutlineColor[2]);
+        SetFloat(activeProgram, "uHoverTintStrength", a.HoverTintStrength);
+        SetSectionUniforms(activeProgram);
 
         // AO binding: matches desktop's texture-unit-4 convention.
         // uAmbientOcclusionEnabled gates the sample; uViewportInvSize is the
         // reciprocal of the viewport for gl_FragCoord -> UV math.
-        bool useAo = a.AmbientOcclusionEnabled
-                     && a.Mode != RenderMode.Wireframe
-                     && a.Mode != RenderMode.Clay;
+        bool useAo = ssaoActive
+                     && a.AmbientOcclusionEnabled
+                     && a.Mode != RenderMode.Wireframe;
         _gl.ActiveTexture(TextureUnit.Texture4);
         _gl.BindTexture(TextureTarget.Texture2D, aoTextureToBind);
         SetInt(activeProgram, "uAmbientOcclusionTexture", 4);
@@ -280,91 +515,98 @@ public sealed class GlesViewportRenderer
             _height > 0 ? 1f / _height : 0f);
         _gl.ActiveTexture(TextureUnit.Texture0);
 
-        int modelLoc = _gl.GetUniformLocation(activeProgram.Handle, "uModel");
-        int normalLoc = _gl.GetUniformLocation(activeProgram.Handle, "uNormalMatrix");
-        int meshIndexLoc = _gl.GetUniformLocation(activeProgram.Handle, "uMeshIndex");
-        int colorLoc = _gl.GetUniformLocation(activeProgram.Handle, "uColor");
+        int modelLoc = activeProgram.UniformLocation("uModel");
+        int normalLoc = activeProgram.UniformLocation("uNormalMatrix");
+        int meshIndexLoc = activeProgram.UniformLocation("uMeshIndex");
+        int colorLoc = activeProgram.UniformLocation("uColor");
+
+        bool clayEdges = a.Mode == RenderMode.Clay && a.ClayFeatureEdgesEnabled;
+        bool sectionClippingActive = SectionPlanes.Count > 0;
+        drawEdgesThisFrame = a.Mode == RenderMode.Wireframe
+                             || (!lightweightNavigationActive
+                                 && (clayEdges
+                                     || (a.EdgesEnabled && a.Mode == RenderMode.ShadedWithEdges)));
 
         // Polygon offset pushes the surface fragments slightly back in depth
         // so edge lines drawn afterward sit cleanly above them without
-        // z-fighting. Disabled before the edge pass.
-        if (a.EdgesEnabled && a.Mode != RenderMode.Wireframe)
+        // z-fighting. Section cuts need unbiased surface depth; otherwise
+        // internal B-Rep edge ribbons behind the cut can pass through the
+        // visible face. This mirrors the desktop renderer's section behavior.
+        bool useSurfaceDepthOffsetForEdges =
+            drawEdgesThisFrame
+            && a.Mode != RenderMode.Wireframe
+            && !sectionClippingActive;
+        if (useSurfaceDepthOffsetForEdges)
         {
             _gl.Enable(EnableCap.PolygonOffsetFill);
             _gl.PolygonOffset(a.SurfaceOffsetFactor, a.SurfaceOffsetUnits);
         }
 
-        bool transparentSurface = !clay && a.Mode != RenderMode.Wireframe && a.SurfaceOpacity < 0.999f;
-        if (transparentSurface)
+        _lastSurfaceTransparentMeshCount = 0;
+        _lastSurfaceHiddenMeshCount = 0;
+        if (a.Mode != RenderMode.Wireframe)
         {
-            _gl.Enable(EnableCap.Blend);
-            _gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
-            // Keep the visible surface in the depth buffer so the later CAD
-            // edge pass cannot draw imported/back-side edges through front
-            // faces. Desktop's aggregate path writes depth for the same
-            // shaded surface pass; Android must do the same because edges are
-            // rendered after surfaces.
-            _gl.DepthMask(true);
-        }
+            PrepareSurfacePassMeshes(Scene.Meshes, a, clay, _opaqueSurfaceMeshes, _transparentSurfaceMeshes);
 
-        foreach (var m in Scene.Meshes)
-        {
-            float[] model = m.WorldTransform ?? identityModel;
-            if (modelLoc >= 0) _gl.UniformMatrix4(modelLoc, true, model);
-
-            float[] normalMatrix = m.WorldTransform is null ? identityNormal : GlesRenderUtil.NormalMatrixFromWorld(m.WorldTransform);
-            if (normalLoc >= 0) _gl.UniformMatrix3(normalLoc, true, normalMatrix);
-
-            if (colorLoc >= 0)
+            if (_transparentSurfaceMeshes.Count == 0)
             {
-                // Clay mode forces every body to use the clay surface color;
-                // Shaded mode uses the per-instance diffuse from upload.
-                if (clay)
-                {
-                    var c = a.ClaySurfaceColor;
-                    _gl.Uniform4(colorLoc, c[0], c[1], c[2], 1f);
-                }
-                else
-                {
-                    var c = m.DiffuseColor;
-                    _gl.Uniform4(colorLoc, c[0], c[1], c[2], 1f);
-                }
+                _gl.Disable(EnableCap.Blend);
+                _gl.DepthMask(true);
+                foreach (var m in _opaqueSurfaceMeshes)
+                    DrawSurfaceMesh(m, a, clay, modelLoc, normalLoc, colorLoc, meshIndexLoc, identityModel, identityNormal);
             }
-            if (meshIndexLoc >= 0) _gl.Uniform1(meshIndexLoc, m.MeshIndex);
-            GlesRenderUtil.ApplyMeshCulling(_gl, m);
+            else
+            {
+                if (_opaqueSurfaceMeshes.Count > 0)
+                {
+                    _gl.Disable(EnableCap.Blend);
+                    _gl.DepthMask(true);
+                    foreach (var m in _opaqueSurfaceMeshes)
+                        DrawSurfaceMesh(m, a, clay, modelLoc, normalLoc, colorLoc, meshIndexLoc, identityModel, identityNormal);
+                }
 
-            // Wireframe: skip the surface fill, defer to the edge pass.
-            if (a.Mode != RenderMode.Wireframe)
-                m.Draw();
+                SortTransparentMeshesBackToFront(_transparentSurfaceMeshes, camera);
+                _gl.Enable(EnableCap.Blend);
+                _gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+                _gl.DepthMask(false);
+                foreach (var m in _transparentSurfaceMeshes)
+                    DrawSurfaceMesh(m, a, clay, modelLoc, normalLoc, colorLoc, meshIndexLoc, identityModel, identityNormal);
+
+                _gl.DepthMask(true);
+                _gl.Disable(EnableCap.Blend);
+            }
         }
         GlesRenderUtil.ResetMeshCulling(_gl);
 
-        if (transparentSurface)
-        {
-            _gl.DepthMask(true);
-            _gl.Disable(EnableCap.Blend);
-        }
-
-        _gl.Disable(EnableCap.PolygonOffsetFill);
+        if (useSurfaceDepthOffsetForEdges)
+            _gl.Disable(EnableCap.PolygonOffsetFill);
 
         // ── Edge pass ─────────────────────────────────────────────────
-        bool wantEdges = (a.EdgesEnabled && a.Mode == RenderMode.ShadedWithEdges)
-                         || a.Mode == RenderMode.Wireframe;
-        if (wantEdges && _edgeProgram is not null)
+        if (drawEdgesThisFrame && _edgeProgram is not null)
         {
             _edgeProgram.Use();
             SetMat4(_edgeProgram, "uView", view);
             SetMat4(_edgeProgram, "uProjection", proj);
             // In Wireframe mode the surface color drives the wire color so a
             // plain wireframe doesn't disappear against the background.
-            var edgeColor = a.Mode == RenderMode.Wireframe ? a.SurfaceColor : a.EdgeColor;
-            SetVec4(_edgeProgram, "uEdgeColor", edgeColor[0], edgeColor[1], edgeColor[2], 0.82f);
+            float edgeR = a.Mode == RenderMode.Wireframe ? a.SurfaceColor[0] : clayEdges ? a.ClayFeatureEdgeColor[0] : a.EdgeColor[0];
+            float edgeG = a.Mode == RenderMode.Wireframe ? a.SurfaceColor[1] : clayEdges ? a.ClayFeatureEdgeColor[1] : a.EdgeColor[1];
+            float edgeB = a.Mode == RenderMode.Wireframe ? a.SurfaceColor[2] : clayEdges ? a.ClayFeatureEdgeColor[2] : a.EdgeColor[2];
+            float edgeA = clayEdges && a.ClayFeatureEdgeColor.Length > 3 ? a.ClayFeatureEdgeColor[3] : 0.82f;
             SetVec2(_edgeProgram, "uViewportSize", _width, _height);
-            SetFloat(_edgeProgram, "uLineWidthPixels", System.Math.Clamp(a.EdgeWidth, 0.05f, 2.0f));
-            SetFloat(_edgeProgram, "uDepthBias", System.Math.Max(0.0f, a.EdgeDepthBias));
-            SetBool(_edgeProgram, "uSilhouetteEnabled", a.CadEdgeSilhouetteEnabled);
-            int edgeModelLoc = _gl.GetUniformLocation(_edgeProgram.Handle, "uModel");
-            int edgeNormalLoc = _gl.GetUniformLocation(_edgeProgram.Handle, "uNormalMatrix");
+            SetFloat(_edgeProgram, "uLineWidthPixels", clayEdges
+                ? System.Math.Clamp(a.ClayFeatureEdgeWidth, 0.05f, 4.0f)
+                : System.Math.Clamp(a.EdgeWidth, 0.05f, 2.0f));
+            float edgeDepthBias = sectionClippingActive
+                ? 0.0f
+                : System.Math.Max(0.0f, clayEdges ? a.ClayFeatureEdgeDepthBias : a.EdgeDepthBias);
+            SetFloat(_edgeProgram, "uDepthBias", edgeDepthBias);
+            SetBool(_edgeProgram, "uSilhouetteEnabled", !clayEdges && a.CadEdgeSilhouetteEnabled);
+            SetSectionUniforms(_edgeProgram);
+            int edgeModelLoc = _edgeProgram.UniformLocation("uModel");
+            int edgeNormalLoc = _edgeProgram.UniformLocation("uNormalMatrix");
+            int edgeColorLoc = _edgeProgram.UniformLocation("uEdgeColor");
+            float lastUploadedEdgeAlpha = float.NaN;
 
             _gl.Disable(EnableCap.CullFace);
             _gl.DepthFunc(DepthFunction.Lequal);
@@ -374,10 +616,24 @@ public sealed class GlesViewportRenderer
 
             foreach (var m in Scene.Meshes)
             {
+                if (!ShouldRenderMesh(m))
+                    continue;
                 if (m.EdgeVertexCount == 0) continue;
+                float effectiveAlpha = GetEffectiveMeshAlpha(m, a, clay);
+                float meshEdgeAlpha = edgeA * effectiveAlpha;
+                if (meshEdgeAlpha <= HiddenAlphaThreshold) continue;
+                if (edgeColorLoc >= 0
+                    && (float.IsNaN(lastUploadedEdgeAlpha)
+                        || System.Math.Abs(meshEdgeAlpha - lastUploadedEdgeAlpha) > 0.000001f))
+                {
+                    _gl.Uniform4(edgeColorLoc, edgeR, edgeG, edgeB, meshEdgeAlpha);
+                    lastUploadedEdgeAlpha = meshEdgeAlpha;
+                }
                 float[] model = m.WorldTransform ?? identityModel;
                 if (edgeModelLoc >= 0) _gl.UniformMatrix4(edgeModelLoc, true, model);
-                float[] normalMatrix = m.WorldTransform is null ? identityNormal : GlesRenderUtil.NormalMatrixFromWorld(m.WorldTransform);
+                float[] normalMatrix = identityNormal;
+                if (m.WorldNormalMatrix is not null)
+                    normalMatrix = m.WorldNormalMatrix;
                 if (edgeNormalLoc >= 0) _gl.UniformMatrix3(edgeNormalLoc, true, normalMatrix);
                 m.DrawEdges();
             }
@@ -388,71 +644,567 @@ public sealed class GlesViewportRenderer
             _gl.Disable(EnableCap.Blend);
         }
 
+        if (SectionVisualPlanes.Count > 0)
+        {
+            ApplySectionOverlaySettings();
+            RenderSectionCaps(view, proj, identityModel);
+            _sectionOverlay?.Render(
+                view,
+                proj,
+                ResolveSceneDiagonal(Scene),
+                SectionVisualPlanes,
+                SectionFillVisible,
+                SectionEdgesVisible,
+                SectionPlacementCommittedPicks,
+                SectionPlacementHoverPoint);
+            ResetMainFramebufferState();
+        }
+        else if (SectionPlacementCommittedPicks.Count > 0 || SectionPlacementHoverPoint is not null)
+        {
+            ApplySectionOverlaySettings();
+            _sectionOverlay?.Render(
+                view,
+                proj,
+                ResolveSceneDiagonal(Scene),
+                SectionVisualPlanes,
+                fillVisible: false,
+                edgesVisible: false,
+                SectionPlacementCommittedPicks,
+                SectionPlacementHoverPoint);
+            ResetMainFramebufferState();
+        }
+
+        if (SectionGizmoScale > 0f)
+        {
+            _sectionOverlay?.RenderGizmo(
+                view,
+                proj,
+                SectionGizmoAnchor,
+                SectionGizmoAxisX,
+                SectionGizmoAxisY,
+                SectionGizmoAxisZ,
+                SectionGizmoScale,
+                SectionGizmoHovered,
+                SectionGizmoActive);
+            ResetMainFramebufferState();
+        }
+
+        if (FaceHighlights.Count > 0)
+            _faceHighlightOverlay?.Render(view, proj, FaceHighlights);
+        if (MeasurementPresentation.Count > 0)
+        {
+            if (_measurementOverlay is not null)
+                _measurementOverlay.DimensionHighlightColor = DimensionHighlightColor;
+            _measurementOverlay?.Render(view, proj, _height, MeasurementPresentation);
+        }
+        ResetMainFramebufferState();
+
         // Plan 3B: resolve the MSAA color attachment to the default
         // backbuffer. The selection outline post-process draws into the
-        // default FBO over the resolved color.
-        if (_msaaFbo is not null && _msaaFbo.FboHandle != 0)
-            _msaaFbo.ResolveToDefault();
-
-        // ── Selection outline post-process (Phase G) ──────────────────
-        // Renders a Sobel-edged outline of the picked mesh over the default
-        // framebuffer. The inline color highlight in mesh.gles.frag stays
-        // as a fallback when OutlineEnabled is false (host writes
-        // SelectedMeshIndex = 0 in that case before this method runs).
-        if (a.OutlineEnabled && HighlightSelection && SelectedMeshIndex > 0 && _outlineRenderer is not null)
+        // default FBO over the resolved color. Skip the resolve entirely
+        // when we rendered directly to the default FB.
+        if (useMsaaFbo && _msaaFbo!.FboHandle != 0)
         {
-            _outlineRenderer.Render(Scene, Camera, SelectedMeshIndex,
-                a.OutlineColor, a.OutlineThicknessPx, _width, _height);
+            if (!TryResolveMsaaFramebuffer(a))
+            {
+                useMsaaFbo = false;
+                continue;
+            }
         }
+
+        break;
+        }
+        long afterScene = Stopwatch.GetTimestamp();
+
+        // ── Selection / hover outline post-process (Phase G) ───────────
+        // Hover draws first so the selected body's red outline wins when
+        // both targets overlap.
+        long outlineStart = afterScene;
+        if (!lightweightNavigationActive
+            && a.OutlineEnabled
+            && HighlightSelection
+            && HoveredMeshIndex > 0
+            && HoveredMeshIndex != SelectedMeshIndex
+            && _outlineRenderer is not null)
+        {
+            _outlineRenderer.SectionPlanes = SectionPlanes;
+            _outlineRenderer.Render(Scene, camera, HoveredMeshIndex,
+                a.HoverOutlineColor, a.HoverOutlineThicknessPx, _width, _height);
+            ResetMainFramebufferState();
+        }
+
+        if (!lightweightNavigationActive
+            && a.OutlineEnabled
+            && HighlightSelection
+            && SelectedMeshIndex > 0
+            && _outlineRenderer is not null)
+        {
+            _outlineRenderer.SectionPlanes = SectionPlanes;
+            _outlineRenderer.Render(Scene, camera, SelectedMeshIndex,
+                a.OutlineColor, a.OutlineThicknessPx, _width, _height);
+            ResetMainFramebufferState();
+        }
+
+        long afterOutline = Stopwatch.GetTimestamp();
+
+        LogFrameTiming(
+            frameStart,
+            afterQueue,
+            ssaoStart,
+            afterSsao,
+            sceneStart,
+            afterScene,
+            outlineStart,
+            afterOutline,
+            a,
+            ssaoActive,
+            interactive,
+            lightweightNavigationActive,
+            drawEdgesThisFrame,
+            queuedCommandCount);
+        LogSlowFrame(frameStart, a, ssaoActive, interactive, lightweightNavigationActive, drawEdgesThisFrame, queuedCommandCount);
+        FrameRendered?.Invoke();
+    }
+
+    private void DrawSurfaceMesh(
+        GpuMesh mesh,
+        SceneAppearance appearance,
+        bool clay,
+        int modelLoc,
+        int normalLoc,
+        int colorLoc,
+        int meshIndexLoc,
+        float[] identityModel,
+        float[] identityNormal)
+    {
+        GL gl = _gl!;
+        float[] model = mesh.WorldTransform ?? identityModel;
+        if (modelLoc >= 0) gl.UniformMatrix4(modelLoc, true, model);
+
+        float[] normalMatrix = identityNormal;
+        if (mesh.WorldNormalMatrix is not null)
+            normalMatrix = mesh.WorldNormalMatrix;
+        if (normalLoc >= 0) gl.UniformMatrix3(normalLoc, true, normalMatrix);
+
+        if (colorLoc >= 0)
+        {
+            // Clay mode forces every body to use the clay surface color;
+            // Shaded mode uses the per-instance diffuse from upload.
+            if (clay)
+            {
+                var c = appearance.ClaySurfaceColor;
+                gl.Uniform4(colorLoc, c[0], c[1], c[2], GetEffectiveMeshAlpha(mesh, appearance, clay));
+            }
+            else
+            {
+                var c = mesh.DiffuseColor;
+                gl.Uniform4(colorLoc, c[0], c[1], c[2], GetEffectiveMeshAlpha(mesh, appearance, clay));
+            }
+        }
+
+        if (meshIndexLoc >= 0) gl.Uniform1(meshIndexLoc, mesh.MeshIndex);
+        GlesRenderUtil.ApplyMeshCulling(gl, mesh);
+        mesh.Draw();
+    }
+
+    private void PrepareSurfacePassMeshes(
+        IReadOnlyList<GpuMesh> meshes,
+        SceneAppearance appearance,
+        bool clay,
+        List<GpuMesh> opaqueMeshes,
+        List<GpuMesh> transparentMeshes)
+    {
+        opaqueMeshes.Clear();
+        transparentMeshes.Clear();
+        int hiddenMeshes = 0;
+        int materialTransparentMeshes = 0;
+        float minMaterialAlpha = 1.0f;
+        float minEffectiveAlpha = 1.0f;
+
+        for (int i = 0; i < meshes.Count; i++)
+        {
+            GpuMesh mesh = meshes[i];
+            if (!ShouldRenderMesh(mesh))
+            {
+                hiddenMeshes++;
+                continue;
+            }
+
+            float materialAlpha = GetMeshColorAlpha(mesh);
+            float alpha = GetEffectiveMeshAlpha(mesh, appearance, clay);
+            if (materialAlpha < minMaterialAlpha)
+                minMaterialAlpha = materialAlpha;
+            if (alpha < minEffectiveAlpha)
+                minEffectiveAlpha = alpha;
+            if (materialAlpha < OpaqueAlphaThreshold)
+                materialTransparentMeshes++;
+
+            if (alpha <= HiddenAlphaThreshold)
+            {
+                hiddenMeshes++;
+                continue;
+            }
+
+            if (alpha >= OpaqueAlphaThreshold)
+                opaqueMeshes.Add(mesh);
+            else
+                transparentMeshes.Add(mesh);
+        }
+
+        _lastSurfaceTransparentMeshCount = transparentMeshes.Count;
+        _lastSurfaceHiddenMeshCount = hiddenMeshes;
+        LogTransparencyState(
+            appearance,
+            clay,
+            meshes.Count,
+            materialTransparentMeshes,
+            transparentMeshes.Count,
+            hiddenMeshes,
+            minMaterialAlpha,
+            minEffectiveAlpha);
+    }
+
+    private static void SortTransparentMeshesBackToFront(List<GpuMesh> meshes, CameraState camera)
+    {
+        if (meshes.Count <= 1)
+            return;
+
+        Vector3d forward = camera.Forward;
+        if (forward.LengthSquared < CameraBasisEpsilon)
+            forward = (camera.Target - camera.Position).Normalized();
+        if (forward.LengthSquared < CameraBasisEpsilon)
+            return;
+
+        Vector3d cameraPosition = camera.Position;
+        meshes.Sort((left, right) =>
+        {
+            double leftDepth = Vector3d.Dot(left.WorldCenter - cameraPosition, forward);
+            double rightDepth = Vector3d.Dot(right.WorldCenter - cameraPosition, forward);
+            int comparison = rightDepth.CompareTo(leftDepth);
+            return comparison != 0 ? comparison : left.MeshIndex.CompareTo(right.MeshIndex);
+        });
+    }
+
+    private bool ShouldRenderMesh(GpuMesh mesh)
+        => mesh.Visible || IsXrayBackgroundMesh(mesh);
+
+    private bool HasXrayIsolation
+        => _xrayOpaqueNodeIdLookup.Count > 0 || _xrayBackgroundNodeIdLookup.Count > 0;
+
+    private bool IsXrayOpaqueMesh(GpuMesh mesh)
+        => mesh.SourceNodeId >= 0 && _xrayOpaqueNodeIdLookup.Contains(mesh.SourceNodeId);
+
+    private bool IsXrayBackgroundMesh(GpuMesh mesh)
+        => mesh.SourceNodeId >= 0 && _xrayBackgroundNodeIdLookup.Contains(mesh.SourceNodeId);
+
+    private float GetEffectiveMeshAlpha(GpuMesh mesh, SceneAppearance appearance, bool clay)
+    {
+        float materialAlpha = GetMeshColorAlpha(mesh);
+        if (HasXrayIsolation)
+        {
+            if (IsXrayOpaqueMesh(mesh))
+                return 1.0f;
+
+            if (IsXrayBackgroundMesh(mesh))
+            {
+                float opacity = System.Math.Clamp(XrayIsolationOpacity, 0.02f, 0.98f);
+                return materialAlpha < OpaqueAlphaThreshold
+                    ? System.Math.Min(materialAlpha, opacity)
+                    : opacity;
+            }
+        }
+
+        return GetEffectiveMeshAlpha(materialAlpha, appearance, clay);
+    }
+
+    private static float GetEffectiveMeshAlpha(float materialAlpha, SceneAppearance appearance, bool clay)
+    {
+        if (clay)
+            return 1.0f;
+
+        float alpha = materialAlpha * appearance.SurfaceOpacity;
+        if (float.IsNaN(alpha) || float.IsInfinity(alpha))
+            return 1.0f;
+        return System.Math.Clamp(alpha, 0.0f, 1.0f);
+    }
+
+    private static float GetMeshColorAlpha(GpuMesh mesh)
+        => mesh.MaterialAlpha;
+
+    private void RenderSectionCaps(float[] view, float[] projection, float[] identityModel)
+    {
+        if (_gl is null || _sectionStencilProgram is null || _sectionOverlay is null || Scene is null)
+            return;
+        if (SectionVisualPlanes.Count == 0 || SectionPlanes.Count == 0)
+            return;
+
+        const int capStencilBit = 0x80;
+        float sceneDiagonal = ResolveSceneDiagonal(Scene);
+
+        _gl.Enable(EnableCap.StencilTest);
+
+        foreach (GlesSectionVisualPlane plane in SectionVisualPlanes)
+        {
+            _gl.StencilMask(capStencilBit);
+            _gl.ClearStencil(0);
+            _gl.Clear((uint)ClearBufferMask.StencilBufferBit);
+
+            _gl.ColorMask(false, false, false, false);
+            _gl.DepthMask(false);
+            _gl.Disable(EnableCap.DepthTest);
+            _gl.Disable(EnableCap.CullFace);
+            _gl.Disable(EnableCap.Blend);
+            _gl.StencilFunc(StencilFunction.Always, 0, capStencilBit);
+            _gl.StencilOp(StencilOp.Keep, StencilOp.Keep, StencilOp.Invert);
+
+            DrawSectionCapStencilGeometry(view, projection, identityModel);
+
+            _gl.ColorMask(true, true, true, true);
+            _gl.StencilFunc(StencilFunction.Equal, capStencilBit, capStencilBit);
+            _gl.StencilOp(StencilOp.Keep, StencilOp.Keep, StencilOp.Keep);
+            _gl.StencilMask(0x00);
+            _gl.DepthMask(false);
+            _gl.Enable(EnableCap.DepthTest);
+            _gl.DepthFunc(DepthFunction.Lequal);
+
+            _sectionOverlay.RenderCapPlane(view, projection, plane, sceneDiagonal);
+        }
+
+        _gl.ColorMask(true, true, true, true);
+        _gl.StencilMask(0xFF);
+        _gl.StencilFunc(StencilFunction.Always, 0, 0xFF);
+        _gl.StencilOp(StencilOp.Keep, StencilOp.Keep, StencilOp.Keep);
+        _gl.Disable(EnableCap.StencilTest);
+        ResetMainFramebufferState();
+    }
+
+    private void ApplySectionOverlaySettings()
+    {
+        if (_sectionOverlay is null)
+            return;
+
+        _sectionOverlay.PlaneSizeFraction = SectionPlaneSizeFraction;
+        _sectionOverlay.FillColor = SectionFillColor;
+        _sectionOverlay.EdgeColor = SectionEdgeColor;
+        _sectionOverlay.EdgeHighlightColor = SectionEdgeHighlightColor;
+        _sectionOverlay.CapColor = SectionCapColor;
+    }
+
+    private void DrawSectionCapStencilGeometry(float[] view, float[] projection, float[] identityModel)
+    {
+        if (_sectionStencilProgram is null || Scene is null)
+            return;
+
+        _sectionStencilProgram.Use();
+        SetMat4(_sectionStencilProgram, "uView", view);
+        SetMat4(_sectionStencilProgram, "uProjection", projection);
+        SetSectionUniforms(_sectionStencilProgram);
+        int modelLoc = _sectionStencilProgram.UniformLocation("uModel");
+
+        foreach (GpuMesh mesh in Scene.Meshes)
+        {
+            if (!ShouldRenderSectionCapStencilMesh(mesh))
+                continue;
+
+            float[] model = mesh.WorldTransform ?? identityModel;
+            if (modelLoc >= 0)
+                _gl!.UniformMatrix4(modelLoc, true, model);
+            mesh.Draw();
+        }
+    }
+
+    private bool ShouldRenderSectionCapStencilMesh(GpuMesh mesh)
+    {
+        if (mesh.IndexCount == 0 || !mesh.Visible)
+            return false;
+        if (IsXrayBackgroundMesh(mesh))
+            return false;
+
+        bool clay = Appearance.Mode == RenderMode.Clay;
+        return GetEffectiveMeshAlpha(mesh, Appearance, clay) >= OpaqueAlphaThreshold;
+    }
+
+    private static float ResolveSceneDiagonal(GpuScene scene)
+    {
+        BoundingBox bounds = scene.Bounds;
+        if (!bounds.IsValid)
+            return 100f;
+
+        double diagonal = bounds.Diagonal;
+        return double.IsFinite(diagonal) && diagonal > 0.0001
+            ? (float)diagonal
+            : 100f;
+    }
+
+    private void LogTransparencyState(
+        SceneAppearance appearance,
+        bool clay,
+        int meshCount,
+        int materialTransparentMeshes,
+        int effectiveTransparentMeshes,
+        int hiddenMeshes,
+        float minMaterialAlpha,
+        float minEffectiveAlpha)
+    {
+        bool transparentPass = !clay
+            && appearance.Mode != RenderMode.Wireframe
+            && effectiveTransparentMeshes > 0;
+        var key = new TransparencyStateKey(
+            true,
+            appearance.Mode,
+            appearance.SurfaceOpacity,
+            Scene is null ? 0 : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(Scene),
+            meshCount,
+            materialTransparentMeshes,
+            effectiveTransparentMeshes,
+            hiddenMeshes,
+            minMaterialAlpha,
+            minEffectiveAlpha,
+            transparentPass);
+        if (key == _lastLoggedTransparencyState)
+            return;
+
+        _lastLoggedTransparencyState = key;
+        Android.Util.Log.Info(
+            "FA.Renderer",
+            $"Transparency state: mode={appearance.Mode}, surfaceOpacity={appearance.SurfaceOpacity:0.###}, materialTransparentMeshes={materialTransparentMeshes}/{meshCount}, effectiveTransparentMeshes={effectiveTransparentMeshes}, hiddenAlphaMeshes={hiddenMeshes}, minMaterialAlpha={minMaterialAlpha:0.###}, minEffectiveAlpha={minEffectiveAlpha:0.###}, transparentPass={(transparentPass ? "on" : "off")}.");
+    }
+
+    private void LogFrameTiming(
+        long frameStartTicks,
+        long afterQueueTicks,
+        long ssaoStartTicks,
+        long afterSsaoTicks,
+        long sceneStartTicks,
+        long afterSceneTicks,
+        long outlineStartTicks,
+        long afterOutlineTicks,
+        SceneAppearance appearance,
+        bool ssaoActive,
+        bool interactive,
+        bool lightweightNavigationActive,
+        bool edgesDrawn,
+        int queueCommandCount)
+    {
+        _frameTiming.Add(
+            TicksToMilliseconds(frameStartTicks, afterOutlineTicks),
+            TicksToMilliseconds(frameStartTicks, afterQueueTicks),
+            TicksToMilliseconds(ssaoStartTicks, afterSsaoTicks),
+            TicksToMilliseconds(sceneStartTicks, afterSceneTicks),
+            TicksToMilliseconds(outlineStartTicks, afterOutlineTicks),
+            appearance,
+            ssaoActive,
+            interactive,
+            lightweightNavigationActive,
+            edgesDrawn,
+            queueCommandCount,
+            !lightweightNavigationActive && appearance.OutlineEnabled && HighlightSelection,
+            Scene?.Meshes.Count ?? 0,
+            _lastSurfaceTransparentMeshCount,
+            _lastSurfaceHiddenMeshCount,
+            _width,
+            _height);
+    }
+
+    private static double TicksToMilliseconds(long startTicks, long endTicks)
+        => (endTicks - startTicks) * 1000.0 / Stopwatch.Frequency;
+
+    private void LogSlowFrame(
+        long frameStartTicks,
+        SceneAppearance appearance,
+        bool ssaoActive,
+        bool interactive,
+        bool lightweightNavigationActive,
+        bool edgesDrawn,
+        int queueCommandCount)
+    {
+        double elapsedMs = (Stopwatch.GetTimestamp() - frameStartTicks) * 1000.0 / Stopwatch.Frequency;
+        double thresholdMs = interactive ? 34.0 : 50.0;
+        if (elapsedMs < thresholdMs)
+            return;
+
+        long now = Stopwatch.GetTimestamp();
+        if (_lastSlowFrameLogTicks != 0
+            && (now - _lastSlowFrameLogTicks) * 1000.0 / Stopwatch.Frequency < 1000.0)
+        {
+            return;
+        }
+
+        _lastSlowFrameLogTicks = now;
+        Android.Util.Log.Warn(
+            "FA.Renderer",
+            $"Slow frame: {elapsedMs:0.0}ms, queueCommands={queueCommandCount}, interactive={interactive}, lightweight={lightweightNavigationActive}, mode={appearance.Mode}, ssao={ssaoActive}, edges={edgesDrawn}, edgeWidth={appearance.EdgeWidth:0.###}, outline={(!lightweightNavigationActive && appearance.OutlineEnabled && HighlightSelection)}, meshes={Scene?.Meshes.Count ?? 0}, transparent={_lastSurfaceTransparentMeshCount}, hiddenAlpha={_lastSurfaceHiddenMeshCount}, msaa={(appearance.MsaaSamples <= 1 ? "Off" : appearance.MsaaSamples + "x")}, viewport={_width}x{_height}.");
     }
 
     private void SetMat4(ShaderProgram program, string name, float[] m)
     {
-        int loc = _gl!.GetUniformLocation(program.Handle, name);
+        int loc = program.UniformLocation(name);
         if (loc < 0) return;
-        _gl.UniformMatrix4(loc, true, m);
+        _gl!.UniformMatrix4(loc, true, m);
     }
 
     private void SetVec3(ShaderProgram program, string name, float x, float y, float z)
     {
-        int loc = _gl!.GetUniformLocation(program.Handle, name);
+        int loc = program.UniformLocation(name);
         if (loc < 0) return;
-        _gl.Uniform3(loc, x, y, z);
-    }
-
-    private void SetVec4(ShaderProgram program, string name, float x, float y, float z, float w)
-    {
-        int loc = _gl!.GetUniformLocation(program.Handle, name);
-        if (loc < 0) return;
-        _gl.Uniform4(loc, x, y, z, w);
+        _gl!.Uniform3(loc, x, y, z);
     }
 
     private void SetInt(ShaderProgram program, string name, int value)
     {
-        int loc = _gl!.GetUniformLocation(program.Handle, name);
+        int loc = program.UniformLocation(name);
         if (loc < 0) return;
-        _gl.Uniform1(loc, value);
+        _gl!.Uniform1(loc, value);
     }
 
     private void SetBool(ShaderProgram program, string name, bool value)
     {
-        int loc = _gl!.GetUniformLocation(program.Handle, name);
+        int loc = program.UniformLocation(name);
         if (loc < 0) return;
-        _gl.Uniform1(loc, value ? 1 : 0);
+        _gl!.Uniform1(loc, value ? 1 : 0);
     }
 
     private void SetFloat(ShaderProgram program, string name, float value)
     {
-        int loc = _gl!.GetUniformLocation(program.Handle, name);
+        int loc = program.UniformLocation(name);
         if (loc < 0) return;
-        _gl.Uniform1(loc, value);
+        _gl!.Uniform1(loc, value);
     }
 
     private void SetVec2(ShaderProgram program, string name, float x, float y)
     {
-        int loc = _gl!.GetUniformLocation(program.Handle, name);
+        int loc = program.UniformLocation(name);
         if (loc < 0) return;
-        _gl.Uniform2(loc, x, y);
+        _gl!.Uniform2(loc, x, y);
+    }
+
+    private void SetSectionUniforms(ShaderProgram program)
+    {
+        int count = System.Math.Min(SectionPlanes.Count, 8);
+        int countLoc = program.UniformLocation("uSectionPlaneCount");
+        if (countLoc >= 0)
+            _gl!.Uniform1(countLoc, count);
+
+        int planesLoc = program.UniformArrayLocation("uSectionPlanes");
+        if (planesLoc < 0 || count <= 0)
+            return;
+
+        float[] values = new float[32];
+        for (int i = 0; i < count; i++)
+        {
+            GlesSectionPlane plane = SectionPlanes[i];
+            int offset = i * 4;
+            values[offset + 0] = plane.NormalX;
+            values[offset + 1] = plane.NormalY;
+            values[offset + 2] = plane.NormalZ;
+            values[offset + 3] = plane.Offset;
+        }
+
+        unsafe
+        {
+            fixed (float* ptr = values)
+                _gl!.Uniform4(planesLoc, (uint)count, ptr);
+        }
     }
 
     private void EnsureEdgesMatchAppearance(SceneAppearance appearance)
@@ -460,28 +1212,278 @@ public sealed class GlesViewportRenderer
         if (Scene is null)
             return;
 
+        bool clayEdges = appearance.Mode == RenderMode.Clay;
+        float featureAngle = clayEdges
+            ? appearance.ClayFeatureEdgeCreaseAngleDegrees
+            : appearance.CadEdgeFeatureAngleDegrees;
+        float coplanarTolerance = clayEdges ? 0.0f : appearance.CadEdgeCoplanarToleranceDegrees;
+        bool silhouetteEnabled = !clayEdges && appearance.CadEdgeSilhouetteEnabled;
+
         bool sceneChanged = !ReferenceEquals(_edgeSettingsScene, Scene);
         bool settingsChanged =
             sceneChanged
-            || System.Math.Abs(_edgeFeatureAngle - appearance.CadEdgeFeatureAngleDegrees) > 0.0001f
-            || System.Math.Abs(_edgeCoplanarTolerance - appearance.CadEdgeCoplanarToleranceDegrees) > 0.0001f
+            || System.Math.Abs(_edgeFeatureAngle - featureAngle) > 0.0001f
+            || System.Math.Abs(_edgeCoplanarTolerance - coplanarTolerance) > 0.0001f
             || System.Math.Abs(_edgeWeldTolerance - appearance.CadEdgeWeldToleranceScale) > 0.000000001f
-            || _edgeSilhouetteEnabled != appearance.CadEdgeSilhouetteEnabled;
+            || _edgeSilhouetteEnabled != silhouetteEnabled;
 
         if (!settingsChanged)
             return;
 
         Scene.RebuildEdges(
-            appearance.CadEdgeFeatureAngleDegrees,
-            appearance.CadEdgeCoplanarToleranceDegrees,
+            featureAngle,
+            coplanarTolerance,
             appearance.CadEdgeWeldToleranceScale,
-            appearance.CadEdgeSilhouetteEnabled);
+            silhouetteEnabled);
 
         _edgeSettingsScene = Scene;
-        _edgeFeatureAngle = appearance.CadEdgeFeatureAngleDegrees;
-        _edgeCoplanarTolerance = appearance.CadEdgeCoplanarToleranceDegrees;
+        _edgeFeatureAngle = featureAngle;
+        _edgeCoplanarTolerance = coplanarTolerance;
         _edgeWeldTolerance = appearance.CadEdgeWeldToleranceScale;
-        _edgeSilhouetteEnabled = appearance.CadEdgeSilhouetteEnabled;
+        _edgeSilhouetteEnabled = silhouetteEnabled;
+    }
+
+    private bool TryPrepareMsaaFramebuffer(SceneAppearance appearance)
+    {
+        // Plan 3B: offscreen MSAA FBO is only used when the user requested
+        // multisampling. With MSAA = Off the renderer reverts to drawing
+        // directly into the default backbuffer (the pre-Plan-3B path) to
+        // avoid an unnecessary blit-resolve on every frame.
+        if (appearance.MsaaSamples <= 1 || _msaaFbo is null)
+        {
+            _msaaFbo?.Destroy();
+            LogMsaaState(appearance.MsaaSamples, 1, _msaaFbo?.MaxSamples ?? -1);
+            return false;
+        }
+
+        if (_failedMsaaWidth == _width
+            && _failedMsaaHeight == _height
+            && _failedMsaaSamples == appearance.MsaaSamples)
+        {
+            return false;
+        }
+
+        try
+        {
+            _msaaFbo.Ensure(_width, _height, appearance.MsaaSamples);
+            if (_msaaFbo.Samples <= 1)
+            {
+                Android.Util.Log.Warn(
+                    "FA.Renderer",
+                    $"MSAA requested {appearance.MsaaSamples}x but hardware reports max {_msaaFbo.MaxSamples}; rendering without MSAA.");
+                _msaaFbo.Destroy();
+                _failedMsaaWidth = _width;
+                _failedMsaaHeight = _height;
+                _failedMsaaSamples = appearance.MsaaSamples;
+                return false;
+            }
+
+            _failedMsaaWidth = 0;
+            _failedMsaaHeight = 0;
+            _failedMsaaSamples = 0;
+            LogMsaaState(appearance.MsaaSamples, _msaaFbo.Samples, _msaaFbo.MaxSamples);
+            return _msaaFbo.FboHandle != 0;
+        }
+        catch (Exception ex)
+        {
+            Android.Util.Log.Warn(
+                "FA.Renderer",
+                Java.Lang.Throwable.FromException(ex),
+                $"MSAA disabled for {_width}x{_height} at {appearance.MsaaSamples}x.");
+            _msaaFbo.Destroy();
+            _failedMsaaWidth = _width;
+            _failedMsaaHeight = _height;
+            _failedMsaaSamples = appearance.MsaaSamples;
+            return false;
+        }
+    }
+
+    private bool TryResolveMsaaFramebuffer(SceneAppearance appearance)
+    {
+        if (_msaaFbo is null || _msaaFbo.FboHandle == 0)
+            return true;
+
+        if (_msaaFbo.TryResolveToDefault())
+            return true;
+
+        Android.Util.Log.Warn(
+            "FA.Renderer",
+            $"MSAA resolve failed for {_width}x{_height} at {appearance.MsaaSamples}x, GL error=0x{(int)_msaaFbo.LastResolveError:X4}; falling back to direct rendering.");
+        _msaaFbo.Destroy();
+        _failedMsaaWidth = _width;
+        _failedMsaaHeight = _height;
+        _failedMsaaSamples = appearance.MsaaSamples;
+        LogMsaaState(appearance.MsaaSamples, 1, _msaaFbo.MaxSamples);
+        return false;
+    }
+
+    private void LogMsaaState(int requestedSamples, int effectiveSamples, int maxSamples)
+    {
+        if (_lastLoggedMsaaRequested == requestedSamples
+            && _lastLoggedMsaaEffective == effectiveSamples
+            && _lastLoggedMsaaMaxSamples == maxSamples)
+        {
+            return;
+        }
+
+        _lastLoggedMsaaRequested = requestedSamples;
+        _lastLoggedMsaaEffective = effectiveSamples;
+        _lastLoggedMsaaMaxSamples = maxSamples;
+
+        string requested = requestedSamples <= 1 ? "Off" : requestedSamples + "x";
+        string effective = effectiveSamples <= 1 ? "Off" : effectiveSamples + "x";
+        string max = maxSamples >= 0 ? maxSamples.ToString() : "unknown";
+        Android.Util.Log.Info(
+            "FA.Renderer",
+            $"MSAA state: requested={requested}, effective={effective}, GL_MAX_SAMPLES={max}, viewport={_width}x{_height}.");
+    }
+
+    private CameraState? SnapshotCamera()
+    {
+        CameraState? camera = Camera;
+        if (camera is null)
+            return null;
+
+        lock (camera)
+            return camera.Clone();
+    }
+
+    private string GetSsaoInactiveReason(SceneAppearance appearance, CameraState? camera)
+    {
+        if (!appearance.AmbientOcclusionEnabled)
+            return "disabled";
+        if (appearance.Mode == RenderMode.Wireframe)
+            return "wireframe mode";
+        if (Scene is null)
+            return "no scene";
+        if (camera is null)
+            return "no camera";
+        if (_normalDepthRenderer is null || _ssaoRenderer is null)
+            return "renderer not ready";
+        return "";
+    }
+
+    private bool ShouldCollectSsaoDiagnostics(SceneAppearance appearance, bool active, string reason)
+    {
+        if (!active)
+            return false;
+
+        var key = new SsaoDiagnosticsKey(
+            true,
+            Scene is null ? 0 : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(Scene),
+            _width,
+            _height,
+            appearance.Mode,
+            appearance.AoSampleCount,
+            appearance.AoRadius,
+            appearance.AoBias,
+            appearance.AoIntensity,
+            appearance.AoPower,
+            appearance.AoContrast,
+            appearance.AoMaxDistance,
+            appearance.AoFadeStart,
+            appearance.AoFadeEnd,
+            appearance.AoBlurEnabled,
+            appearance.AoBlurRadius,
+            appearance.AoBlurSharpness,
+            appearance.AoBlurPasses,
+            appearance.AoNoiseScale);
+        if (key == _lastSsaoDiagnostics)
+            return false;
+
+        _lastSsaoDiagnostics = key;
+        return true;
+    }
+
+    private void LogSsaoState(SceneAppearance appearance, bool active, string reason, uint aoTexture)
+    {
+        int keyWidth = active ? _width : 0;
+        int keyHeight = active ? _height : 0;
+        var key = new SsaoStateKey(
+            true,
+            keyWidth,
+            keyHeight,
+            appearance.AmbientOcclusionEnabled,
+            active,
+            reason,
+            appearance.Mode,
+            appearance.AoSampleCount,
+            appearance.AoRadius,
+            appearance.AoBias,
+            appearance.AoIntensity,
+            appearance.AoPower,
+            appearance.AoContrast,
+            appearance.AoMaxDistance,
+            appearance.AoFadeStart,
+            appearance.AoFadeEnd,
+            appearance.AoBlurEnabled,
+            appearance.AoBlurRadius,
+            appearance.AoBlurSharpness,
+            appearance.AoBlurPasses,
+            appearance.AoNoiseScale);
+        if (key == _lastLoggedSsaoState)
+            return;
+
+        _lastLoggedSsaoState = key;
+
+        if (!active || _ssaoRenderer is null)
+        {
+            Android.Util.Log.Info(
+                "FA.Renderer",
+                $"SSAO state: enabled={appearance.AmbientOcclusionEnabled}, active=False, reason={reason}, mode={appearance.Mode}, viewport={_width}x{_height}.");
+            return;
+        }
+
+        GlesSsaoRenderInfo info = _ssaoRenderer.LastRenderInfo;
+            Android.Util.Log.Info(
+                "FA.Renderer",
+                $"SSAO state: enabled=True, active=True, mode={appearance.Mode}, projection={(info.IsPerspective ? "perspective" : "orthographic")}, intensity={info.Intensity:0.###}, samples={info.SampleCount}, radius={appearance.AoRadius:0.#####} effective={info.Radius:0.###}, bias={appearance.AoBias:0.#####} effective={info.Bias:0.###}, maxDistance={info.MaxDistance:0.###}, fade={info.FadeStart:0.###}-{info.FadeEnd:0.###}, sceneDiag={info.SceneDiagonal:0.###}, cameraSceneDistance={info.CameraSceneDistance:0.###}, blur={info.BlurEnabled} r={info.BlurRadius} p={info.BlurPasses}, depthRange={info.LinearDepthMin:0.###}-{info.LinearDepthMax:0.###}, texture={aoTexture}, viewport={_width}x{_height}.");
+
+        if (info.RenderError != GLEnum.NoError)
+        {
+            Android.Util.Log.Warn(
+                "FA.Ssao",
+                $"SSAO render GL error=0x{(int)info.RenderError:X4}.");
+        }
+
+        GlesSsaoTextureStats stats = info.TextureStats;
+        if (stats.Valid)
+        {
+            Android.Util.Log.Info(
+                "FA.Ssao",
+                $"SSAO texture stats: rawMin={info.RawTextureStats.Min}, rawMax={info.RawTextureStats.Max}, rawAvg={info.RawTextureStats.Average:0.0}, finalMin={stats.Min}, finalMax={stats.Max}, finalAvg={stats.Average:0.0}, center={stats.Center} (0=dark, 255=white).");
+        }
+        else if (stats.ReadError != GLEnum.NoError)
+        {
+            Android.Util.Log.Warn(
+                "FA.Ssao",
+                $"SSAO texture readback failed, GL error=0x{(int)stats.ReadError:X4}.");
+        }
+
+        if (_normalDepthRenderer is not null)
+            LogNormalDepthStats(_normalDepthRenderer.LastRenderInfo);
+    }
+
+    private static void LogNormalDepthStats(GlesNormalDepthRenderInfo info)
+    {
+        GlesNormalDepthStats stats = info.Stats;
+        if (!info.Rendered)
+            return;
+
+        if (stats.Valid)
+        {
+            Android.Util.Log.Info(
+                "FA.NormalDepth",
+                $"Normal/depth stats: meshes={info.MeshCount}, changedNormals={stats.ChangedNormalSamples}/{stats.SampleCount}, normalR={stats.MinNormalR}-{stats.MaxNormalR}, centerNormal=({stats.CenterNormalR},{stats.CenterNormalG}), viewDepth={stats.MinDepth:0.###}-{stats.MaxDepth:0.###}, depthAvg={stats.AverageDepth:0.###}, centerDepth={stats.CenterDepth:0.###}, depthRange={info.LinearDepthMin:0.###}-{info.LinearDepthMax:0.###}.");
+            return;
+        }
+
+        if (stats.ReadError != GLEnum.NoError)
+        {
+            Android.Util.Log.Warn(
+                "FA.NormalDepth",
+                $"Normal/depth readback failed, meshes={info.MeshCount}, GL error=0x{(int)stats.ReadError:X4}.");
+        }
     }
 
     private void ResetMainFramebufferState()
@@ -546,36 +1548,39 @@ public sealed class GlesViewportRenderer
     public int? Pick(int x, int y)
     {
         _guard.EnsureOnRenderThread();
-        if (_pickRenderer is null || Scene is null || Camera is null) return null;
-        return _pickRenderer.Pick(x, y, Scene, Camera);
+        CameraState? camera = SnapshotCamera();
+        if (_pickRenderer is null || Scene is null || camera is null) return null;
+        _pickRenderer.SectionPlanes = SectionPlanes;
+        _pickRenderer.XrayBackgroundNodeIds = XrayBackgroundNodeIds;
+        return _pickRenderer.Pick(x, y, Scene, camera);
     }
 
     private void SetMat4(string name, float[] m)
     {
-        int loc = _gl!.GetUniformLocation(_meshProgram!.Handle, name);
+        int loc = _meshProgram!.UniformLocation(name);
         if (loc < 0) return;
-        _gl.UniformMatrix4(loc, true, m);
+        _gl!.UniformMatrix4(loc, true, m);
     }
 
     private void SetMat3(string name, float[] m)
     {
-        int loc = _gl!.GetUniformLocation(_meshProgram!.Handle, name);
+        int loc = _meshProgram!.UniformLocation(name);
         if (loc < 0) return;
-        _gl.UniformMatrix3(loc, true, m);
+        _gl!.UniformMatrix3(loc, true, m);
     }
 
     private void SetVec3(string name, float x, float y, float z)
     {
-        int loc = _gl!.GetUniformLocation(_meshProgram!.Handle, name);
+        int loc = _meshProgram!.UniformLocation(name);
         if (loc < 0) return;
-        _gl.Uniform3(loc, x, y, z);
+        _gl!.Uniform3(loc, x, y, z);
     }
 
     private void SetInt(string name, int value)
     {
-        int loc = _gl!.GetUniformLocation(_meshProgram!.Handle, name);
+        int loc = _meshProgram!.UniformLocation(name);
         if (loc < 0) return;
-        _gl.Uniform1(loc, value);
+        _gl!.Uniform1(loc, value);
     }
 
     /// <summary>
@@ -609,6 +1614,237 @@ public sealed class GlesViewportRenderer
 
     public int Width => _width;
     public int Height => _height;
+
+    public void Dispose()
+    {
+        DisposeResources(disposeScene: true);
+        FrameRendered = null;
+    }
+
+    private void DisposeResources(bool disposeScene)
+    {
+        _initialized = false;
+
+        if (disposeScene)
+        {
+            TryDispose(Scene);
+            Scene = null;
+        }
+
+        TryDispose(_meshProgram);
+        TryDispose(_edgeProgram);
+        TryDispose(_pickRenderer);
+        TryDispose(_gridRenderer);
+        TryDispose(_normalDepthRenderer);
+        TryDispose(_ssaoRenderer);
+        TryDispose(_outlineRenderer);
+        TryDispose(_measurementOverlay);
+        TryDispose(_faceHighlightOverlay);
+        TryDispose(_sectionOverlay);
+        TryDispose(_sectionStencilProgram);
+        TryDispose(_msaaFbo);
+
+        _meshProgram = null;
+        _edgeProgram = null;
+        _pickRenderer = null;
+        _gridRenderer = null;
+        _normalDepthRenderer = null;
+        _ssaoRenderer = null;
+        _outlineRenderer = null;
+        _measurementOverlay = null;
+        _faceHighlightOverlay = null;
+        _sectionOverlay = null;
+        _sectionStencilProgram = null;
+        _msaaFbo = null;
+
+        if (_whiteAoTexture != 0 && _gl is not null)
+        {
+            try { _gl.DeleteTexture(_whiteAoTexture); }
+            catch (Exception ex) { Android.Util.Log.Warn("FA.Renderer", "Failed to delete AO fallback texture: " + ex.Message); }
+            _whiteAoTexture = 0;
+        }
+
+        _edgeSettingsScene = null;
+        _opaqueSurfaceMeshes.Clear();
+        _transparentSurfaceMeshes.Clear();
+        _lastLoggedSsaoState = default;
+        _lastSsaoDiagnostics = default;
+        _lastLoggedTransparencyState = default;
+        _gl = null;
+    }
+
+    private static void TryDispose(IDisposable? disposable)
+    {
+        if (disposable is null)
+            return;
+
+        try { disposable.Dispose(); }
+        catch (Exception ex) { Android.Util.Log.Warn("FA.Renderer", "Renderer resource disposal failed: " + ex.Message); }
+    }
+}
+
+internal readonly record struct TransparencyStateKey(
+    bool Valid,
+    RenderMode Mode,
+    float SurfaceOpacity,
+    int SceneHash,
+    int MeshCount,
+    int MaterialTransparentMeshes,
+    int EffectiveTransparentMeshes,
+    int HiddenMeshes,
+    float MinMaterialAlpha,
+    float MinEffectiveAlpha,
+    bool TransparentPass);
+
+internal readonly record struct SsaoStateKey(
+    bool Valid,
+    int Width,
+    int Height,
+    bool Enabled,
+    bool Active,
+    string Reason,
+    RenderMode Mode,
+    int SampleCount,
+    float Radius,
+    float Bias,
+    float Intensity,
+    float Power,
+    float Contrast,
+    float MaxDistance,
+    float FadeStart,
+    float FadeEnd,
+    bool BlurEnabled,
+    int BlurRadius,
+    float BlurSharpness,
+    int BlurPasses,
+    float NoiseScale);
+
+internal readonly record struct SsaoDiagnosticsKey(
+    bool Valid,
+    int SceneHash,
+    int Width,
+    int Height,
+    RenderMode Mode,
+    int SampleCount,
+    float Radius,
+    float Bias,
+    float Intensity,
+    float Power,
+    float Contrast,
+    float MaxDistance,
+    float FadeStart,
+    float FadeEnd,
+    bool BlurEnabled,
+    int BlurRadius,
+    float BlurSharpness,
+    int BlurPasses,
+    float NoiseScale);
+
+internal readonly record struct FrameTimingStateKey(
+    bool Valid,
+    RenderMode Mode,
+    bool SsaoActive,
+    bool Interactive,
+    bool LightweightNavigationActive,
+    bool EdgesDrawn,
+    bool OutlineEnabled,
+    int MeshCount,
+    int TransparentMeshCount,
+    int HiddenAlphaMeshCount,
+    int Width,
+    int Height,
+    int MsaaSamples);
+
+internal sealed class FrameTimingAccumulator
+{
+    private const int FramesPerReport = 60;
+
+    private FrameTimingStateKey _stateKey;
+    private int _frames;
+    private int _over16;
+    private int _over33;
+    private int _over50;
+    private double _totalMs;
+    private double _queueMs;
+    private double _ssaoMs;
+    private double _sceneMs;
+    private double _outlineMs;
+    private double _maxMs;
+    private int _queueCommands;
+
+    public void Add(
+        double totalMs,
+        double queueMs,
+        double ssaoMs,
+        double sceneMs,
+        double outlineMs,
+        SceneAppearance appearance,
+        bool ssaoActive,
+        bool interactive,
+        bool lightweightNavigationActive,
+        bool edgesDrawn,
+        int queueCommandCount,
+        bool outlineEnabled,
+        int meshCount,
+        int transparentMeshCount,
+        int hiddenAlphaMeshCount,
+        int width,
+        int height)
+    {
+        var stateKey = new FrameTimingStateKey(
+            true,
+            appearance.Mode,
+            ssaoActive,
+            interactive,
+            lightweightNavigationActive,
+            edgesDrawn,
+            outlineEnabled,
+            meshCount,
+            transparentMeshCount,
+            hiddenAlphaMeshCount,
+            width,
+            height,
+            appearance.MsaaSamples);
+        if (_stateKey.Valid && _stateKey != stateKey)
+            Reset();
+        _stateKey = stateKey;
+
+        _frames++;
+        _totalMs += totalMs;
+        _queueMs += queueMs;
+        _ssaoMs += ssaoMs;
+        _sceneMs += sceneMs;
+        _outlineMs += outlineMs;
+        _queueCommands += queueCommandCount;
+        _maxMs = System.Math.Max(_maxMs, totalMs);
+        if (totalMs > 16.67) _over16++;
+        if (totalMs > 33.33) _over33++;
+        if (totalMs > 50.0) _over50++;
+
+        if (_frames < FramesPerReport)
+            return;
+
+        Android.Util.Log.Info(
+            "FA.FrameTiming",
+            $"Render timing over {_frames} frames: avg={_totalMs / _frames:0.0}ms, max={_maxMs:0.0}ms, over16={_over16}, over33={_over33}, over50={_over50}, queue={_queueMs / _frames:0.0}ms, queueCommands={_queueCommands}, ssao={_ssaoMs / _frames:0.0}ms, scene={_sceneMs / _frames:0.0}ms, outline={_outlineMs / _frames:0.0}ms, mode={appearance.Mode}, interactive={interactive}, lightweight={lightweightNavigationActive}, ssaoActive={ssaoActive}, edges={edgesDrawn}, edgeWidth={appearance.EdgeWidth:0.###}, outline={outlineEnabled}, meshes={meshCount}, transparent={transparentMeshCount}, hiddenAlpha={hiddenAlphaMeshCount}, msaa={(appearance.MsaaSamples <= 1 ? "Off" : appearance.MsaaSamples + "x")}, viewport={width}x{height}.");
+        Reset();
+        _stateKey = stateKey;
+    }
+
+    private void Reset()
+    {
+        _frames = 0;
+        _over16 = 0;
+        _over33 = 0;
+        _over50 = 0;
+        _totalMs = 0;
+        _queueMs = 0;
+        _ssaoMs = 0;
+        _sceneMs = 0;
+        _outlineMs = 0;
+        _maxMs = 0;
+        _queueCommands = 0;
+    }
 }
 
 internal sealed class SurfaceViewGlContext : Silk.NET.Core.Contexts.INativeContext

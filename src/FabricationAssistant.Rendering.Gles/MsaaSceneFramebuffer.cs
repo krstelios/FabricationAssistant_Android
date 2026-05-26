@@ -4,7 +4,7 @@ namespace FabricationAssistant.Rendering.Gles;
 
 /// <summary>
 /// Offscreen multisample framebuffer for the Android viewport. Owns a
-/// multisample color renderbuffer (RGBA8) + multisample depth-stencil
+/// multisample color renderbuffer (RGB8) + multisample depth-stencil
 /// renderbuffer (D24S8) attached to a single FBO. The renderer draws every
 /// non-post-process pass into this FBO, then blit-resolves the color
 /// attachment to FBO 0 before the selection outline composite.
@@ -24,6 +24,7 @@ public sealed partial class MsaaSceneFramebuffer : IDisposable
     private int _width;
     private int _height;
     private int _samples;
+    private int _maxSamples = -1;
     private bool _disposed;
 
     public MsaaSceneFramebuffer(GL gl)
@@ -35,11 +36,16 @@ public sealed partial class MsaaSceneFramebuffer : IDisposable
     public int Width => _width;
     public int Height => _height;
     public int Samples => _samples;
+    public int MaxSamples => _maxSamples;
+    public GLEnum LastResolveError { get; private set; } = GLEnum.NoError;
 
     /// <summary>
     /// Allocates (or re-allocates) the FBO + renderbuffers at the given
     /// dimensions and sample count. Re-uses the existing allocation when
     /// (width, height, samples) all match - safe to call every frame.
+    /// The hardware GL_MAX_SAMPLES query is cached after the first call so
+    /// no per-frame glGetIntegerv pipeline stall occurs on the steady-state
+    /// no-op path.
     /// Throws <see cref="InvalidOperationException"/> if the FBO is
     /// incomplete after attachment.
     /// </summary>
@@ -51,12 +57,29 @@ public sealed partial class MsaaSceneFramebuffer : IDisposable
             return;
         }
 
-        int clamped = ClampSamples(samples);
-        int maxSamples = 0;
-        _gl.GetInteger(GLEnum.MaxSamples, &maxSamples);
-        if (maxSamples > 0 && clamped > maxSamples)
-            clamped = maxSamples;
+        int clamped = _maxSamples >= 0
+            ? ClampSamplesToHardwareLimit(samples, _maxSamples)
+            : ClampSamples(samples);
 
+        // Fast path: steady-state no-op. Hits every frame after the first
+        // allocation, so it must avoid all GL calls (especially glGetIntegerv
+        // which can flush the pipeline on some drivers).
+        if (_fbo != 0 && _width == width && _height == height && _samples == clamped)
+            return;
+
+        // Query the hardware max sample count once and cache it. GL_MAX_SAMPLES
+        // is constant per device, so re-querying every frame is wasted work.
+        if (_maxSamples < 0)
+        {
+            int q = 0;
+            _gl.GetInteger(GLEnum.MaxSamples, &q);
+            _maxSamples = q;
+        }
+        clamped = ClampSamplesToHardwareLimit(samples, _maxSamples);
+
+        // Re-check after hardware clamp. If the request and previous frame
+        // both resolve to the same Android-supported sample count, there is
+        // no FBO work to do.
         if (_fbo != 0 && _width == width && _height == height && _samples == clamped)
             return;
 
@@ -76,12 +99,12 @@ public sealed partial class MsaaSceneFramebuffer : IDisposable
         if (clamped > 1)
         {
             _gl.RenderbufferStorageMultisample(RenderbufferTarget.Renderbuffer,
-                (uint)clamped, InternalFormat.Rgba8, (uint)width, (uint)height);
+                (uint)clamped, InternalFormat.Rgb8, (uint)width, (uint)height);
         }
         else
         {
             _gl.RenderbufferStorage(RenderbufferTarget.Renderbuffer,
-                InternalFormat.Rgba8, (uint)width, (uint)height);
+                InternalFormat.Rgb8, (uint)width, (uint)height);
         }
         _gl.FramebufferRenderbuffer(FramebufferTarget.Framebuffer,
             FramebufferAttachment.ColorAttachment0, RenderbufferTarget.Renderbuffer, _colorRbo);
@@ -132,9 +155,11 @@ public sealed partial class MsaaSceneFramebuffer : IDisposable
     /// default backbuffer) at the same dimensions. Depth and stencil are
     /// not resolved - the selection outline post-process only reads color.
     /// </summary>
-    public void ResolveToDefault()
+    public bool TryResolveToDefault()
     {
-        if (_fbo == 0 || _width <= 0 || _height <= 0) return;
+        LastResolveError = GLEnum.NoError;
+        if (_fbo == 0 || _width <= 0 || _height <= 0) return true;
+        DrainGlErrors();
         _gl.BindFramebuffer(FramebufferTarget.ReadFramebuffer, _fbo);
         _gl.BindFramebuffer(FramebufferTarget.DrawFramebuffer, 0);
         _gl.ReadBuffer(GLEnum.ColorAttachment0);
@@ -142,9 +167,25 @@ public sealed partial class MsaaSceneFramebuffer : IDisposable
             0, 0, _width, _height,
             0, 0, _width, _height,
             ClearBufferMask.ColorBufferBit, BlitFramebufferFilter.Nearest);
+        LastResolveError = _gl.GetError();
         // Restore the standard binding so subsequent draws hit the default
         // framebuffer (the selection outline runs after Resolve).
         _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+        return LastResolveError == GLEnum.NoError;
+    }
+
+    public void ResolveToDefault()
+    {
+        TryResolveToDefault();
+    }
+
+    private void DrainGlErrors()
+    {
+        for (int i = 0; i < 8; i++)
+        {
+            if (_gl.GetError() == GLEnum.NoError)
+                return;
+        }
     }
 
     /// <summary>

@@ -60,6 +60,17 @@ internal static class GlesRenderUtil
         if (rowMajorModel is null || rowMajorModel.Length < 11)
             return ViewportCameraMath.NormalMatrixFromIdentity();
 
+        float[] destination = new float[9];
+        if (!NormalMatrixFromWorld(rowMajorModel, destination))
+            return ViewportCameraMath.NormalMatrixFromIdentity();
+        return destination;
+    }
+
+    public static bool NormalMatrixFromWorld(float[]? rowMajorModel, float[] destination)
+    {
+        if (rowMajorModel is null || rowMajorModel.Length < 11)
+            return WriteIdentityNormalMatrix(destination);
+
         double m00 = rowMajorModel[0];
         double m01 = rowMajorModel[1];
         double m02 = rowMajorModel[2];
@@ -75,7 +86,7 @@ internal static class GlesRenderUtil
                    + m02 * (m10 * m21 - m11 * m20);
 
         if (System.Math.Abs(det) < NormalMatrixDeterminantEpsilon)
-            return ViewportCameraMath.NormalMatrixFromIdentity();
+            return WriteIdentityNormalMatrix(destination);
 
         double invDet = 1.0 / det;
 
@@ -90,12 +101,33 @@ internal static class GlesRenderUtil
         double i22 = (m00 * m11 - m01 * m10) * invDet;
 
         // The GLES renderer uploads row-major arrays with transpose=true.
-        // Return the row-major inverse-transpose normal matrix.
-        return
-        [
-            (float)i00, (float)i10, (float)i20,
-            (float)i01, (float)i11, (float)i21,
-            (float)i02, (float)i12, (float)i22,
-        ];
+        // Write the row-major inverse-transpose normal matrix.
+        destination[0] = (float)i00;
+        destination[1] = (float)i10;
+        destination[2] = (float)i20;
+        destination[3] = (float)i01;
+        destination[4] = (float)i11;
+        destination[5] = (float)i21;
+        destination[6] = (float)i02;
+        destination[7] = (float)i12;
+        destination[8] = (float)i22;
+        return true;
+    }
+
+    private static bool WriteIdentityNormalMatrix(float[] destination)
+    {
+        if (destination.Length < 9)
+            throw new ArgumentException("Destination must have at least 9 elements.", nameof(destination));
+
+        destination[0] = 1f;
+        destination[1] = 0f;
+        destination[2] = 0f;
+        destination[3] = 0f;
+        destination[4] = 1f;
+        destination[5] = 0f;
+        destination[6] = 0f;
+        destination[7] = 0f;
+        destination[8] = 1f;
+        return false;
     }
 }

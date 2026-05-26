@@ -5,15 +5,18 @@
     android:id="@+id/root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/md_theme_surface">
+    android:background="@color/fa_app_background">
 
     <!-- Top AppBar -->
     <com.google.android.material.appbar.MaterialToolbar
         android:id="@+id/topAppBar"
         android:layout_width="match_parent"
         android:layout_height="@dimen/fa_app_bar_height"
-        android:background="@color/md_theme_surfaceVariant"
+        android:background="@color/fa_surface_background"
+        app:logo="@drawable/fa_logo_toolbar"
+        app:logoDescription="@string/app_name"
         app:title="@string/app_name"
+        app:titleMarginStart="@dimen/fa_space_l"
         app:titleTextAppearance="@style/FA.TextAppearance.Title"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintStart_toStartOf="parent"
@@ -37,21 +40,28 @@
     </com.google.android.material.appbar.MaterialToolbar>
 
     <!-- Left Navigation Rail -->
-    <LinearLayout
+    <ScrollView
         android:id="@+id/navRail"
         android:layout_width="@dimen/fa_nav_rail_width"
         android:layout_height="0dp"
-        android:orientation="vertical"
-        android:background="@color/md_theme_surface"
-        android:gravity="top|center_horizontal"
-        android:paddingTop="@dimen/fa_space_s"
+        android:background="@color/fa_nav_rail_background"
+        android:fillViewport="true"
+        android:overScrollMode="ifContentScrolls"
+        android:scrollbars="none"
         app:layout_constraintTop_toBottomOf="@+id/topAppBar"
         app:layout_constraintBottom_toTopOf="@+id/bottomAppBar"
         app:layout_constraintStart_toStartOf="parent">
 
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="top|center_horizontal"
+            android:paddingTop="@dimen/fa_space_s">
+
         <com.google.android.material.button.MaterialButton
             android:id="@+id/navOpenButton"
-            android:layout_width="56dp"
+            android:layout_width="@dimen/fa_nav_rail_item_width"
             android:layout_height="@dimen/fa_nav_rail_item_height"
             android:layout_marginTop="@dimen/fa_space_xs"
             android:contentDescription="@string/cd_nav_open"
@@ -65,7 +75,7 @@
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/navRecentButton"
-            android:layout_width="56dp"
+            android:layout_width="@dimen/fa_nav_rail_item_width"
             android:layout_height="@dimen/fa_nav_rail_item_height"
             android:layout_marginTop="@dimen/fa_space_xs"
             android:contentDescription="@string/cd_nav_recent"
@@ -78,12 +88,26 @@
             style="@style/FA.IconButton" />
 
         <com.google.android.material.button.MaterialButton
-            android:id="@+id/navFitButton"
-            android:layout_width="56dp"
+            android:id="@+id/navBomButton"
+            android:layout_width="@dimen/fa_nav_rail_item_width"
             android:layout_height="@dimen/fa_nav_rail_item_height"
             android:layout_marginTop="@dimen/fa_space_xs"
-            android:contentDescription="@string/cd_nav_fit"
-            app:icon="@drawable/ic_fit"
+            android:contentDescription="@string/cd_nav_bom"
+            app:icon="@drawable/ic_bom_hierarchy"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_nav_rail_item_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.IconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/navBomFlatButton"
+            android:layout_width="@dimen/fa_nav_rail_item_width"
+            android:layout_height="@dimen/fa_nav_rail_item_height"
+            android:layout_marginTop="@dimen/fa_space_xs"
+            android:contentDescription="@string/cd_nav_bom_flat"
+            app:icon="@drawable/ic_bom_flat"
             app:iconGravity="textStart"
             app:iconPadding="0dp"
             app:iconSize="@dimen/fa_nav_rail_item_icon_size"
@@ -97,8 +121,22 @@
             android:layout_weight="1" />
 
         <com.google.android.material.button.MaterialButton
+            android:id="@+id/navSpenPalmButton"
+            android:layout_width="@dimen/fa_nav_rail_item_width"
+            android:layout_height="@dimen/fa_nav_rail_item_height"
+            android:layout_marginBottom="@dimen/fa_space_xs"
+            android:contentDescription="@string/cd_nav_spen_palm_rejection_off"
+            app:icon="@drawable/ic_spen_palm_rejection"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_nav_rail_item_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.IconButton" />
+
+        <com.google.android.material.button.MaterialButton
             android:id="@+id/navSettingsButton"
-            android:layout_width="56dp"
+            android:layout_width="@dimen/fa_nav_rail_item_width"
             android:layout_height="@dimen/fa_nav_rail_item_height"
             android:layout_marginBottom="@dimen/fa_space_s"
             android:contentDescription="@string/cd_nav_settings"
@@ -110,43 +148,86 @@
             android:insetBottom="0dp"
             style="@style/FA.IconButton" />
 
-    </LinearLayout>
+        </LinearLayout>
+
+    </ScrollView>
 
     <com.google.android.material.divider.MaterialDivider
         android:id="@+id/navRailDivider"
         android:layout_width="1dp"
         android:layout_height="0dp"
-        app:dividerColor="@color/md_theme_surfaceVariant"
+        app:dividerColor="@color/fa_border"
         app:layout_constraintTop_toBottomOf="@+id/topAppBar"
         app:layout_constraintBottom_toTopOf="@+id/bottomAppBar"
         app:layout_constraintStart_toEndOf="@+id/navRail" />
+
+    <!-- Left tool panel (collapsible, matches the right properties panel behavior) -->
+    <FrameLayout
+        android:id="@+id/leftToolPanel"
+        android:layout_width="@dimen/fa_settings_panel_width"
+        android:layout_height="0dp"
+        android:visibility="gone"
+        android:background="@color/fa_app_background"
+        app:layout_constraintTop_toBottomOf="@+id/topAppBar"
+        app:layout_constraintBottom_toTopOf="@+id/bottomAppBar"
+        app:layout_constraintStart_toEndOf="@+id/navRailDivider" />
+
+    <FrameLayout
+        android:id="@+id/leftToolPanelDivider"
+        android:layout_width="@dimen/fa_panel_resize_handle_width"
+        android:layout_height="0dp"
+        android:visibility="gone"
+        android:clickable="true"
+        android:focusable="false"
+        app:layout_constraintTop_toBottomOf="@+id/topAppBar"
+        app:layout_constraintBottom_toTopOf="@+id/bottomAppBar"
+        app:layout_constraintStart_toEndOf="@+id/leftToolPanel">
+
+        <com.google.android.material.divider.MaterialDivider
+            android:layout_width="@dimen/fa_panel_resize_handle_line_width"
+            android:layout_height="match_parent"
+            android:layout_gravity="start"
+            app:dividerColor="@color/fa_border" />
+
+    </FrameLayout>
 
     <!-- Center viewport -->
     <FrameLayout
         android:id="@+id/viewportContainer"
         android:layout_width="0dp"
         android:layout_height="0dp"
-        android:background="@color/md_theme_surface"
+        android:background="@color/fa_app_background"
         app:layout_constraintTop_toBottomOf="@+id/topAppBar"
         app:layout_constraintBottom_toTopOf="@+id/bottomAppBar"
-        app:layout_constraintStart_toEndOf="@+id/navRailDivider"
+        app:layout_constraintStart_toEndOf="@+id/leftToolPanelDivider"
         app:layout_constraintEnd_toStartOf="@+id/propertiesPanelDivider" />
 
     <!-- Right Properties Panel (collapsible) -->
-    <com.google.android.material.divider.MaterialDivider
+    <FrameLayout
         android:id="@+id/propertiesPanelDivider"
-        android:layout_width="1dp"
+        android:layout_width="@dimen/fa_panel_resize_handle_width"
         android:layout_height="0dp"
-        app:dividerColor="@color/md_theme_surfaceVariant"
+        android:visibility="gone"
+        android:clickable="true"
+        android:focusable="false"
         app:layout_constraintTop_toBottomOf="@+id/topAppBar"
         app:layout_constraintBottom_toTopOf="@+id/bottomAppBar"
-        app:layout_constraintEnd_toStartOf="@+id/propertiesPanel" />
+        app:layout_constraintEnd_toStartOf="@+id/propertiesPanel">
+
+        <com.google.android.material.divider.MaterialDivider
+            android:layout_width="@dimen/fa_panel_resize_handle_line_width"
+            android:layout_height="match_parent"
+            android:layout_gravity="end"
+            app:dividerColor="@color/fa_border" />
+
+    </FrameLayout>
 
     <include
         android:id="@+id/propertiesPanel"
         layout="@layout/view_properties_panel"
         android:layout_width="@dimen/fa_properties_panel_width"
         android:layout_height="0dp"
+        android:visibility="gone"
         app:layout_constraintTop_toBottomOf="@+id/topAppBar"
         app:layout_constraintBottom_toTopOf="@+id/bottomAppBar"
         app:layout_constraintEnd_toEndOf="parent" />
@@ -157,7 +238,7 @@
         android:layout_width="match_parent"
         android:layout_height="@dimen/fa_bottom_bar_height"
         android:orientation="horizontal"
-        android:background="@color/md_theme_surfaceVariant"
+        android:background="@color/fa_surface_background"
         android:gravity="center_vertical"
         android:paddingStart="@dimen/fa_space_s"
         android:paddingEnd="@dimen/fa_space_s"
@@ -165,32 +246,125 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent">
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/toolViewCube"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
-            android:contentDescription="@string/cd_tool_view_cube"
-            app:icon="@drawable/ic_view_cube"
-            app:iconGravity="textStart"
-            app:iconPadding="0dp"
-            app:iconSize="20dp"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            style="@style/FA.IconButton" />
+        <HorizontalScrollView
+            android:id="@+id/bottomToolScroller"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:fillViewport="false"
+            android:scrollbars="none"
+            android:overScrollMode="never">
+
+            <LinearLayout
+                android:id="@+id/bottomToolCluster"
+                android:layout_width="wrap_content"
+                android:layout_height="match_parent"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
 
         <com.google.android.material.button.MaterialButton
-            android:id="@+id/toolSection"
+            android:id="@+id/toolSelect"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:contentDescription="@string/cd_tool_select"
+            app:icon="@drawable/ic_tool_select"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/toolZoomWindow"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:contentDescription="@string/cd_tool_zoom_window"
+            app:icon="@drawable/ic_tool_zoom_window"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/toolZoomSelected"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:contentDescription="@string/cd_tool_zoom_selected"
+            app:icon="@drawable/ic_tool_zoom_selected"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/toolScanQr"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:contentDescription="@string/cd_tool_scan_qr"
+            app:icon="@drawable/ic_tool_scan_qr"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/toolFitView"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:contentDescription="@string/cd_tool_fit_view"
+            app:icon="@drawable/ic_tool_fit_view"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/toolViewPresets"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:contentDescription="@string/cd_tool_view_presets"
+            app:icon="@drawable/ic_view_presets"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/toolSections"
             android:layout_width="40dp"
             android:layout_height="40dp"
             android:layout_marginStart="@dimen/fa_space_xs"
             android:contentDescription="@string/cd_tool_section"
-            app:icon="@drawable/ic_section"
+            app:icon="@drawable/ic_tool_sections"
+            app:iconTint="@null"
             app:iconGravity="textStart"
             app:iconPadding="0dp"
-            app:iconSize="20dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
             android:insetTop="0dp"
             android:insetBottom="0dp"
-            style="@style/FA.IconButton" />
+            style="@style/FA.ViewportToolbarIconButton" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/toolMeasure"
@@ -199,12 +373,594 @@
             android:layout_marginStart="@dimen/fa_space_xs"
             android:contentDescription="@string/cd_tool_measure"
             app:icon="@drawable/ic_measure"
+            app:iconTint="@null"
             app:iconGravity="textStart"
             app:iconPadding="0dp"
-            app:iconSize="20dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
             android:insetTop="0dp"
             android:insetBottom="0dp"
-            style="@style/FA.IconButton" />
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/toolExplode"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:contentDescription="@string/cd_tool_explode"
+            app:icon="@drawable/ic_tool_explode"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/toolHide"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:contentDescription="@string/cd_tool_hide"
+            app:icon="@drawable/ic_tool_hide"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/toolShowAll"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:contentDescription="@string/cd_tool_show_all"
+            app:icon="@drawable/ic_tool_show_all"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/toolIsolate"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:contentDescription="@string/cd_tool_isolate"
+            app:icon="@drawable/ic_tool_isolate"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/toolIsolateXray"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:contentDescription="@string/cd_tool_isolate_xray"
+            app:icon="@drawable/ic_tool_isolate_xray"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/toolRenderModes"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:contentDescription="@string/cd_tool_render_modes"
+            app:icon="@drawable/ic_render_modes"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/measureBack"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:visibility="gone"
+            android:contentDescription="@string/cd_measure_return"
+            app:icon="@drawable/ic_arrow_back"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/measurePointToPoint"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:visibility="gone"
+            android:contentDescription="@string/cd_measure_point_to_point"
+            app:icon="@drawable/ic_measure_point"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/measureFaceToPoint"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:visibility="gone"
+            android:contentDescription="@string/cd_measure_face_to_point"
+            app:icon="@drawable/ic_measure_face_point"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/measureFaceToFace"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:visibility="gone"
+            android:contentDescription="@string/cd_measure_face_to_face"
+            app:icon="@drawable/ic_measure_face_face"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/measureBoundingBox"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:visibility="gone"
+            android:contentDescription="@string/cd_measure_bounding_box"
+            app:icon="@drawable/ic_measure_bbox"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/measureClear"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:visibility="gone"
+            android:contentDescription="@string/cd_measure_clear"
+            app:icon="@drawable/ic_clear"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/viewPresetReturn"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:visibility="gone"
+            android:contentDescription="@string/cd_view_preset_return"
+            app:icon="@drawable/ic_arrow_back"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/viewIso"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:visibility="gone"
+            android:contentDescription="@string/cd_view_iso"
+            app:icon="@drawable/ic_view_iso"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/viewFront"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:visibility="gone"
+            android:contentDescription="@string/cd_view_front"
+            app:icon="@drawable/ic_view_front"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/viewRight"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:visibility="gone"
+            android:contentDescription="@string/cd_view_right"
+            app:icon="@drawable/ic_view_right"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/viewLeft"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:visibility="gone"
+            android:contentDescription="@string/cd_view_left"
+            app:icon="@drawable/ic_view_left"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/viewTop"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:visibility="gone"
+            android:contentDescription="@string/cd_view_top"
+            app:icon="@drawable/ic_view_top"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/viewBottom"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:visibility="gone"
+            android:contentDescription="@string/cd_view_bottom"
+            app:icon="@drawable/ic_view_bottom"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/viewBack"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:visibility="gone"
+            android:contentDescription="@string/cd_view_back"
+            app:icon="@drawable/ic_view_back"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/viewReset"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:visibility="gone"
+            android:contentDescription="@string/cd_view_reset"
+            app:icon="@drawable/ic_view_reset"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/sectionBack"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:visibility="gone"
+            android:contentDescription="@string/cd_section_return"
+            app:icon="@drawable/ic_arrow_back"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/sectionX"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:visibility="gone"
+            android:contentDescription="@string/cd_section_x"
+            app:icon="@drawable/ic_section_x"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/sectionY"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:visibility="gone"
+            android:contentDescription="@string/cd_section_y"
+            app:icon="@drawable/ic_section_y"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/sectionZ"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:visibility="gone"
+            android:contentDescription="@string/cd_section_z"
+            app:icon="@drawable/ic_section_z"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/sectionCustom"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:visibility="gone"
+            android:contentDescription="@string/cd_section_custom"
+            app:icon="@drawable/ic_section_custom"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/sectionClear"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:visibility="gone"
+            android:contentDescription="@string/cd_section_clear"
+            app:icon="@drawable/ic_section_clear"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.switchmaterial.SwitchMaterial
+            android:id="@+id/sectionFill"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_s"
+            android:visibility="gone"
+            android:checked="true"
+            android:minWidth="68dp"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp"
+            android:text="@string/cd_section_fill"
+            android:textColor="@color/fa_text_secondary"
+            android:textSize="11sp"
+            app:thumbTint="@color/fa_switch_thumb"
+            app:trackTint="@color/fa_switch_track"
+            app:useMaterialThemeColors="false" />
+
+        <com.google.android.material.switchmaterial.SwitchMaterial
+            android:id="@+id/sectionEdges"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:visibility="gone"
+            android:checked="true"
+            android:minWidth="72dp"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp"
+            android:text="@string/cd_section_edges"
+            android:textColor="@color/fa_text_secondary"
+            android:textSize="11sp"
+            app:thumbTint="@color/fa_switch_thumb"
+            app:trackTint="@color/fa_switch_track"
+            app:useMaterialThemeColors="false" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/explodeBack"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:visibility="gone"
+            android:contentDescription="@string/cd_explode_return"
+            app:icon="@drawable/ic_arrow_back"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <SeekBar
+            android:id="@+id/explodeSlider"
+            android:layout_width="180dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_s"
+            android:visibility="gone"
+            android:max="100" />
+
+        <TextView
+            android:id="@+id/explodeValueLabel"
+            android:layout_width="48dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:visibility="gone"
+            android:gravity="center"
+            android:text="0%"
+            android:textColor="@color/fa_text_secondary"
+            android:textSize="12sp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/renderModeBack"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:visibility="gone"
+            android:contentDescription="@string/cd_render_mode_return"
+            app:icon="@drawable/ic_arrow_back"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/renderModeShaded"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:visibility="gone"
+            android:contentDescription="@string/cd_render_mode_shaded"
+            app:icon="@drawable/ic_render_shaded"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/renderModeWireframe"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:visibility="gone"
+            android:contentDescription="@string/cd_render_mode_wireframe"
+            app:icon="@drawable/ic_render_wireframe"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/renderModeShadedEdges"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:visibility="gone"
+            android:contentDescription="@string/cd_render_mode_shaded_edges"
+            app:icon="@drawable/ic_render_shaded_edges"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/renderModeClay"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:visibility="gone"
+            android:contentDescription="@string/cd_render_mode_clay"
+            app:icon="@drawable/ic_render_clay"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+            </LinearLayout>
+        </HorizontalScrollView>
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/toolFullscreen"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:contentDescription="@string/cd_tool_fullscreen"
+            app:icon="@drawable/ic_fullscreen"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
 
     </LinearLayout>
 

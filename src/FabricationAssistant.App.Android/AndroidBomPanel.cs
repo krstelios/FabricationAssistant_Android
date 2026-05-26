@@ -1,0 +1,1073 @@
+using Android.Content;
+using Android.Graphics;
+using Android.Graphics.Drawables;
+using Android.Text;
+using Android.Views;
+using Android.Views.InputMethods;
+using Android.Widget;
+using AndroidX.Core.Widget;
+using FabricationAssistant.Core.SceneGraph;
+using FabricationAssistant.Import.Fa;
+using Google.Android.Material.Button;
+
+namespace FabricationAssistant.App.Android;
+
+internal enum AndroidBomPanelKind
+{
+    Hierarchy,
+    Consolidated,
+}
+
+internal enum AndroidBomPanelAction
+{
+    Select,
+    Isolate,
+    IsolateXray,
+}
+
+internal sealed record AndroidBomPanelTarget(
+    AndroidBomPanelKind Kind,
+    string Key,
+    string Label);
+
+internal sealed class AndroidBomPanel
+{
+    private readonly FaPackageQueryService _queryService;
+    private readonly Func<Scene?> _sceneAccessor;
+    private readonly AndroidBomPanelKind _kind;
+    private readonly ColumnSpec[] _columns;
+    private readonly List<BomPanelRow> _roots = new();
+    private readonly List<BomPanelRow> _allRows = new();
+    private readonly List<BomPanelRow> _visibleRows = new();
+
+    private HorizontalScrollView? _tableScroll;
+    private LinearLayout? _tableRoot;
+    private LinearLayout? _headerRow;
+    private int[] _columnWidthsPx = Array.Empty<int>();
+    private int _tableWidthPx;
+    private TextView? _summary;
+    private TextView? _status;
+    private EditText? _search;
+    private ListView? _list;
+    private BomPanelAdapter? _adapter;
+    private BomPanelRow? _selectedRow;
+    private MaterialButton? _selectButton;
+    private MaterialButton? _isolateButton;
+    private MaterialButton? _isolateXrayButton;
+    private string _filterText = string.Empty;
+
+    public AndroidBomPanel(
+        FaPackageQueryService queryService,
+        Func<Scene?> sceneAccessor,
+        AndroidBomPanelKind kind)
+    {
+        _queryService = queryService ?? throw new ArgumentNullException(nameof(queryService));
+        _sceneAccessor = sceneAccessor ?? throw new ArgumentNullException(nameof(sceneAccessor));
+        _kind = kind;
+        _columns = Columns(kind);
+    }
+
+    public Action<AndroidBomPanelTarget, AndroidBomPanelAction>? ActionRequested { get; set; }
+
+    public View CreateView(Context ctx)
+    {
+        int pad = Dp(ctx, 14);
+        _columnWidthsPx = DefaultColumnWidths(ctx);
+        _tableWidthPx = _columnWidthsPx.Sum();
+
+        var root = new LinearLayout(ctx)
+        {
+            Orientation = Orientation.Vertical,
+            LayoutParameters = new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MatchParent,
+                ViewGroup.LayoutParams.MatchParent),
+        };
+        root.SetBackgroundResource(Resource.Color.fa_app_background);
+        root.SetPadding(pad, pad, pad, pad);
+
+        AddHeader(ctx, root);
+        AddSearch(ctx, root);
+
+        _status = new TextView(ctx)
+        {
+            TextSize = 14f,
+            Gravity = GravityFlags.Center,
+        };
+        _status.SetTextColor(ColorRes(ctx, Resource.Color.fa_text_secondary));
+        _status.SetPadding(Dp(ctx, 24), Dp(ctx, 24), Dp(ctx, 24), Dp(ctx, 24));
+        root.AddView(_status, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MatchParent,
+            0,
+            1f));
+
+        var tableScroll = new HorizontalScrollView(ctx)
+        {
+            FillViewport = true,
+            HorizontalScrollBarEnabled = true,
+            OverScrollMode = OverScrollMode.IfContentScrolls,
+            Visibility = ViewStates.Gone,
+        };
+        tableScroll.Background = CreatePanelBackground(ctx);
+        tableScroll.LayoutChange += (_, _) => RefreshColumnWidths(ctx);
+        _tableScroll = tableScroll;
+
+        var tableRoot = new LinearLayout(ctx)
+        {
+            Orientation = Orientation.Vertical,
+            LayoutParameters = new ViewGroup.LayoutParams(
+                _tableWidthPx,
+                ViewGroup.LayoutParams.MatchParent),
+        };
+        _tableRoot = tableRoot;
+
+        _headerRow = CreateHeaderRow(ctx);
+        _headerRow.SetOnTouchListener(new HorizontalTableScrollTouchListener(ctx, tableScroll));
+        tableRoot.AddView(_headerRow, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MatchParent,
+            Dp(ctx, 34)));
+
+        _adapter = new BomPanelAdapter(
+            ctx,
+            _visibleRows,
+            _kind,
+            () => _selectedRow,
+            ToggleRow,
+            () => _columnWidthsPx,
+            () => _tableWidthPx);
+        _list = new ListView(ctx)
+        {
+            Adapter = _adapter,
+            ChoiceMode = ChoiceMode.Single,
+            DividerHeight = 1,
+            FastScrollEnabled = true,
+        };
+        _list.SetOnTouchListener(new HorizontalTableScrollTouchListener(ctx, tableScroll));
+        _list.SetBackgroundColor(ColorRes(ctx, Resource.Color.fa_app_background));
+        _list.ItemClick += (_, e) =>
+        {
+            if (e.Position < 0 || e.Position >= _visibleRows.Count)
+                return;
+            _selectedRow = _visibleRows[e.Position];
+            _adapter.NotifyDataSetChanged();
+            UpdateActionButtons();
+            HideKeyboard(ctx);
+        };
+        tableRoot.AddView(_list, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MatchParent,
+            0,
+            1f));
+
+        tableScroll.AddView(tableRoot);
+        root.AddView(tableScroll, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MatchParent,
+            0,
+            1f));
+
+        AddActions(ctx, root);
+        LoadRows(ctx);
+        RefreshColumnWidths(ctx);
+        ApplyFilter();
+
+        if (_allRows.Count > 0)
+        {
+            _status.Visibility = ViewStates.Gone;
+            tableScroll.Visibility = ViewStates.Visible;
+        }
+        else
+        {
+            tableScroll.Visibility = ViewStates.Gone;
+        }
+
+        tableScroll.Post(() => RefreshColumnWidths(ctx));
+        tableScroll.PostDelayed(() => RefreshColumnWidths(ctx), 120);
+        return root;
+    }
+
+    private void AddHeader(Context ctx, LinearLayout root)
+    {
+        var title = new TextView(ctx)
+        {
+            Text = _kind == AndroidBomPanelKind.Hierarchy
+                ? "Bill of Materials"
+                : "BOM Consolidated",
+            TextSize = 18f,
+        };
+        title.SetTypeface(Typeface.Default, TypefaceStyle.Bold);
+        title.SetTextColor(ColorRes(ctx, Resource.Color.fa_text_primary));
+        root.AddView(title, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MatchParent,
+            ViewGroup.LayoutParams.WrapContent));
+
+        var subtitle = new TextView(ctx)
+        {
+            Text = _kind == AndroidBomPanelKind.Hierarchy
+                ? "Hierarchical BOM from Bom.json"
+                : "Flat part totals from Bom_Flatten.json",
+            TextSize = 12f,
+        };
+        subtitle.SetTextColor(ColorRes(ctx, Resource.Color.fa_text_secondary));
+        subtitle.SetPadding(0, Dp(ctx, 2), 0, Dp(ctx, 6));
+        root.AddView(subtitle, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MatchParent,
+            ViewGroup.LayoutParams.WrapContent));
+
+        _summary = new TextView(ctx)
+        {
+            TextSize = 12f,
+        };
+        _summary.SetTextColor(ColorRes(ctx, Resource.Color.fa_text_secondary));
+        root.AddView(_summary, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MatchParent,
+            ViewGroup.LayoutParams.WrapContent));
+    }
+
+    private void AddSearch(Context ctx, LinearLayout root)
+    {
+        _search = new EditText(ctx)
+        {
+            TextSize = 14f,
+            Hint = "Search BOM",
+            ImeOptions = ImeAction.Done,
+        };
+        _search.SetSingleLine(true);
+        _search.SetTextColor(ColorRes(ctx, Resource.Color.fa_text_primary));
+        _search.SetHintTextColor(ColorRes(ctx, Resource.Color.fa_text_disabled));
+        _search.Background = CreateInputBackground(ctx);
+        _search.SetPadding(Dp(ctx, 12), 0, Dp(ctx, 12), 0);
+        _search.TextChanged += (_, e) =>
+        {
+            _filterText = e.Text?.ToString() ?? string.Empty;
+            ApplyFilter();
+        };
+
+        var lp = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MatchParent,
+            Dp(ctx, 42));
+        lp.SetMargins(0, Dp(ctx, 12), 0, Dp(ctx, 10));
+        root.AddView(_search, lp);
+    }
+
+    private LinearLayout CreateHeaderRow(Context ctx)
+    {
+        var row = CreateRowContainer(ctx);
+        row.SetBackgroundColor(ColorRes(ctx, Resource.Color.fa_surface_background));
+
+        for (int i = 0; i < _columns.Length; i++)
+        {
+            TextView cell = CreateCell(ctx, _columns[i].Title, GetColumnWidth(i), bold: true);
+            cell.SetTextColor(ColorRes(ctx, Resource.Color.fa_text_secondary));
+            row.AddView(cell);
+        }
+
+        return row;
+    }
+
+    private void RebuildHeader(Context ctx)
+    {
+        if (_headerRow is null)
+            return;
+
+        _headerRow.RemoveAllViews();
+        for (int i = 0; i < _columns.Length; i++)
+        {
+            TextView cell = CreateCell(ctx, _columns[i].Title, GetColumnWidth(i), bold: true);
+            cell.SetTextColor(ColorRes(ctx, Resource.Color.fa_text_secondary));
+            _headerRow.AddView(cell);
+        }
+    }
+
+    private void AddActions(Context ctx, LinearLayout root)
+    {
+        var actions = new LinearLayout(ctx)
+        {
+            Orientation = Orientation.Horizontal,
+        };
+        actions.SetGravity(GravityFlags.CenterVertical);
+        actions.SetPadding(0, Dp(ctx, 10), 0, 0);
+
+        _selectButton = CreateActionButton(ctx, "Select", AndroidBomPanelAction.Select);
+        _isolateButton = CreateActionButton(ctx, "Isolate", AndroidBomPanelAction.Isolate);
+        _isolateXrayButton = CreateActionButton(ctx, "X-Ray", AndroidBomPanelAction.IsolateXray);
+
+        actions.AddView(_selectButton, ActionButtonLayout(ctx, first: true));
+        actions.AddView(_isolateButton, ActionButtonLayout(ctx, first: false));
+        actions.AddView(_isolateXrayButton, ActionButtonLayout(ctx, first: false));
+        root.AddView(actions, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MatchParent,
+            ViewGroup.LayoutParams.WrapContent));
+        UpdateActionButtons();
+    }
+
+    private MaterialButton CreateActionButton(Context ctx, string text, AndroidBomPanelAction action)
+    {
+        var button = new MaterialButton(ctx, null, Resource.Attribute.materialButtonOutlinedStyle)
+        {
+            Text = text,
+            TextSize = 12f,
+            InsetTop = 0,
+            InsetBottom = 0,
+        };
+        button.SetAllCaps(false);
+        button.SetMinHeight(0);
+        button.SetPadding(Dp(ctx, 8), 0, Dp(ctx, 8), 0);
+        button.Click += (_, _) => RequestAction(action);
+        return button;
+    }
+
+    private static LinearLayout.LayoutParams ActionButtonLayout(Context ctx, bool first)
+    {
+        var lp = new LinearLayout.LayoutParams(0, Dp(ctx, 36), 1f);
+        if (!first)
+            lp.SetMargins(Dp(ctx, 8), 0, 0, 0);
+        return lp;
+    }
+
+    private void LoadRows(Context ctx)
+    {
+        _roots.Clear();
+        _allRows.Clear();
+        _visibleRows.Clear();
+        _selectedRow = null;
+
+        Scene? scene = _sceneAccessor();
+        if (scene?.PackageInfo is null
+            || !string.Equals(scene.PackageInfo.SourceFormat, "fa", StringComparison.OrdinalIgnoreCase))
+        {
+            SetStatus(ctx, _kind == AndroidBomPanelKind.Hierarchy
+                ? "Open an FA package to view its bill of materials."
+                : "Open an FA package to view its consolidated bill of materials.");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(scene.PackageInfo.CacheDatabasePath))
+        {
+            SetStatus(ctx, "BOM data is not available for the current package.");
+            return;
+        }
+
+        try
+        {
+            if (_kind == AndroidBomPanelKind.Hierarchy)
+                LoadHierarchyRows(scene);
+            else
+                LoadConsolidatedRows(scene);
+        }
+        catch (Exception ex)
+        {
+            SetStatus(ctx, "Failed to load BOM: " + ex.Message);
+            return;
+        }
+
+        if (_allRows.Count == 0)
+            SetStatus(ctx, "This package contains no BOM entries.");
+    }
+
+    private void LoadHierarchyRows(Scene scene)
+    {
+        IReadOnlyList<FaBomNodeRowResult> rows = _queryService.GetBomHierarchy(scene.PackageInfo!);
+        IReadOnlyDictionary<string, string> names = _queryService.GetDefinitionAttribute(scene.PackageInfo!, "db_part_name");
+        IReadOnlyDictionary<string, string> revNames = _queryService.GetDefinitionAttribute(scene.PackageInfo!, "rev_name");
+
+        var byPath = new Dictionary<string, BomPanelRow>(rows.Count, StringComparer.Ordinal);
+        foreach (FaBomNodeRowResult row in rows)
+        {
+            string partNumber = FirstNonEmpty(row.DisplayName, row.ComponentName, row.PartName, row.PartKey);
+            names.TryGetValue(row.PartKey, out string? name);
+            revNames.TryGetValue(row.PartKey, out string? revName);
+
+            byPath[row.OccurrencePath] = new BomPanelRow(
+                Kind: AndroidBomPanelKind.Hierarchy,
+                Key: row.OccurrencePath,
+                PartKey: row.PartKey,
+                Level: row.Level,
+                PartNumber: partNumber,
+                Name: name ?? string.Empty,
+                RevName: revName ?? string.Empty,
+                RevisionId: row.RevisionId,
+                Quantity: FormatQuantity(row.QuantityValueText, row.QuantityUnits),
+                OccurrenceCount: string.Empty,
+                TotalQuantity: string.Empty,
+                Units: row.QuantityUnits,
+                QuantityTypes: row.QuantityType,
+                ReferenceSets: row.ReferenceSet,
+                SourceType: row.SourceType);
+        }
+
+        foreach (FaBomNodeRowResult row in rows)
+        {
+            BomPanelRow current = byPath[row.OccurrencePath];
+            _allRows.Add(current);
+            if (row.ParentOccurrencePath is not null
+                && byPath.TryGetValue(row.ParentOccurrencePath, out BomPanelRow? parent))
+            {
+                current.Parent = parent;
+                parent.Children.Add(current);
+            }
+            else
+            {
+                _roots.Add(current);
+            }
+        }
+    }
+
+    private void LoadConsolidatedRows(Scene scene)
+    {
+        IReadOnlyList<FaBomFlatRowResult> rows = _queryService.GetBomFlat(scene.PackageInfo!);
+        IReadOnlyDictionary<string, string> names = _queryService.GetDefinitionAttribute(scene.PackageInfo!, "db_part_name");
+        IReadOnlyDictionary<string, string> revNames = _queryService.GetDefinitionAttribute(scene.PackageInfo!, "rev_name");
+
+        foreach (FaBomFlatRowResult row in rows)
+        {
+            string partNumber = FirstNonEmpty(row.DisplayName, row.PartName, row.PartKey);
+            names.TryGetValue(row.PartKey, out string? name);
+            revNames.TryGetValue(row.PartKey, out string? revName);
+
+            _allRows.Add(new BomPanelRow(
+                Kind: AndroidBomPanelKind.Consolidated,
+                Key: row.PartKey,
+                PartKey: row.PartKey,
+                Level: 0,
+                PartNumber: partNumber,
+                Name: name ?? string.Empty,
+                RevName: revName ?? string.Empty,
+                RevisionId: row.RevisionId,
+                Quantity: string.Empty,
+                OccurrenceCount: row.OccurrenceCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                TotalQuantity: FormatTotal(row.TotalQuantity),
+                Units: row.QuantityUnits,
+                QuantityTypes: row.QuantityTypesCsv,
+                ReferenceSets: row.ReferenceSetsCsv,
+                SourceType: row.SourceType));
+        }
+
+        _roots.AddRange(_allRows);
+    }
+
+    private void ApplyFilter()
+    {
+        _visibleRows.Clear();
+        string filter = _filterText.Trim();
+
+        if (_kind == AndroidBomPanelKind.Hierarchy)
+        {
+            foreach (BomPanelRow root in _roots)
+            {
+                if (filter.Length == 0)
+                    AppendExpanded(root);
+                else
+                    AppendFiltered(root, filter);
+            }
+        }
+        else
+        {
+            foreach (BomPanelRow row in _allRows)
+            {
+                if (filter.Length == 0 || row.Matches(filter))
+                    _visibleRows.Add(row);
+            }
+        }
+
+        if (_selectedRow is not null && !_visibleRows.Contains(_selectedRow))
+            _selectedRow = null;
+
+        _adapter?.NotifyDataSetChanged();
+        UpdateSummary();
+        UpdateActionButtons();
+    }
+
+    private void AppendExpanded(BomPanelRow row)
+    {
+        _visibleRows.Add(row);
+        if (!row.IsExpanded)
+            return;
+
+        foreach (BomPanelRow child in row.Children)
+            AppendExpanded(child);
+    }
+
+    private bool AppendFiltered(BomPanelRow row, string filter)
+    {
+        bool rowMatches = row.Matches(filter);
+        bool childMatches = false;
+        int insertAt = _visibleRows.Count;
+        _visibleRows.Add(row);
+
+        foreach (BomPanelRow child in row.Children)
+        {
+            if (AppendFiltered(child, filter))
+                childMatches = true;
+        }
+
+        if (!rowMatches && !childMatches)
+        {
+            _visibleRows.RemoveRange(insertAt, _visibleRows.Count - insertAt);
+            return false;
+        }
+
+        return true;
+    }
+
+    private void ToggleRow(BomPanelRow row)
+    {
+        if (row.Children.Count == 0)
+            return;
+
+        row.IsExpanded = !row.IsExpanded;
+        ApplyFilter();
+    }
+
+    private void RequestAction(AndroidBomPanelAction action)
+    {
+        if (_selectedRow is null)
+            return;
+
+        ActionRequested?.Invoke(new AndroidBomPanelTarget(
+            _selectedRow.Kind,
+            _selectedRow.Key,
+            _selectedRow.PartNumber), action);
+    }
+
+    private void UpdateSummary()
+    {
+        if (_summary is null)
+            return;
+
+        int total = _allRows.Count;
+        int visible = _visibleRows.Count;
+        string noun = _kind == AndroidBomPanelKind.Hierarchy ? "occurrence" : "part";
+        _summary.Text = total == 0
+            ? "No BOM data"
+            : visible == total
+                ? $"{total} {noun}{(total == 1 ? string.Empty : "s")}"
+                : $"{visible} of {total} {noun}{(total == 1 ? string.Empty : "s")}";
+    }
+
+    private void UpdateActionButtons()
+    {
+        bool enabled = _selectedRow is not null;
+        SetActionEnabled(_selectButton, enabled);
+        SetActionEnabled(_isolateButton, enabled);
+        SetActionEnabled(_isolateXrayButton, enabled);
+    }
+
+    private int[] DefaultColumnWidths(Context ctx)
+        => _columns.Select(column => Dp(ctx, column.MinWidthDp)).ToArray();
+
+    private int GetColumnWidth(int index)
+        => index >= 0 && index < _columnWidthsPx.Length
+            ? _columnWidthsPx[index]
+            : Dp(_tableRoot?.Context ?? _tableScroll?.Context ?? throw new InvalidOperationException("BOM table context is unavailable."), _columns[index].MinWidthDp);
+
+    private void RefreshColumnWidths(Context ctx)
+    {
+        if (_tableRoot is null || _columns.Length == 0)
+            return;
+
+        int viewportWidth = _tableScroll?.Width ?? 0;
+        if (viewportWidth <= 0)
+            viewportWidth = _tableRoot.Width;
+        if (viewportWidth <= 0)
+            viewportWidth = DefaultColumnWidths(ctx).Sum();
+
+        int[] widths = MeasureColumnWidths(ctx);
+        int measuredTotal = widths.Sum();
+        if (measuredTotal < viewportWidth)
+            ExpandColumnsToFill(widths, viewportWidth - measuredTotal);
+
+        int tableWidth = Math.Max(widths.Sum(), viewportWidth);
+        if (_tableWidthPx == tableWidth && SameWidths(_columnWidthsPx, widths))
+        {
+            ClampHorizontalScroll(tableWidth, viewportWidth);
+            return;
+        }
+
+        _columnWidthsPx = widths;
+        _tableWidthPx = tableWidth;
+
+        if (_tableRoot.LayoutParameters is ViewGroup.LayoutParams lp)
+        {
+            lp.Width = tableWidth;
+            _tableRoot.LayoutParameters = lp;
+        }
+        _tableRoot.SetMinimumWidth(tableWidth);
+        _list?.SetMinimumWidth(tableWidth);
+
+        ClampHorizontalScroll(tableWidth, viewportWidth);
+
+        RebuildHeader(ctx);
+        _adapter?.NotifyDataSetChanged();
+    }
+
+    private int[] MeasureColumnWidths(Context ctx)
+    {
+        int[] widths = DefaultColumnWidths(ctx);
+        using var paint = new Paint(PaintFlags.AntiAlias)
+        {
+            TextSize = Dp(ctx, 12),
+        };
+
+        int cellPadding = Dp(ctx, 20);
+        for (int i = 0; i < _columns.Length; i++)
+            widths[i] = Math.Max(widths[i], MeasureTextWidth(paint, _columns[i].Title, cellPadding));
+
+        foreach (BomPanelRow row in _allRows)
+        {
+            for (int i = 0; i < _columns.Length; i++)
+            {
+                int padding = cellPadding;
+                if (_kind == AndroidBomPanelKind.Hierarchy && string.Equals(_columns[i].Key, ColumnKeyPart, StringComparison.Ordinal))
+                    padding += Dp(ctx, row.Level * 18);
+                widths[i] = Math.Max(widths[i], MeasureTextWidth(paint, CellText(row, _columns[i].Key), padding));
+            }
+        }
+
+        for (int i = 0; i < _columns.Length; i++)
+        {
+            int maxWidth = Dp(ctx, _columns[i].MaxWidthDp);
+            if (maxWidth > 0)
+                widths[i] = Math.Min(widths[i], maxWidth);
+        }
+
+        return widths;
+    }
+
+    private static int MeasureTextWidth(Paint paint, string text, int padding)
+        => (int)MathF.Ceiling(paint.MeasureText(text ?? string.Empty)) + padding;
+
+    private static void ExpandColumnsToFill(int[] widths, int extra)
+    {
+        if (extra <= 0 || widths.Length == 0)
+            return;
+
+        int originalTotal = widths.Sum();
+        if (originalTotal <= 0)
+        {
+            widths[^1] += extra;
+            return;
+        }
+
+        int remaining = extra;
+        if (remaining >= widths.Length)
+        {
+            for (int i = 0; i < widths.Length; i++)
+            {
+                widths[i]++;
+                remaining--;
+            }
+        }
+
+        int distributed = 0;
+        for (int i = 0; i < widths.Length; i++)
+        {
+            int add = remaining * widths[i] / originalTotal;
+            widths[i] += add;
+            distributed += add;
+        }
+
+        int remainder = remaining - distributed;
+        for (int i = 0; i < widths.Length && remainder > 0; i++)
+        {
+            widths[i]++;
+            remainder--;
+        }
+    }
+
+    private void ClampHorizontalScroll(int tableWidth, int viewportWidth)
+    {
+        if (_tableScroll is null)
+            return;
+
+        int maxScrollX = Math.Max(0, tableWidth - viewportWidth);
+        _tableScroll.HorizontalScrollBarEnabled = maxScrollX > 0;
+        int targetX = Math.Clamp(_tableScroll.ScrollX, 0, maxScrollX);
+        if (_tableScroll.ScrollX != targetX)
+            _tableScroll.ScrollTo(targetX, _tableScroll.ScrollY);
+    }
+
+    private static bool SameWidths(IReadOnlyList<int> left, IReadOnlyList<int> right)
+    {
+        if (left.Count != right.Count)
+            return false;
+        for (int i = 0; i < left.Count; i++)
+        {
+            if (left[i] != right[i])
+                return false;
+        }
+        return true;
+    }
+
+    private static void SetActionEnabled(MaterialButton? button, bool enabled)
+    {
+        if (button is null)
+            return;
+        button.Enabled = enabled;
+        button.Alpha = enabled ? 1f : 0.55f;
+    }
+
+    private void SetStatus(Context ctx, string message)
+    {
+        if (_status is not null)
+            _status.Text = message;
+        if (_summary is not null)
+            _summary.Text = "No BOM data";
+    }
+
+    private static LinearLayout CreateRowContainer(Context ctx)
+    {
+        var row = new LinearLayout(ctx)
+        {
+            Orientation = Orientation.Horizontal,
+        };
+        row.SetGravity(GravityFlags.CenterVertical);
+        row.SetPadding(0, 0, 0, 0);
+        return row;
+    }
+
+    private static TextView CreateCell(Context ctx, string text, int widthPx, bool bold = false)
+    {
+        var cell = new TextView(ctx)
+        {
+            Text = text,
+            TextSize = 12f,
+            Gravity = GravityFlags.CenterVertical,
+            Ellipsize = TextUtils.TruncateAt.End,
+        };
+        cell.SetSingleLine(true);
+        if (bold)
+            cell.SetTypeface(Typeface.Default, TypefaceStyle.Bold);
+        cell.SetPadding(Dp(ctx, 8), 0, Dp(ctx, 8), 0);
+        cell.SetTextColor(ColorRes(ctx, Resource.Color.fa_text_primary));
+        cell.LayoutParameters = new LinearLayout.LayoutParams(
+            widthPx,
+            ViewGroup.LayoutParams.MatchParent);
+        return cell;
+    }
+
+    private static ColumnSpec[] Columns(AndroidBomPanelKind kind)
+        => kind == AndroidBomPanelKind.Hierarchy
+            ?
+            [
+                new(ColumnKeyLevel, "Level", TinyColumnMinWidthDp, 56),
+                new(ColumnKeyPart, "Part", TinyColumnMinWidthDp, 260),
+                new(ColumnKeyName, "Name", TinyColumnMinWidthDp, 260),
+                new(ColumnKeyRevName, "Rev Name", TinyColumnMinWidthDp, 240),
+                new(ColumnKeyRevision, "Rev", TinyColumnMinWidthDp, 58),
+                new(ColumnKeyQuantity, "Quantity", TinyColumnMinWidthDp, 86),
+                new(ColumnKeySource, "Source", TinyColumnMinWidthDp, 96),
+            ]
+            :
+            [
+                new(ColumnKeyPart, "Part", TinyColumnMinWidthDp, 230),
+                new(ColumnKeyName, "Name", TinyColumnMinWidthDp, 260),
+                new(ColumnKeyRevName, "Rev Name", TinyColumnMinWidthDp, 240),
+                new(ColumnKeyRevision, "Rev", TinyColumnMinWidthDp, 58),
+                new(ColumnKeyOccurrenceCount, "Qty", TinyColumnMinWidthDp, 58),
+                new(ColumnKeyTotalQuantity, "Total", TinyColumnMinWidthDp, 76),
+                new(ColumnKeySource, "Source", TinyColumnMinWidthDp, 96),
+            ];
+
+    private static string CellText(BomPanelRow row, string columnKey)
+        => columnKey switch
+        {
+            ColumnKeyLevel => row.Level.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ColumnKeyPart => row.Children.Count > 0 ? (row.IsExpanded ? "v " : "> ") + row.PartNumber : row.PartNumber,
+            ColumnKeyName => row.Name,
+            ColumnKeyRevName => row.RevName,
+            ColumnKeyRevision => row.RevisionId,
+            ColumnKeyQuantity => row.Quantity,
+            ColumnKeyOccurrenceCount => row.OccurrenceCount,
+            ColumnKeyTotalQuantity => row.TotalQuantity,
+            ColumnKeyUnits => row.Units,
+            ColumnKeyQuantityTypes => row.QuantityTypes,
+            ColumnKeySource => row.SourceType,
+            _ => string.Empty,
+        };
+
+    private const string ColumnKeyLevel = "level";
+    private const string ColumnKeyPart = "part";
+    private const string ColumnKeyName = "name";
+    private const string ColumnKeyRevName = "revName";
+    private const string ColumnKeyRevision = "revision";
+    private const string ColumnKeyQuantity = "quantity";
+    private const string ColumnKeyOccurrenceCount = "occurrenceCount";
+    private const string ColumnKeyTotalQuantity = "totalQuantity";
+    private const string ColumnKeyUnits = "units";
+    private const string ColumnKeyQuantityTypes = "quantityTypes";
+    private const string ColumnKeySource = "source";
+    private const int TinyColumnMinWidthDp = 8;
+
+    private static GradientDrawable CreateInputBackground(Context ctx)
+    {
+        var drawable = new GradientDrawable();
+        drawable.SetColor(ColorRes(ctx, Resource.Color.fa_surface_background));
+        drawable.SetCornerRadius(Dp(ctx, 6));
+        drawable.SetStroke(Dp(ctx, 1), ColorRes(ctx, Resource.Color.fa_border));
+        return drawable;
+    }
+
+    private static GradientDrawable CreatePanelBackground(Context ctx)
+    {
+        var drawable = new GradientDrawable();
+        drawable.SetColor(ColorRes(ctx, Resource.Color.fa_app_background));
+        drawable.SetCornerRadius(Dp(ctx, 6));
+        drawable.SetStroke(Dp(ctx, 1), ColorRes(ctx, Resource.Color.fa_border));
+        return drawable;
+    }
+
+    private static void HideKeyboard(Context ctx)
+    {
+        if (ctx.GetSystemService(Context.InputMethodService) is InputMethodManager input)
+            input.HideSoftInputFromWindow((ctx as global::Android.App.Activity)?.Window?.DecorView?.WindowToken, HideSoftInputFlags.None);
+    }
+
+    private static string FirstNonEmpty(params string?[] values)
+        => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
+
+    private static string FormatQuantity(string text, string units)
+        => string.IsNullOrWhiteSpace(text)
+            ? string.Empty
+            : string.IsNullOrWhiteSpace(units) ? text : $"{text} {units}";
+
+    private static string FormatTotal(double? value)
+        => value is null
+            ? string.Empty
+            : value.Value.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture);
+
+    private static Color ColorRes(Context ctx, int resId)
+        => new(global::AndroidX.Core.Content.ContextCompat.GetColor(ctx, resId));
+
+    private static int Dp(Context ctx, float value)
+        => (int)MathF.Round(value * (ctx.Resources?.DisplayMetrics?.Density ?? 1f));
+
+    private readonly record struct ColumnSpec(string Key, string Title, int MinWidthDp, int MaxWidthDp);
+
+    private sealed class BomPanelRow
+    {
+        public BomPanelRow(
+            AndroidBomPanelKind Kind,
+            string Key,
+            string PartKey,
+            int Level,
+            string PartNumber,
+            string Name,
+            string RevName,
+            string RevisionId,
+            string Quantity,
+            string OccurrenceCount,
+            string TotalQuantity,
+            string Units,
+            string QuantityTypes,
+            string ReferenceSets,
+            string SourceType)
+        {
+            this.Kind = Kind;
+            this.Key = Key;
+            this.PartKey = PartKey;
+            this.Level = Level;
+            this.PartNumber = PartNumber;
+            this.Name = Name;
+            this.RevName = RevName;
+            this.RevisionId = RevisionId;
+            this.Quantity = Quantity;
+            this.OccurrenceCount = OccurrenceCount;
+            this.TotalQuantity = TotalQuantity;
+            this.Units = Units;
+            this.QuantityTypes = QuantityTypes;
+            this.ReferenceSets = ReferenceSets;
+            this.SourceType = SourceType;
+        }
+
+        public AndroidBomPanelKind Kind { get; }
+        public string Key { get; }
+        public string PartKey { get; }
+        public int Level { get; }
+        public string PartNumber { get; }
+        public string Name { get; }
+        public string RevName { get; }
+        public string RevisionId { get; }
+        public string Quantity { get; }
+        public string OccurrenceCount { get; }
+        public string TotalQuantity { get; }
+        public string Units { get; }
+        public string QuantityTypes { get; }
+        public string ReferenceSets { get; }
+        public string SourceType { get; }
+        public bool IsExpanded { get; set; }
+        public BomPanelRow? Parent { get; set; }
+        public List<BomPanelRow> Children { get; } = new();
+
+        public bool Matches(string filter)
+            => Contains(PartNumber, filter)
+               || Contains(Name, filter)
+               || Contains(RevName, filter)
+               || Contains(RevisionId, filter)
+               || Contains(Quantity, filter)
+               || Contains(OccurrenceCount, filter)
+               || Contains(TotalQuantity, filter)
+               || Contains(Units, filter)
+               || Contains(QuantityTypes, filter)
+               || Contains(ReferenceSets, filter)
+               || Contains(SourceType, filter);
+
+        private static bool Contains(string value, string filter)
+            => value.Length > 0 && value.Contains(filter, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private sealed class BomPanelAdapter : BaseAdapter<BomPanelRow>
+    {
+        private readonly Context _ctx;
+        private readonly IReadOnlyList<BomPanelRow> _rows;
+        private readonly AndroidBomPanelKind _kind;
+        private readonly Func<BomPanelRow?> _selectedAccessor;
+        private readonly Action<BomPanelRow> _toggle;
+        private readonly Func<int[]> _columnWidthsAccessor;
+        private readonly Func<int> _tableWidthAccessor;
+
+        public BomPanelAdapter(
+            Context ctx,
+            IReadOnlyList<BomPanelRow> rows,
+            AndroidBomPanelKind kind,
+            Func<BomPanelRow?> selectedAccessor,
+            Action<BomPanelRow> toggle,
+            Func<int[]> columnWidthsAccessor,
+            Func<int> tableWidthAccessor)
+        {
+            _ctx = ctx;
+            _rows = rows;
+            _kind = kind;
+            _selectedAccessor = selectedAccessor;
+            _toggle = toggle;
+            _columnWidthsAccessor = columnWidthsAccessor;
+            _tableWidthAccessor = tableWidthAccessor;
+        }
+
+        public override int Count => _rows.Count;
+
+        public override BomPanelRow this[int position] => _rows[position];
+
+        public override long GetItemId(int position) => position;
+
+        public override View GetView(int position, View? convertView, ViewGroup? parent)
+        {
+            BomPanelRow row = _rows[position];
+            var root = CreateRowContainer(_ctx);
+            root.LayoutParameters = new AbsListView.LayoutParams(
+                _tableWidthAccessor(),
+                Dp(_ctx, 24));
+            root.SetMinimumWidth(_tableWidthAccessor());
+            bool selected = ReferenceEquals(row, _selectedAccessor());
+            root.SetBackgroundColor(selected
+                ? ColorRes(_ctx, Resource.Color.fa_highlight)
+                : position % 2 == 0
+                    ? ColorRes(_ctx, Resource.Color.fa_app_background)
+                    : ColorRes(_ctx, Resource.Color.fa_surface_background));
+
+            if (_kind == AndroidBomPanelKind.Hierarchy)
+                AddHierarchyCells(root, row);
+            else
+                AddConsolidatedCells(root, row);
+
+            return root;
+        }
+
+        private void AddHierarchyCells(LinearLayout root, BomPanelRow row)
+        {
+            int[] widths = _columnWidthsAccessor();
+            root.AddView(CreateCell(_ctx, row.Level.ToString(System.Globalization.CultureInfo.InvariantCulture), WidthAt(widths, 0)));
+            TextView part = CreateCell(_ctx, row.PartNumber, WidthAt(widths, 1));
+            part.SetPadding(Dp(_ctx, 8 + row.Level * 18), 0, Dp(_ctx, 8), 0);
+            if (row.Children.Count > 0)
+            {
+                part.Text = (row.IsExpanded ? "v " : "> ") + row.PartNumber;
+                part.Click += (_, _) => _toggle(row);
+            }
+            root.AddView(part);
+            root.AddView(CreateCell(_ctx, row.Name, WidthAt(widths, 2)));
+            root.AddView(CreateCell(_ctx, row.RevName, WidthAt(widths, 3)));
+            root.AddView(CreateCell(_ctx, row.RevisionId, WidthAt(widths, 4)));
+            root.AddView(CreateCell(_ctx, row.Quantity, WidthAt(widths, 5)));
+            root.AddView(CreateCell(_ctx, row.SourceType, WidthAt(widths, 6)));
+        }
+
+        private void AddConsolidatedCells(LinearLayout root, BomPanelRow row)
+        {
+            int[] widths = _columnWidthsAccessor();
+            root.AddView(CreateCell(_ctx, row.PartNumber, WidthAt(widths, 0)));
+            root.AddView(CreateCell(_ctx, row.Name, WidthAt(widths, 1)));
+            root.AddView(CreateCell(_ctx, row.RevName, WidthAt(widths, 2)));
+            root.AddView(CreateCell(_ctx, row.RevisionId, WidthAt(widths, 3)));
+            root.AddView(CreateCell(_ctx, row.OccurrenceCount, WidthAt(widths, 4)));
+            root.AddView(CreateCell(_ctx, row.TotalQuantity, WidthAt(widths, 5)));
+            root.AddView(CreateCell(_ctx, row.SourceType, WidthAt(widths, 6)));
+        }
+
+        private static int WidthAt(IReadOnlyList<int> widths, int index)
+            => index >= 0 && index < widths.Count ? widths[index] : 80;
+    }
+
+    private sealed class HorizontalTableScrollTouchListener : Java.Lang.Object, View.IOnTouchListener
+    {
+        private readonly HorizontalScrollView _scrollView;
+        private readonly int _slopPx;
+        private float _downX;
+        private float _downY;
+        private int _startScrollX;
+        private bool _dragging;
+
+        public HorizontalTableScrollTouchListener(Context ctx, HorizontalScrollView scrollView)
+        {
+            _scrollView = scrollView;
+            _slopPx = ViewConfiguration.Get(ctx)?.ScaledTouchSlop ?? 8;
+        }
+
+        public bool OnTouch(View? v, MotionEvent? e)
+        {
+            if (e is null)
+                return false;
+
+            switch (e.ActionMasked)
+            {
+                case MotionEventActions.Down:
+                    _downX = e.RawX;
+                    _downY = e.RawY;
+                    _startScrollX = _scrollView.ScrollX;
+                    _dragging = false;
+                    return false;
+
+                case MotionEventActions.Move:
+                {
+                    float dx = e.RawX - _downX;
+                    float dy = e.RawY - _downY;
+                    if (!_dragging
+                        && Math.Abs(dx) > _slopPx
+                        && Math.Abs(dx) > Math.Abs(dy) * 1.15f)
+                    {
+                        _dragging = true;
+                        v?.Parent?.RequestDisallowInterceptTouchEvent(true);
+                    }
+
+                    if (!_dragging)
+                        return false;
+
+                    int maxScrollX = Math.Max(0, (_scrollView.GetChildAt(0)?.Width ?? 0) - _scrollView.Width);
+                    int targetX = Math.Clamp(_startScrollX - (int)Math.Round(dx), 0, maxScrollX);
+                    _scrollView.ScrollTo(targetX, _scrollView.ScrollY);
+                    return true;
+                }
+
+                case MotionEventActions.Up:
+                case MotionEventActions.Cancel:
+                    if (_dragging)
+                    {
+                        _dragging = false;
+                        v?.Parent?.RequestDisallowInterceptTouchEvent(false);
+                        return true;
+                    }
+                    return false;
+
+                default:
+                    return false;
+            }
+        }
+    }
+}

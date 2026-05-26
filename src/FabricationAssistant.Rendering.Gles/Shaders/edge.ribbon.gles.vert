@@ -22,6 +22,7 @@ out float vDistancePixels;
 out float vHalfWidthPixels;
 out float vFeatherPixels;
 out float vVisible;
+out vec3 vWorldPos;
 
 const float NearPlaneClipEpsilon = 0.0;
 
@@ -57,6 +58,7 @@ void HideVertex()
     vHalfWidthPixels = 0.0;
     vFeatherPixels = 1.0;
     vVisible = 0.0;
+    vWorldPos = vec3(0.0);
 }
 
 void main()
@@ -123,6 +125,7 @@ void main()
     clipPosition.z -= uDepthBias * clipPosition.w;
 
     gl_Position = clipPosition;
+    vWorldPos = mix(world0.xyz, world1.xyz, aSegmentT);
     vDistancePixels = aSide * expandedHalfWidth;
     vHalfWidthPixels = halfWidthPixels;
     vFeatherPixels = featherPixels;

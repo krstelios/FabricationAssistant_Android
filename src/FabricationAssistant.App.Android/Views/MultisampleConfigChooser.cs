@@ -30,15 +30,18 @@ public sealed class MultisampleConfigChooser : Java.Lang.Object, GLSurfaceView.I
         _maxSamples = maxSamples;
     }
 
-    public EGLConfig? ChooseConfig(IEGL10 egl, EGLDisplay display)
+    public EGLConfig? ChooseConfig(IEGL10? egl, EGLDisplay? display)
     {
+        if (egl is null || display is null)
+            return null;
+
         // Try the requested sample counts in descending order so we end up
         // with the highest MSAA the device supports below the configured cap.
         int[] order = _maxSamples switch
         {
             <= 0 => new[] { 0 },
             <= 2 => new[] { 2, 0 },
-            _    => new[] { 4, 2, 0 },
+            _ => new[] { 4, 2, 0 },
         };
         foreach (int samples in order)
         {
@@ -52,16 +55,16 @@ public sealed class MultisampleConfigChooser : Java.Lang.Object, GLSurfaceView.I
     {
         var attrs = new[]
         {
-            EGL10.EglRedSize, 8,
-            EGL10.EglGreenSize, 8,
-            EGL10.EglBlueSize, 8,
-            EGL10.EglAlphaSize, 0,
-            EGL10.EglDepthSize, 24,
-            EGL10.EglStencilSize, 8,
-            EGL10.EglRenderableType, EglOpenGlEs3Bit,
-            EGL10.EglSampleBuffers, samples > 0 ? 1 : 0,
-            EGL10.EglSamples, samples,
-            EGL10.EglNone,
+            IEGL10.EglRedSize, 8,
+            IEGL10.EglGreenSize, 8,
+            IEGL10.EglBlueSize, 8,
+            IEGL10.EglAlphaSize, 0,
+            IEGL10.EglDepthSize, 24,
+            IEGL10.EglStencilSize, 8,
+            IEGL10.EglRenderableType, EglOpenGlEs3Bit,
+            IEGL10.EglSampleBuffers, samples > 0 ? 1 : 0,
+            IEGL10.EglSamples, samples,
+            IEGL10.EglNone,
         };
 
         var configCount = new int[1];
@@ -78,11 +81,11 @@ public sealed class MultisampleConfigChooser : Java.Lang.Object, GLSurfaceView.I
         foreach (var c in configs)
         {
             if (c is null) continue;
-            if (GetConfigAttrib(egl, display, c, EGL10.EglSamples) >= samples
-                && GetConfigAttrib(egl, display, c, EGL10.EglRedSize) >= 8
-                && GetConfigAttrib(egl, display, c, EGL10.EglGreenSize) >= 8
-                && GetConfigAttrib(egl, display, c, EGL10.EglBlueSize) >= 8
-                && GetConfigAttrib(egl, display, c, EGL10.EglDepthSize) >= 24)
+            if (GetConfigAttrib(egl, display, c, IEGL10.EglSamples) >= samples
+                && GetConfigAttrib(egl, display, c, IEGL10.EglRedSize) >= 8
+                && GetConfigAttrib(egl, display, c, IEGL10.EglGreenSize) >= 8
+                && GetConfigAttrib(egl, display, c, IEGL10.EglBlueSize) >= 8
+                && GetConfigAttrib(egl, display, c, IEGL10.EglDepthSize) >= 24)
             {
                 return c;
             }

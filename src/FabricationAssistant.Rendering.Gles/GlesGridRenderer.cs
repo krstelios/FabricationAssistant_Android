@@ -20,6 +20,9 @@ public sealed class GlesGridRenderer : IDisposable
     private uint _vao;
     private uint _vbo;
     private uint _ebo;
+    private readonly float[] _modelScratch = new float[16];
+    private readonly float[] _viewScratch = new float[16];
+    private readonly float[] _projectionScratch = new float[16];
 
     public GlesGridRenderer(GL gl, string vertSource, string fragSource)
     {
@@ -69,8 +72,9 @@ public sealed class GlesGridRenderer : IDisposable
     /// and before opaque meshes so meshes occlude the grid where they sit on
     /// or above it.
     /// </summary>
-    public void Draw(BoundingBox bounds, CameraState camera, int viewportWidth, int viewportHeight, SceneAppearance appearance)
+    public void Draw(GpuScene scene, CameraState camera, int viewportWidth, int viewportHeight, SceneAppearance appearance)
     {
+        BoundingBox bounds = scene.Bounds;
         if (!bounds.IsValid || _vao == 0) return;
         if (viewportWidth <= 0 || viewportHeight <= 0) return;
 
@@ -92,21 +96,30 @@ public sealed class GlesGridRenderer : IDisposable
 
         // The canonical quad lives in XY (z = 0). Scale X and Y, leave Z = 1,
         // translate the whole thing to (centerX, centerY, minZ + zOffset).
-        float[] model =
-        {
-            (float)scale, 0f, 0f, (float)(centerX),
-            0f, (float)scale, 0f, (float)(centerY),
-            0f, 0f, 1f, (float)(planeZ + zOffset),
-            0f, 0f, 0f, 1f,
-        };
+        _modelScratch[0] = (float)scale;
+        _modelScratch[1] = 0f;
+        _modelScratch[2] = 0f;
+        _modelScratch[3] = (float)centerX;
+        _modelScratch[4] = 0f;
+        _modelScratch[5] = (float)scale;
+        _modelScratch[6] = 0f;
+        _modelScratch[7] = (float)centerY;
+        _modelScratch[8] = 0f;
+        _modelScratch[9] = 0f;
+        _modelScratch[10] = 1f;
+        _modelScratch[11] = (float)(planeZ + zOffset);
+        _modelScratch[12] = 0f;
+        _modelScratch[13] = 0f;
+        _modelScratch[14] = 0f;
+        _modelScratch[15] = 1f;
 
-        var view = ViewportCameraMath.ViewMatrix(camera);
-        var proj = ViewportCameraMath.ProjectionMatrix(camera, (float)viewportWidth / viewportHeight);
+        ViewportCameraMath.FillViewMatrix(camera, _viewScratch);
+        ViewportCameraMath.FillProjectionMatrix(camera, (float)viewportWidth / viewportHeight, _projectionScratch);
 
         _program.Use();
-        SetMat4("uModel", model);
-        SetMat4("uView", view);
-        SetMat4("uProjection", proj);
+        SetMat4("uModel", _modelScratch);
+        SetMat4("uView", _viewScratch);
+        SetMat4("uProjection", _projectionScratch);
         SetVec3("uCameraPosWorld", (float)camera.Position.X, (float)camera.Position.Y, (float)camera.Position.Z);
 
         // Choose a minor-line spacing that gives ~10-25 minor cells across the
@@ -114,7 +127,7 @@ public sealed class GlesGridRenderer : IDisposable
         // line spacings remain readable as the user zooms.
         double targetSpacing = appearance.UseAutomaticGridSpacing
             ? diag / 30.0
-            : System.Math.Max(appearance.GridSpacingMm, 1e-6f);
+            : System.Math.Max(appearance.GridSpacingMm / System.Math.Max(scene.MillimetersPerSceneUnit, 1e-9), 1e-6f);
         double minorSpacing = appearance.UseAutomaticGridSpacing
             ? RoundToNiceNumber(targetSpacing)
             : targetSpacing;
@@ -133,6 +146,8 @@ public sealed class GlesGridRenderer : IDisposable
             System.Math.Min(grid[0] * 1.35f, 1.0f),
             System.Math.Min(grid[1] * 1.35f, 1.0f),
             System.Math.Min(grid[2] * 1.35f, 1.0f));
+        SetVec3("uAxisUColor", 0.70f, 0.20f, 0.20f);
+        SetVec3("uAxisVColor", 0.20f, 0.70f, 0.20f);
 
         // The grid renders with depth write OFF so it never occludes opaque
         // meshes that sit above it - we want them to overwrite the grid.
@@ -165,28 +180,28 @@ public sealed class GlesGridRenderer : IDisposable
 
     private void SetMat4(string name, float[] m)
     {
-        int loc = _gl.GetUniformLocation(_program.Handle, name);
+        int loc = _program.UniformLocation(name);
         if (loc < 0) return;
         _gl.UniformMatrix4(loc, true, m);
     }
 
     private void SetVec3(string name, float x, float y, float z)
     {
-        int loc = _gl.GetUniformLocation(_program.Handle, name);
+        int loc = _program.UniformLocation(name);
         if (loc < 0) return;
         _gl.Uniform3(loc, x, y, z);
     }
 
     private void SetVec2(string name, float x, float y)
     {
-        int loc = _gl.GetUniformLocation(_program.Handle, name);
+        int loc = _program.UniformLocation(name);
         if (loc < 0) return;
         _gl.Uniform2(loc, x, y);
     }
 
     private void SetFloat(string name, float v)
     {
-        int loc = _gl.GetUniformLocation(_program.Handle, name);
+        int loc = _program.UniformLocation(name);
         if (loc < 0) return;
         _gl.Uniform1(loc, v);
     }

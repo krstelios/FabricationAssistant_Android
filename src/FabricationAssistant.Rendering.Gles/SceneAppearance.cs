@@ -6,6 +6,13 @@ public enum RenderMode
     Shaded = 1,
     Wireframe = 2,
     Clay = 3,
+    /// <summary>
+    /// Not implemented in the Gles renderer. Android maps this to Shaded
+    /// at draw time via AndroidRenderModeShim. The integer value matches
+    /// Core.Services.RenderMode.Realistic so a persisted value of 4 round-
+    /// trips correctly when the same project is reopened on desktop.
+    /// </summary>
+    Realistic = 4,
 }
 
 /// <summary>
@@ -14,6 +21,9 @@ public enum RenderMode
 /// colors, AO, render mode) flow into the GPU as a single struct rather than
 /// twenty individual fields. AppSettings.Apply(ref SceneAppearance) hydrates
 /// the struct from SharedPreferences; the renderer reads it on every frame.
+/// Treat every float[] field as immutable after assignment. The UI thread
+/// should replace arrays, never mutate them in place, so GL-thread snapshots
+/// remain coherent.
 /// </summary>
 public struct SceneAppearance
 {
@@ -29,6 +39,7 @@ public struct SceneAppearance
     public bool ShowAxes;
     public bool ShowViewCube;
     public bool IsPerspective;
+    public bool LightweightNavigationEnabled;
 
     // ── Scene colors ───────────────────────────────────────────────────
     public float[] BackgroundColor;     // RGB, 0-1
@@ -50,6 +61,11 @@ public struct SceneAppearance
     // ── Clay render ────────────────────────────────────────────────────
     public float[] ClaySurfaceColor;    // RGB, 0-1
     public float[] ClayBackgroundColor; // RGB, 0-1
+    public bool ClayFeatureEdgesEnabled;
+    public float[] ClayFeatureEdgeColor; // RGBA, 0-1
+    public float ClayFeatureEdgeWidth;   // pixels
+    public float ClayFeatureEdgeDepthBias;
+    public float ClayFeatureEdgeCreaseAngleDegrees;
 
     // ── Lighting ───────────────────────────────────────────────────────
     public float BaseColorLift;
@@ -64,10 +80,20 @@ public struct SceneAppearance
 
     // ── AA + occlusion + contour ───────────────────────────────────────
     public bool AmbientOcclusionEnabled;
+    public int AoSampleCount;
     public float AoRadius;
     public float AoBias;
     public float AoIntensity;
+    public float AoPower;
+    public float AoContrast;
+    public float AoMaxDistance;
+    public float AoFadeStart;
+    public float AoFadeEnd;
+    public bool AoBlurEnabled;
+    public int AoBlurRadius;
+    public float AoBlurSharpness;
     public int AoBlurPasses;
+    public float AoNoiseScale;
     public float ContourStrength;
     public float ContourPower;
     public int MsaaSamples;             // 0 / 2 / 4
@@ -76,6 +102,9 @@ public struct SceneAppearance
     public bool OutlineEnabled;
     public float[] OutlineColor;        // RGB, 0-1
     public float OutlineThicknessPx;
+    public float[] HoverOutlineColor;   // RGB, 0-1
+    public float HoverOutlineThicknessPx;
+    public float HoverTintStrength;
 
     /// <summary>
     /// Returns the defaults that match the desktop SceneAppearanceViewModel
@@ -89,20 +118,21 @@ public struct SceneAppearance
         ShowGrid = true,
         ShiftGridToModelMin = true,
         UseAutomaticGridSpacing = true,
-        GridSpacingMm = 10.0f,
+        GridSpacingMm = 100.0f,
         GridLineThickness = 1.0f,
-        GridLineColor = new[] { 0.28f, 0.30f, 0.33f },
+        GridLineColor = new[] { 0.35f, 0.35f, 0.35f },
         ShowAxes = true,
         ShowViewCube = true,
         IsPerspective = true,
+        LightweightNavigationEnabled = false,
 
-        BackgroundColor = new[] { 0.10f, 0.11f, 0.12f },
-        SurfaceColor = new[] { 0.78f, 0.80f, 0.82f },
+        BackgroundColor = new[] { 1.0f, 1.0f, 1.0f },
+        SurfaceColor = new[] { 0.82f, 0.82f, 0.82f },
         SurfaceOpacity = 1.0f,
 
         EdgesEnabled = true,
-        EdgeColor = new[] { 0.05f, 0.05f, 0.06f },
-        EdgeWidth = 1.0f,
+        EdgeColor = new[] { 0.24028806f, 0.24f, 0.26f },
+        EdgeWidth = 0.78f,
         CadEdgeFeatureAngleDegrees = 28.0f,
         CadEdgeCoplanarToleranceDegrees = 5.0f,
         CadEdgeWeldToleranceScale = 1.0e-5f,
@@ -111,30 +141,48 @@ public struct SceneAppearance
         SurfaceOffsetFactor = 1.0f,
         SurfaceOffsetUnits = 1.0f,
 
-        ClaySurfaceColor = new[] { 0.85f, 0.78f, 0.65f },
-        ClayBackgroundColor = new[] { 0.14f, 0.14f, 0.16f },
+        ClaySurfaceColor = new[] { 1.0f, 1.0f, 1.0f },
+        ClayBackgroundColor = new[] { 1.0f, 1.0f, 1.0f },
+        ClayFeatureEdgesEnabled = true,
+        ClayFeatureEdgeColor = new[] { 0.11975311f, 0.12004116f, 0.11650209f, 0.48666665f },
+        ClayFeatureEdgeWidth = 0.95f,
+        ClayFeatureEdgeDepthBias = 0.0f,
+        ClayFeatureEdgeCreaseAngleDegrees = 35.0f,
 
-        BaseColorLift = 0.04f,
-        AmbientStrength = 0.40f,
-        HeadlightStrength = 0.30f,
-        KeyLightStrength = 0.55f,
-        FillLightStrength = 0.20f,
-        BounceLightStrength = 0.15f,
-        HemisphereStrength = 0.40f,
-        SpecularStrength = 0.10f,
-        SpecularPower = 32.0f,
+        BaseColorLift = 0.0f,
+        AmbientStrength = 0.63f,
+        HeadlightStrength = 0.14f,
+        KeyLightStrength = 0.34f,
+        FillLightStrength = 0.24f,
+        BounceLightStrength = 0.0f,
+        HemisphereStrength = 0.28f,
+        SpecularStrength = 0.54f,
+        SpecularPower = 77.0f,
 
         AmbientOcclusionEnabled = true,
-        AoRadius = 0.50f,
-        AoBias = 0.025f,
-        AoIntensity = 1.0f,
-        AoBlurPasses = 2,
-        ContourStrength = 0.50f,
-        ContourPower = 2.0f,
+        AoSampleCount = 32,
+        AoRadius = 0.009f,
+        AoBias = 0.0002f,
+        AoIntensity = 1.45f,
+        AoPower = 1.33f,
+        AoContrast = 1.0f,
+        AoMaxDistance = 1.50f,
+        AoFadeStart = 0.50f,
+        AoFadeEnd = 1.31f,
+        AoBlurEnabled = true,
+        AoBlurRadius = 6,
+        AoBlurSharpness = 10.9f,
+        AoBlurPasses = 1,
+        AoNoiseScale = 8.0f,
+        ContourStrength = 0.30f,
+        ContourPower = 3.28f,
         MsaaSamples = 4,
 
         OutlineEnabled = true,
-        OutlineColor = new[] { 1.0f, 0.62f, 0.20f },
-        OutlineThicknessPx = 2.5f,
+        OutlineColor = new[] { 1.0f, 0.0f, 0.0f },
+        OutlineThicknessPx = 3.2098765f,
+        HoverOutlineColor = new[] { 0.0f, 1.0f, 0.0f },
+        HoverOutlineThicknessPx = 0.37757202f,
+        HoverTintStrength = 0.2f,
     };
 }

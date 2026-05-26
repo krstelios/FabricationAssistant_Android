@@ -2,10 +2,11 @@
 precision highp float;
 precision highp int;
 
-// Direct port of src/FabricationAssistant.Rendering.OpenTK/Shaders/ssao_blur.frag.glsl
+// GLES port of src/FabricationAssistant.Rendering.OpenTK/Shaders/ssao_blur.frag.glsl
 // Bilateral separable Gaussian: 1D Gaussian weights (uGaussianWeights[25])
 // modulated by per-sample depth + normal continuity so the blur respects
-// edges in the AO buffer.
+// edges in the AO buffer. Perspective views sample the depth attachment like
+// desktop; packed linear depth remains the orthographic fallback.
 
 in vec2 vTexCoord;
 
@@ -17,8 +18,9 @@ uniform vec2 uDirection;
 uniform int uRadius;
 uniform float uSharpness;
 uniform float uGaussianWeights[25];
+uniform bool uIsPerspective;
 
-layout(location = 0) out float FragColor;
+layout(location = 0) out vec4 FragColor;
 
 vec3 DecodeNormal(vec2 encodedValue)
 {
@@ -29,13 +31,19 @@ vec3 DecodeNormal(vec2 encodedValue)
     return normalize(normal);
 }
 
+float DecodeDepth01(vec2 packedDepth)
+{
+    return clamp(packedDepth.x + packedDepth.y / 255.0, 0.0, 1.0);
+}
+
 void main()
 {
-    vec2 centerPacked = texture(uNormalTexture, vTexCoord).rg;
-    float centerDepth = texture(uDepthTexture, vTexCoord).r;
+    vec4 centerData = texture(uNormalTexture, vTexCoord);
+    vec2 centerPacked = centerData.rg;
+    float centerDepth = uIsPerspective ? texture(uDepthTexture, vTexCoord).r : DecodeDepth01(centerData.ba);
     if (centerDepth >= 0.999999)
     {
-        FragColor = 1.0;
+        FragColor = vec4(1.0);
         return;
     }
 
@@ -46,8 +54,9 @@ void main()
     for (int offset = -uRadius; offset <= uRadius; ++offset)
     {
         vec2 uv = clamp(vTexCoord + uDirection * uTexelSize * float(offset), vec2(0.0), vec2(1.0));
-        vec2 samplePacked = texture(uNormalTexture, uv).rg;
-        float sampleDepth = texture(uDepthTexture, uv).r;
+        vec4 sampleData = texture(uNormalTexture, uv);
+        vec2 samplePacked = sampleData.rg;
+        float sampleDepth = uIsPerspective ? texture(uDepthTexture, uv).r : DecodeDepth01(sampleData.ba);
         if (sampleDepth >= 0.999999) continue;
 
         vec3 sampleNormal = DecodeNormal(samplePacked);
@@ -59,5 +68,6 @@ void main()
         weightSum += weight;
     }
 
-    FragColor = weightSum > 0.000001 ? total / weightSum : texture(uAoTexture, vTexCoord).r;
+    float ao = weightSum > 0.000001 ? total / weightSum : texture(uAoTexture, vTexCoord).r;
+    FragColor = vec4(vec3(ao), 1.0);
 }

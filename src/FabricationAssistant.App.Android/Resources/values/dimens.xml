@@ -3,15 +3,24 @@
     <!-- Top-level shell -->
     <dimen name="fa_app_bar_height">56dp</dimen>
     <dimen name="fa_bottom_bar_height">48dp</dimen>
+    <dimen name="fa_viewport_toolbar_icon_size">28dp</dimen>
 
     <!-- Left navigation rail (tablet) -->
-    <dimen name="fa_nav_rail_width">80dp</dimen>
-    <dimen name="fa_nav_rail_item_height">64dp</dimen>
-    <dimen name="fa_nav_rail_item_icon_size">24dp</dimen>
+    <dimen name="fa_nav_rail_width">56dp</dimen>
+    <dimen name="fa_nav_rail_item_width">48dp</dimen>
+    <dimen name="fa_nav_rail_item_height">56dp</dimen>
+    <dimen name="fa_nav_rail_item_icon_size">22dp</dimen>
 
     <!-- Right properties panel (tablet) -->
+    <dimen name="fa_recent_panel_width">260dp</dimen>
+    <dimen name="fa_recent_panel_min_width">220dp</dimen>
+    <dimen name="fa_settings_panel_width">520dp</dimen>
+    <dimen name="fa_settings_panel_min_width">320dp</dimen>
     <dimen name="fa_properties_panel_width">320dp</dimen>
     <dimen name="fa_properties_panel_min_width">240dp</dimen>
+    <dimen name="fa_properties_panel_max_width">560dp</dimen>
+    <dimen name="fa_panel_resize_handle_width">12dp</dimen>
+    <dimen name="fa_panel_resize_handle_line_width">1dp</dimen>
 
     <!-- Standard spacing units (4dp grid) -->
     <dimen name="fa_space_xs">4dp</dimen>

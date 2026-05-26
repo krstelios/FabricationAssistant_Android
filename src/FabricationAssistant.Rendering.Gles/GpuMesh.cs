@@ -15,12 +15,23 @@ public sealed class GpuMesh : IDisposable
     private const int EdgeRibbonStrideBytes = EdgeRibbonFloatCount * sizeof(float);
 
     private readonly GL _gl;
+    private float[] _diffuseColor = new[] { 0.7f, 0.7f, 0.7f, 1.0f };
     public uint Vao { get; private set; }
     public uint Vbo { get; private set; }
     public uint Ebo { get; private set; }
     public int IndexCount { get; private set; }
     public int VertexCount { get; private set; }
-    public float[] DiffuseColor { get; set; } = new[] { 0.7f, 0.7f, 0.7f };
+    public float[] DiffuseColor
+    {
+        get => _diffuseColor;
+        set
+        {
+            _diffuseColor = value ?? new[] { 0.7f, 0.7f, 0.7f, 1.0f };
+            MaterialAlpha = ResolveAlpha(_diffuseColor);
+        }
+    }
+
+    public float MaterialAlpha { get; private set; } = 1.0f;
     public bool DoubleSided { get; set; }
     public bool HasMirroredHandedness { get; set; }
 
@@ -39,11 +50,30 @@ public sealed class GpuMesh : IDisposable
     public int SourceMeshId { get; set; } = -1;
 
     /// <summary>
+    /// Source SceneNodeDto id for this rendered instance. Used by the Android
+    /// app to bridge GPU picking back to the shared scene graph.
+    /// </summary>
+    public int SourceNodeId { get; set; } = -1;
+
+    /// <summary>
+    /// Runtime scene-graph visibility for this rendered instance. Updated from
+    /// the Android runtime Scene whenever Hide/Show/Isolate changes node state.
+    /// </summary>
+    public bool Visible { get; set; } = true;
+
+    /// <summary>
     /// Row-major float[16] world-space transform for this instance. Null means
     /// the identity transform. SceneUploader populates this from the scene
     /// node's column-major DTO transform (transposing during conversion).
     /// </summary>
     public float[]? WorldTransform { get; set; }
+
+    /// <summary>
+    /// Cached row-major inverse-transpose normal matrix for WorldTransform.
+    /// Null means identity. This avoids recomputing the same matrix in every
+    /// render pass for static imported scenes.
+    /// </summary>
+    public float[]? WorldNormalMatrix { get; set; }
 
     /// <summary>
     /// World-space center of the mesh (mesh-local bounds center transformed
@@ -65,6 +95,14 @@ public sealed class GpuMesh : IDisposable
         Vao = _gl.GenVertexArray();
         Vbo = _gl.GenBuffer();
         Ebo = _gl.GenBuffer();
+    }
+
+    private static float ResolveAlpha(float[] color)
+    {
+        float alpha = color.Length >= 4 ? color[3] : 1.0f;
+        if (float.IsNaN(alpha) || float.IsInfinity(alpha))
+            return 1.0f;
+        return System.Math.Clamp(alpha, 0.0f, 1.0f);
     }
 
     /// <summary>

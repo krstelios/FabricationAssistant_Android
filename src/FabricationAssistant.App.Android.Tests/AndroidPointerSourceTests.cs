@@ -30,14 +30,14 @@ public sealed class AndroidPointerSourceTests
     }
 
     [Fact]
-    public void Cancel_DuringOrbit_EmitsOrbitEndAndResets()
+    public void Cancel_DuringOrbit_EmitsCancelThenOrbitEndAndResets()
     {
         var r = new ViewportTouchGestureRecognizer();
         r.PointerDown(1, new Point2D(100, 100), T(0));
         r.PointerMove(1, new Point2D(120, 100), T(50));
         var events = r.Cancel(T(60));
 
-        Assert.Equal(new[] { TouchGestureKind.OrbitEnd }, events.Select(e => e.Kind).ToArray());
+        Assert.Equal(new[] { TouchGestureKind.Cancel, TouchGestureKind.OrbitEnd }, events.Select(e => e.Kind).ToArray());
 
         // After cancel, a fresh tap should still register as Tap, proving the
         // recognizer reset to None (not stuck in Orbit).
@@ -47,14 +47,14 @@ public sealed class AndroidPointerSourceTests
     }
 
     [Fact]
-    public void Cancel_DuringPanZoom_EmitsPanZoomEndAndResets()
+    public void Cancel_DuringPanZoom_EmitsCancelThenPanZoomEndAndResets()
     {
         var r = new ViewportTouchGestureRecognizer();
         r.PointerDown(1, new Point2D(100, 100), T(0));
         r.PointerDown(2, new Point2D(200, 100), T(10));
         var events = r.Cancel(T(20));
 
-        Assert.Contains(TouchGestureKind.PanZoomEnd, events.Select(e => e.Kind).ToArray());
+        Assert.Equal(new[] { TouchGestureKind.Cancel, TouchGestureKind.PanZoomEnd }, events.Select(e => e.Kind).ToArray());
     }
 
     [Fact]

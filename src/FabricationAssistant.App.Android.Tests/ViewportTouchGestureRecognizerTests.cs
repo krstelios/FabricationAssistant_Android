@@ -95,6 +95,22 @@ public sealed class ViewportTouchGestureRecognizerTests
         Assert.Contains(TouchGestureKind.Tap, Kinds(events));
     }
 
+    [Fact]
+    public void Cancel_ClearsPendingDoubleTap()
+    {
+        var r = new ViewportTouchGestureRecognizer();
+        r.PointerDown(1, new Point2D(100, 100), T(0));
+        r.PointerUp(1, new Point2D(100, 100), T(100));
+
+        r.PointerDown(2, new Point2D(102, 102), T(180));
+        r.Cancel(T(190));
+
+        r.PointerDown(3, new Point2D(102, 102), T(220));
+        var events = r.PointerUp(3, new Point2D(102, 102), T(280));
+
+        Assert.Equal(new[] { TouchGestureKind.Tap }, Kinds(events));
+    }
+
     // -- Orbit -----------------------------------------------------------
 
     [Fact]
@@ -109,7 +125,19 @@ public sealed class ViewportTouchGestureRecognizerTests
         Assert.Equal(TouchGestureKind.OrbitBegin, events[0].Kind);
         Assert.Equal(new Point2D(100, 100), events[0].Position);
         Assert.Equal(TouchGestureKind.OrbitDelta, events[1].Kind);
-        Assert.Equal(new Vector2D(20, 0), events[1].PixelDelta);
+        Assert.Equal(new Vector2D(12, 0), events[1].PixelDelta);
+    }
+
+    [Fact]
+    public void Orbit_FirstMoveJustPastThreshold_OnlyEmitsExcessDelta()
+    {
+        var r = new ViewportTouchGestureRecognizer();
+        r.PointerDown(1, new Point2D(100, 100), T(0));
+
+        var events = r.PointerMove(1, new Point2D(109, 100), T(20));
+
+        Assert.Equal(2, events.Count);
+        Assert.Equal(new Vector2D(1, 0), events[1].PixelDelta);
     }
 
     [Fact]
@@ -203,6 +231,25 @@ public sealed class ViewportTouchGestureRecognizerTests
     }
 
     [Fact]
+    public void PanZoom_BatchedMove_EmitsSingleDeltaWithFullCentroidShift()
+    {
+        var r = new ViewportTouchGestureRecognizer();
+        r.PointerDown(1, new Point2D(100, 100), T(0));
+        r.PointerDown(2, new Point2D(200, 100), T(20));
+
+        var events = r.PointerMoveBatch(new[]
+        {
+            (1, new Point2D(150, 100)),
+            (2, new Point2D(250, 100)),
+        }, T(40));
+
+        Assert.Equal(new[] { TouchGestureKind.PanZoomDelta }, Kinds(events));
+        Assert.Equal(50.0, events[0].PixelDelta.X, 6);
+        Assert.Equal(0.0, events[0].PixelDelta.Y, 6);
+        Assert.Equal(1.0, events[0].PinchScale, 6);
+    }
+
+    [Fact]
     public void PanZoom_SecondFingerUp_EmitsPanZoomEndAndLocksRemaining()
     {
         var r = new ViewportTouchGestureRecognizer();
@@ -270,6 +317,18 @@ public sealed class ViewportTouchGestureRecognizerTests
         r.PointerDown(1, new Point2D(100, 100), T(0));
         Assert.NotEmpty(r.Tick(T(550)));
         Assert.Empty(r.Tick(T(900)));
+    }
+
+    [Fact]
+    public void LongPress_UpAfterLongPress_DoesNotEmitTap()
+    {
+        var r = new ViewportTouchGestureRecognizer();
+        r.PointerDown(1, new Point2D(100, 100), T(0));
+        Assert.Equal(new[] { TouchGestureKind.LongPress }, Kinds(r.Tick(T(550))));
+
+        var up = r.PointerUp(1, new Point2D(100, 100), T(700));
+
+        Assert.Empty(up);
     }
 
     [Fact]

@@ -2,10 +2,12 @@
 precision highp float;
 precision highp int;
 
-// Direct port of src/FabricationAssistant.Rendering.OpenTK/Shaders/ssao.frag.glsl
+// GLES port of src/FabricationAssistant.Rendering.OpenTK/Shaders/ssao.frag.glsl
 // with #version downgraded to 310 es and the precision qualifiers added.
 // Sampling, plane-weight + range-weight + bias + intensity + power + contrast
-// pipeline match the desktop exactly.
+// pipeline match the desktop. Perspective views sample the depth attachment
+// directly like OpenTK; packed linear depth in uNormalTexture.ba remains the
+// orthographic fallback.
 
 in vec2 vTexCoord;
 
@@ -18,6 +20,8 @@ uniform vec2 uInvProjectionScale;    // (1/scaleX, 1/scaleY)
 uniform vec2 uProjectionUvScale;     // (-scaleX/2, -scaleY/2) for forward proj
 uniform vec2 uProjectionUvBias;      // (0.5 - offsetX/2, 0.5 - offsetY/2)
 uniform vec2 uNoiseScaleClamped;     // viewport / 4 (tile the 4x4 noise)
+uniform vec2 uLinearDepthRange;
+uniform bool uIsPerspective;
 uniform vec4 uSamples[96];
 uniform int uSampleCount;
 uniform float uRadius;
@@ -30,7 +34,7 @@ uniform float uMaxDistance;
 uniform float uFadeStart;
 uniform float uFadeEnd;
 
-layout(location = 0) out float FragColor;
+layout(location = 0) out vec4 FragColor;
 
 vec3 DecodeNormal(vec2 encodedValue)
 {
@@ -41,7 +45,31 @@ vec3 DecodeNormal(vec2 encodedValue)
     return normalize(normal);
 }
 
-vec3 ReconstructViewPosition(vec2 uv, float depth)
+float DecodeDepth01(vec2 packedDepth)
+{
+    return clamp(packedDepth.x + packedDepth.y / 255.0, 0.0, 1.0);
+}
+
+float DecodeViewDepth(vec2 packedDepth)
+{
+    return mix(uLinearDepthRange.x, uLinearDepthRange.y, DecodeDepth01(packedDepth));
+}
+
+vec3 ReconstructViewPosition(vec2 uv, float viewDepth)
+{
+    vec2 ndc = uv * 2.0 - 1.0;
+    float viewZ = -max(viewDepth, 0.000001);
+    if (!uIsPerspective)
+    {
+        return vec3(ndc.x * uInvProjectionScale.x, ndc.y * uInvProjectionScale.y, viewZ);
+    }
+
+    float viewX = -(ndc.x + uProjectionOffset.x) * viewZ * uInvProjectionScale.x;
+    float viewY = -(ndc.y + uProjectionOffset.y) * viewZ * uInvProjectionScale.y;
+    return vec3(viewX, viewY, viewZ);
+}
+
+vec3 ReconstructPerspectiveViewPosition(vec2 uv, float depth)
 {
     vec2 ndc = uv * 2.0 - 1.0;
     float ndcZ = depth * 2.0 - 1.0;
@@ -56,23 +84,35 @@ vec3 ReconstructViewPosition(vec2 uv, float depth)
 
 vec2 ProjectViewPositionToUv(vec3 viewPos)
 {
+    if (!uIsPerspective)
+    {
+        vec2 projectionScale = vec2(
+            1.0 / max(abs(uInvProjectionScale.x), 0.000001),
+            1.0 / max(abs(uInvProjectionScale.y), 0.000001));
+        return viewPos.xy * projectionScale * 0.5 + vec2(0.5);
+    }
+
     float invViewZ = 1.0 / min(viewPos.z, -0.000001);
     return uProjectionUvScale * (viewPos.xy * invViewZ) + uProjectionUvBias;
 }
 
 void main()
 {
-    vec2 centerPacked = texture(uNormalTexture, vTexCoord).rg;
-    float centerDepth = texture(uDepthTexture, vTexCoord).r;
-    if (centerDepth >= 0.999999)
+    vec4 centerData = texture(uNormalTexture, vTexCoord);
+    vec2 centerPacked = centerData.rg;
+    float centerDepth01 = uIsPerspective ? texture(uDepthTexture, vTexCoord).r : DecodeDepth01(centerData.ba);
+    if (centerDepth01 >= 0.999999)
     {
-        FragColor = 1.0;
+        FragColor = vec4(1.0);
         return;
     }
 
     vec3 centerNormal = DecodeNormal(centerPacked);
-    vec3 centerViewPos = ReconstructViewPosition(vTexCoord, centerDepth);
-    float viewDistance = max(-centerViewPos.z, 0.0);
+    float centerViewDepth = DecodeViewDepth(centerData.ba);
+    vec3 centerViewPos = uIsPerspective
+        ? ReconstructPerspectiveViewPosition(vTexCoord, centerDepth01)
+        : ReconstructViewPosition(vTexCoord, centerViewDepth);
+    float viewDistance = uIsPerspective ? max(-centerViewPos.z, 0.0) : centerViewDepth;
     float distanceFade = 1.0;
     if (uFadeEnd > uFadeStart)
     {
@@ -116,17 +156,37 @@ void main()
         if (sampleUv.x <= 0.0 || sampleUv.x >= 1.0 || sampleUv.y <= 0.0 || sampleUv.y >= 1.0)
             continue;
 
-        float sampleDepth = texture(uDepthTexture, sampleUv).r;
-        if (sampleDepth >= 0.999999) continue;
+        vec4 sampleData = texture(uNormalTexture, sampleUv);
+        vec2 sampleDepthPacked = sampleData.ba;
+        float sampleDepth01 = uIsPerspective ? texture(uDepthTexture, sampleUv).r : DecodeDepth01(sampleDepthPacked);
+        if (sampleDepth01 >= 0.999999) continue;
 
-        vec3 sampleSurfaceViewPos = ReconstructViewPosition(sampleUv, sampleDepth);
+        float sampleDepth = DecodeViewDepth(sampleDepthPacked);
+        vec3 sampleNormal = DecodeNormal(sampleData.rg);
+        vec3 sampleSurfaceViewPos = uIsPerspective
+            ? ReconstructPerspectiveViewPosition(sampleUv, sampleDepth01)
+            : ReconstructViewPosition(sampleUv, sampleDepth);
         vec3 delta = sampleSurfaceViewPos - centerViewPos;
         float depthDelta = abs(centerViewPos.z - sampleSurfaceViewPos.z);
         float rangeWeight = smoothstep(0.0, 1.0, uRadius / max(depthDelta, 0.00001));
         float planeDistance = dot(delta, centerNormal);
         float planeWeight = smoothstep(uBias, uBias + uPlaneWeightRange, planeDistance);
         float isOccluding = sampleSurfaceViewPos.z >= sampleViewPos.z + uBias ? 1.0 : 0.0;
-        occlusion += isOccluding * rangeWeight * planeWeight;
+        float desktopOcclusion = isOccluding * rangeWeight * planeWeight;
+
+        float contactOcclusion = 0.0;
+        if (!uIsPerspective)
+        {
+            // Orthographic still uses the GLES packed linear depth path.
+            // Keep the conservative contact fallback there, but leave
+            // perspective on the desktop depth-texture algorithm.
+            float foregroundDepth = max(sampleSurfaceViewPos.z - centerViewPos.z, 0.0);
+            float depthContact = smoothstep(uBias, max(uRadius * 0.35, uBias + 0.00001), foregroundDepth);
+            float normalBreak = smoothstep(0.08, 0.55, 1.0 - max(dot(centerNormal, sampleNormal), 0.0));
+            float creaseContact = normalBreak * smoothstep(uBias, uBias + uPlaneWeightRange, abs(planeDistance));
+            contactOcclusion = max(depthContact * 0.45, creaseContact * 0.32) * rangeWeight;
+        }
+        occlusion += max(desktopOcclusion, contactOcclusion);
     }
 
     float normalizedOcclusion = clamp((occlusion / float(sampleCount)) * max(uIntensity, 0.0), 0.0, 1.0);
@@ -134,5 +194,5 @@ void main()
     ao = pow(clamp(ao, 0.0, 1.0), max(uPower, 0.05));
     ao = clamp((ao - 0.5) * max(uContrast, 0.0) + 0.5, 0.0, 1.0);
     ao = mix(1.0, ao, clamp(distanceFade, 0.0, 1.0));
-    FragColor = ao;
+    FragColor = vec4(vec3(ao), 1.0);
 }

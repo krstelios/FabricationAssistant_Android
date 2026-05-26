@@ -1,4 +1,5 @@
 using FabricationAssistant.Core.Math;
+using FabricationAssistant.Core.Measurement.Domain;
 using FabricationAssistant.Core.SceneGraph;
 using Silk.NET.OpenGLES;
 
@@ -22,15 +23,53 @@ public sealed class GpuScene : IDisposable
 
     public BoundingBox Bounds { get; private set; } = BoundingBox.Empty;
 
+    public double MillimetersPerSceneUnit { get; private set; } = 1000.0;
+
     public IReadOnlyList<GpuMesh> Meshes => _meshes;
+
+    public bool TryGetSourceNodeIdForMeshIndex(int meshIndex, out int nodeId)
+    {
+        foreach (GpuMesh mesh in _meshes)
+        {
+            if (mesh.MeshIndex == meshIndex && mesh.SourceNodeId >= 0)
+            {
+                nodeId = mesh.SourceNodeId;
+                return true;
+            }
+        }
+
+        nodeId = -1;
+        return false;
+    }
+
+    public bool TryGetMeshIndexForSourceNodeId(int nodeId, out int meshIndex)
+    {
+        foreach (GpuMesh mesh in _meshes)
+        {
+            if (mesh.SourceNodeId == nodeId)
+            {
+                meshIndex = mesh.MeshIndex;
+                return true;
+            }
+        }
+
+        meshIndex = 0;
+        return false;
+    }
 
     public void Load(DocumentDto document)
     {
         ArgumentNullException.ThrowIfNull(document);
+
+        double millimetersPerSceneUnit = ResolveMillimetersPerSceneUnit(document.Stats?.UnitSystem);
+        BoundingBox bounds = document.Bounds.IsValid ? document.Bounds : ComputeBoundsFromMeshes(document);
+        List<GpuMesh> meshes = SceneUploader.Upload(_gl, document);
+
         Clear();
         _document = document;
-        _meshes.AddRange(SceneUploader.Upload(_gl, document));
-        Bounds = document.Bounds.IsValid ? document.Bounds : ComputeBoundsFromMeshes(document);
+        MillimetersPerSceneUnit = millimetersPerSceneUnit;
+        _meshes.AddRange(meshes);
+        Bounds = bounds;
     }
 
     public void RebuildEdges(
@@ -57,6 +96,52 @@ public sealed class GpuScene : IDisposable
         }
     }
 
+    public void SyncNodeTransforms(Scene scene)
+    {
+        if (_document is null)
+            return;
+
+        ArgumentNullException.ThrowIfNull(scene);
+
+        BoundingBox bounds = BoundingBox.Empty;
+        foreach (GpuMesh mesh in _meshes)
+        {
+            if (mesh.SourceNodeId < 0
+                || mesh.SourceMeshId < 0
+                || mesh.SourceMeshId >= _document.Meshes.Count
+                || scene.GetNode(mesh.SourceNodeId) is not SceneNode node)
+            {
+                continue;
+            }
+
+            MeshDto sourceMesh = _document.Meshes[mesh.SourceMeshId];
+            float[] world = ToRowMajorFloatArray(node.EffectiveWorldTransform);
+            mesh.WorldTransform = IsIdentity(world) ? null : world;
+            mesh.WorldNormalMatrix = mesh.WorldTransform is null
+                ? null
+                : GlesRenderUtil.NormalMatrixFromWorld(mesh.WorldTransform);
+            mesh.HasMirroredHandedness = GlesRenderUtil.HasMirroredHandedness(mesh.WorldTransform);
+            mesh.WorldCenter = ComputeWorldCenter(sourceMesh.Bounds, mesh.WorldTransform);
+            mesh.WorldBounds = ComputeWorldBounds(sourceMesh.Bounds, mesh.WorldTransform);
+            bounds.Merge(mesh.WorldBounds);
+        }
+
+        if (bounds.IsValid)
+            Bounds = bounds;
+    }
+
+    public void SyncNodeVisibility(Scene scene)
+    {
+        ArgumentNullException.ThrowIfNull(scene);
+
+        HashSet<int> visibleNodeIds = scene.GetVisibleNodes()
+            .Select(node => node.Id)
+            .ToHashSet();
+
+        foreach (GpuMesh mesh in _meshes)
+            mesh.Visible = mesh.SourceNodeId < 0 || visibleNodeIds.Contains(mesh.SourceNodeId);
+    }
+
     private static BoundingBox ComputeBoundsFromMeshes(DocumentDto document)
     {
         bool any = false;
@@ -79,6 +164,74 @@ public sealed class GpuScene : IDisposable
         return any ? new BoundingBox(min, max) : BoundingBox.Empty;
     }
 
+    private static Vector3d ComputeWorldCenter(BoundingBox localBounds, float[]? worldTransformRowMajor)
+    {
+        if (!localBounds.IsValid) return Vector3d.Zero;
+        return TransformPoint(localBounds.Center, worldTransformRowMajor);
+    }
+
+    private static BoundingBox ComputeWorldBounds(BoundingBox localBounds, float[]? worldTransformRowMajor)
+    {
+        if (!localBounds.IsValid) return BoundingBox.Empty;
+        if (worldTransformRowMajor is null) return localBounds;
+
+        Vector3d min = new(double.PositiveInfinity, double.PositiveInfinity, double.PositiveInfinity);
+        Vector3d max = new(double.NegativeInfinity, double.NegativeInfinity, double.NegativeInfinity);
+        for (int i = 0; i < 8; i++)
+        {
+            var corner = new Vector3d(
+                (i & 1) == 0 ? localBounds.Min.X : localBounds.Max.X,
+                (i & 2) == 0 ? localBounds.Min.Y : localBounds.Max.Y,
+                (i & 4) == 0 ? localBounds.Min.Z : localBounds.Max.Z);
+            Vector3d w = TransformPoint(corner, worldTransformRowMajor);
+            if (w.X < min.X) min = new Vector3d(w.X, min.Y, min.Z);
+            if (w.Y < min.Y) min = new Vector3d(min.X, w.Y, min.Z);
+            if (w.Z < min.Z) min = new Vector3d(min.X, min.Y, w.Z);
+            if (w.X > max.X) max = new Vector3d(w.X, max.Y, max.Z);
+            if (w.Y > max.Y) max = new Vector3d(max.X, w.Y, max.Z);
+            if (w.Z > max.Z) max = new Vector3d(max.X, max.Y, w.Z);
+        }
+
+        return new BoundingBox(min, max);
+    }
+
+    private static Vector3d TransformPoint(Vector3d p, float[]? m)
+    {
+        if (m is null) return p;
+        return new Vector3d(
+            m[0] * p.X + m[1] * p.Y + m[2] * p.Z + m[3],
+            m[4] * p.X + m[5] * p.Y + m[6] * p.Z + m[7],
+            m[8] * p.X + m[9] * p.Y + m[10] * p.Z + m[11]);
+    }
+
+    private static float[] ToRowMajorFloatArray(Matrix4d matrix)
+        =>
+        [
+            (float)matrix.M11, (float)matrix.M12, (float)matrix.M13, (float)matrix.M14,
+            (float)matrix.M21, (float)matrix.M22, (float)matrix.M23, (float)matrix.M24,
+            (float)matrix.M31, (float)matrix.M32, (float)matrix.M33, (float)matrix.M34,
+            (float)matrix.M41, (float)matrix.M42, (float)matrix.M43, (float)matrix.M44,
+        ];
+
+    private static bool IsIdentity(float[] matrix)
+    {
+        ReadOnlySpan<float> identity =
+        [
+            1f, 0f, 0f, 0f,
+            0f, 1f, 0f, 0f,
+            0f, 0f, 1f, 0f,
+            0f, 0f, 0f, 1f,
+        ];
+
+        for (int i = 0; i < 16; i++)
+        {
+            if (System.Math.Abs(matrix[i] - identity[i]) > 0.000001f)
+                return false;
+        }
+
+        return true;
+    }
+
     public void Draw()
     {
         foreach (var m in _meshes) m.Draw();
@@ -89,8 +242,18 @@ public sealed class GpuScene : IDisposable
         foreach (var m in _meshes) m.Dispose();
         _meshes.Clear();
         Bounds = BoundingBox.Empty;
+        MillimetersPerSceneUnit = 1000.0;
         _document = null;
     }
 
     public void Dispose() => Clear();
+
+    private static double ResolveMillimetersPerSceneUnit(string? unitLabel)
+    {
+        double metersPerUnit = SceneUnitResolver.MetersPerUnit(unitLabel);
+        if (!double.IsFinite(metersPerUnit) || metersPerUnit <= 0.0)
+            return 1000.0;
+
+        return metersPerUnit * 1000.0;
+    }
 }

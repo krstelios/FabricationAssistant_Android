@@ -10,6 +10,7 @@ namespace FabricationAssistant.Rendering.Gles;
 public sealed class ShaderProgram : IDisposable
 {
     private readonly GL _gl;
+    private readonly Dictionary<string, int> _uniformLocations = new(StringComparer.Ordinal);
 
     public uint Handle { get; private set; }
     public string Name { get; }
@@ -58,6 +59,25 @@ public sealed class ShaderProgram : IDisposable
 
     public void Use() => _gl.UseProgram(Handle);
 
+    public int UniformLocation(string name)
+    {
+        if (Handle == 0)
+            return -1;
+
+        if (_uniformLocations.TryGetValue(name, out int loc))
+            return loc;
+
+        loc = _gl.GetUniformLocation(Handle, name);
+        _uniformLocations[name] = loc;
+        return loc;
+    }
+
+    public int UniformArrayLocation(string name)
+    {
+        int loc = UniformLocation(name);
+        return loc >= 0 ? loc : UniformLocation(name + "[0]");
+    }
+
     public void Dispose()
     {
         if (Handle != 0)
@@ -65,5 +85,6 @@ public sealed class ShaderProgram : IDisposable
             _gl.DeleteProgram(Handle);
             Handle = 0;
         }
+        _uniformLocations.Clear();
     }
 }

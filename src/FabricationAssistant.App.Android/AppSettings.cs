@@ -12,7 +12,64 @@ namespace FabricationAssistant.App.Android;
 public static class AppSettings
 {
     private const string FileName = "fa_settings";
-    private const int SettingsSchemaVersion = 2;
+    private const int SettingsSchemaVersion = 13;
+
+    private const int DefaultAoSampleCount = 32;
+    private const int MinAoSampleCount = 1;
+    private const int MaxAoSampleCount = 96;
+    private const float DefaultAoRadius = 0.009f;
+    private const float MinAoRadius = 0.001f;
+    private const float MaxAoRadius = 0.08f;
+    private const float DefaultAoBias = 0.0002f;
+    private const float MinAoBias = 0.0f;
+    private const float MaxAoBias = 0.01f;
+    private const float DefaultAoIntensity = 1.45f;
+    private const float MinAoIntensity = 0.0f;
+    private const float MaxAoIntensity = 4.0f;
+    private const float DefaultAoPower = 1.33f;
+    private const float MinAoPower = 0.25f;
+    private const float MaxAoPower = 4.0f;
+    private const float DefaultAoContrast = 1.0f;
+    private const float MinAoContrast = 0.0f;
+    private const float MaxAoContrast = 4.0f;
+    private const float DefaultAoMaxDistance = 1.50f;
+    private const float MinAoMaxDistance = 0.05f;
+    private const float MaxAoMaxDistance = 2.0f;
+    private const float DefaultAoFadeStart = 0.50f;
+    private const float DefaultAoFadeEnd = 1.31f;
+    private const float MinAoFade = 0.0f;
+    private const float MaxAoFade = 2.0f;
+    private const bool DefaultAoBlurEnabled = true;
+    private const int DefaultAoBlurRadius = 6;
+    private const int MinAoBlurRadius = 0;
+    private const int MaxAoBlurRadius = 24;
+    private const float DefaultAoBlurSharpness = 10.9f;
+    private const float MinAoBlurSharpness = 0.0f;
+    private const float MaxAoBlurSharpness = 32.0f;
+    private const int DefaultAoBlurPasses = 1;
+    private const int MinAoBlurPasses = 0;
+    private const int MaxAoBlurPasses = 8;
+    private const float DefaultAoNoiseScale = 8.0f;
+    private const float MinAoNoiseScale = 0.25f;
+    private const float MaxAoNoiseScale = 8.0f;
+    private const int ModeShadedWithEdges = (int)FabricationAssistant.Rendering.Gles.RenderMode.ShadedWithEdges;
+    private const int ModeShaded = (int)FabricationAssistant.Rendering.Gles.RenderMode.Shaded;
+    private const int ModeWireframe = (int)FabricationAssistant.Rendering.Gles.RenderMode.Wireframe;
+    private const int ModeClay = (int)FabricationAssistant.Rendering.Gles.RenderMode.Clay;
+    private const int ModeRealistic = (int)FabricationAssistant.Rendering.Gles.RenderMode.Realistic;
+    private const float DefaultEdgeWidth = 1.0f;
+    private const float MinimumVisibleEdgeWidth = 0.75f;
+    private const int MeasureModePointToPoint = 0;
+    private const int MeasureModeFaceToPoint = 1;
+    private const int MeasureModeFaceToFace = 2;
+    private const int MeasureBoxModeAxisAligned = 0;
+    private const int MeasureBoxModeBestFit = 1;
+    private const float DefaultDimensionTextScale = 1.0f;
+    private const float MinDimensionTextScale = 0.5f;
+    private const float MaxDimensionTextScale = 4.0f;
+    private const float DefaultSectionGizmoSizeFraction = 0.10f;
+    private const float MinSectionGizmoSizeFraction = 0.005f;
+    private const float MaxSectionGizmoSizeFraction = 0.5f;
 
     private static ISharedPreferences? _prefs;
 
@@ -23,45 +80,89 @@ public static class AppSettings
         MigrateDefaultsIfNeeded();
     }
 
+    public static void ResetToDefaults()
+    {
+        var editor = Prefs.Edit()!;
+        editor.Clear();
+        editor.PutInt("settings_schema_version", SettingsSchemaVersion);
+        editor.Apply();
+    }
+
     private static ISharedPreferences Prefs =>
         _prefs ?? throw new InvalidOperationException("AppSettings.Initialize(context) must be called first.");
 
     // ── Navigation (existing) ──────────────────────────────────────────
     public static float OrbitSensitivity { get => Get("orbit_sensitivity", 1.0f); set => Put("orbit_sensitivity", System.Math.Clamp(value, 0.1f, 5.0f)); }
-    public static float PanSensitivity { get => Get("pan_sensitivity", 1.0f); set => Put("pan_sensitivity", System.Math.Clamp(value, 0.1f, 5.0f)); }
+    // Tuned on Galaxy S-series touch input to reduce pan overshoot on dense CAD scenes.
+    public static float PanSensitivity { get => Get("pan_sensitivity", 0.8252f); set => Put("pan_sensitivity", System.Math.Clamp(value, 0.1f, 5.0f)); }
     public static float ZoomSensitivity { get => Get("zoom_sensitivity", 1.0f); set => Put("zoom_sensitivity", System.Math.Clamp(value, 0.1f, 5.0f)); }
+    public static bool LightweightNavigationEnabled { get => Get("lightweight_navigation_enabled", false); set => Put("lightweight_navigation_enabled", value); }
+    public static bool SpenPalmRejectionEnabled { get => Get("spen_palm_rejection", false); set => Put("spen_palm_rejection", value); }
 
     // ── Mode ───────────────────────────────────────────────────────────
-    public static int RenderMode { get => Get("render_mode", 0); set => Put("render_mode", System.Math.Clamp(value, 0, 3)); }
+    // Upper bound is ModeRealistic (4) so a persisted Realistic value
+    // survives across sessions. AndroidRenderModeShim maps it to Shaded
+    // at draw time; the UI picker never offers Realistic as a choice.
+    public static int RenderMode { get => Get("render_mode", ModeShadedWithEdges); set => Put("render_mode", System.Math.Clamp(value, ModeShadedWithEdges, ModeRealistic)); }
+
+    public static int RenderModeSelectionIndex => RenderMode switch
+    {
+        ModeWireframe => 1,
+        ModeClay => 2,
+        _ => 0,
+    };
+
+    public static void SetRenderModeSelectionIndex(int index)
+    {
+        int mode = index switch
+        {
+            1 => ModeWireframe,
+            2 => ModeClay,
+            _ => EdgesEnabled ? ModeShadedWithEdges : ModeShaded,
+        };
+        RenderMode = mode;
+    }
 
     // ── Camera & helpers ───────────────────────────────────────────────
     public static bool ShowGrid { get => Get("show_grid", true); set => Put("show_grid", value); }
     public static bool ShiftGridToModelMin { get => Get("shift_grid", true); set => Put("shift_grid", value); }
     public static bool UseAutomaticGridSpacing { get => Get("auto_grid_spacing", true); set => Put("auto_grid_spacing", value); }
-    public static float GridSpacingMm { get => Get("grid_spacing_mm", 10.0f); set => Put("grid_spacing_mm", value); }
+    public static float GridSpacingMm { get => GetFloatInRange("grid_spacing_mm", 100.8f, 0.001f, 1_000_000.0f); set => Put("grid_spacing_mm", System.Math.Clamp(value, 0.001f, 1_000_000.0f)); }
     public static float GridLineThickness { get => Get("grid_thickness", 1.0f); set => Put("grid_thickness", value); }
-    public static float GridLineColorR { get => Get("grid_r", 0.28f); set => Put("grid_r", value); }
-    public static float GridLineColorG { get => Get("grid_g", 0.30f); set => Put("grid_g", value); }
-    public static float GridLineColorB { get => Get("grid_b", 0.33f); set => Put("grid_b", value); }
+    public static float GridLineColorR { get => Get("grid_r", 0.35f); set => Put("grid_r", value); }
+    public static float GridLineColorG { get => Get("grid_g", 0.35f); set => Put("grid_g", value); }
+    public static float GridLineColorB { get => Get("grid_b", 0.35f); set => Put("grid_b", value); }
     public static bool ShowAxes { get => Get("show_axes", true); set => Put("show_axes", value); }
     public static bool ShowViewCube { get => Get("show_viewcube", true); set => Put("show_viewcube", value); }
     public static bool IsPerspective { get => Get("is_perspective", true); set => Put("is_perspective", value); }
 
     // ── Background + surface ───────────────────────────────────────────
-    public static float BackgroundR { get => Get("bg_r", 0.10f); set => Put("bg_r", value); }
-    public static float BackgroundG { get => Get("bg_g", 0.11f); set => Put("bg_g", value); }
-    public static float BackgroundB { get => Get("bg_b", 0.12f); set => Put("bg_b", value); }
-    public static float SurfaceR { get => Get("surface_r", 0.78f); set => Put("surface_r", value); }
-    public static float SurfaceG { get => Get("surface_g", 0.80f); set => Put("surface_g", value); }
+    public static float BackgroundR { get => Get("bg_r", 0.079f); set => Put("bg_r", value); }
+    public static float BackgroundG { get => Get("bg_g", 0.086f); set => Put("bg_g", value); }
+    public static float BackgroundB { get => Get("bg_b", 0.097f); set => Put("bg_b", value); }
+    public static float SurfaceR { get => Get("surface_r", 0.82f); set => Put("surface_r", value); }
+    public static float SurfaceG { get => Get("surface_g", 0.82f); set => Put("surface_g", value); }
     public static float SurfaceB { get => Get("surface_b", 0.82f); set => Put("surface_b", value); }
     public static float SurfaceOpacity { get => Get("surface_opacity", 1.0f); set => Put("surface_opacity", value); }
 
     // ── CAD Edges ──────────────────────────────────────────────────────
     public static bool EdgesEnabled { get => Get("edges_enabled", true); set => Put("edges_enabled", value); }
-    public static float EdgeR { get => Get("edge_r", 0.05f); set => Put("edge_r", value); }
-    public static float EdgeG { get => Get("edge_g", 0.05f); set => Put("edge_g", value); }
-    public static float EdgeB { get => Get("edge_b", 0.06f); set => Put("edge_b", value); }
-    public static float EdgeWidth { get => Get("edge_width", 1.0f); set => Put("edge_width", value); }
+
+    public static void SetEdgesEnabledFromUi(bool enabled)
+    {
+        var editor = Prefs.Edit()!;
+        editor.PutBoolean("edges_enabled", enabled);
+        if (enabled && EdgeWidth < MinimumVisibleEdgeWidth)
+            editor.PutFloat("edge_width", DefaultEdgeWidth);
+        int renderMode = RenderMode;
+        if (IsShadedRenderMode(renderMode))
+            editor.PutInt("render_mode", enabled ? ModeShadedWithEdges : ModeShaded);
+        editor.Apply();
+    }
+    public static float EdgeR { get => Get("edge_r", 0.24028806f); set => Put("edge_r", value); }
+    public static float EdgeG { get => Get("edge_g", 0.24f); set => Put("edge_g", value); }
+    public static float EdgeB { get => Get("edge_b", 0.26f); set => Put("edge_b", value); }
+    public static float EdgeWidth { get => GetFloatInRange("edge_width", DefaultEdgeWidth, 0.05f, 2.0f); set => Put("edge_width", System.Math.Clamp(value, 0.05f, 2.0f)); }
     public static float CadEdgeFeatureAngleDegrees { get => Get("edge_feature_angle", 28.0f); set => Put("edge_feature_angle", value); }
     public static float CadEdgeCoplanarToleranceDegrees { get => Get("edge_coplanar_tol", 5.0f); set => Put("edge_coplanar_tol", value); }
     public static float CadEdgeWeldToleranceScale { get => Get("edge_weld_tol", 1.0e-5f); set => Put("edge_weld_tol", value); }
@@ -71,50 +172,107 @@ public static class AppSettings
     public static float SurfaceOffsetUnits { get => Get("surface_offset_u", 1.0f); set => Put("surface_offset_u", value); }
 
     // ── Clay ───────────────────────────────────────────────────────────
-    public static float ClaySurfaceR { get => Get("clay_surface_r", 0.85f); set => Put("clay_surface_r", value); }
-    public static float ClaySurfaceG { get => Get("clay_surface_g", 0.78f); set => Put("clay_surface_g", value); }
-    public static float ClaySurfaceB { get => Get("clay_surface_b", 0.65f); set => Put("clay_surface_b", value); }
-    public static float ClayBackgroundR { get => Get("clay_bg_r", 0.14f); set => Put("clay_bg_r", value); }
-    public static float ClayBackgroundG { get => Get("clay_bg_g", 0.14f); set => Put("clay_bg_g", value); }
-    public static float ClayBackgroundB { get => Get("clay_bg_b", 0.16f); set => Put("clay_bg_b", value); }
+    public static float ClaySurfaceR { get => Get("clay_surface_r", 0.804f); set => Put("clay_surface_r", value); }
+    public static float ClaySurfaceG { get => Get("clay_surface_g", 0.796f); set => Put("clay_surface_g", value); }
+    public static float ClaySurfaceB { get => Get("clay_surface_b", 0.797f); set => Put("clay_surface_b", value); }
+    public static float ClayBackgroundR { get => Get("clay_bg_r", 1.0f); set => Put("clay_bg_r", value); }
+    public static float ClayBackgroundG { get => Get("clay_bg_g", 1.0f); set => Put("clay_bg_g", value); }
+    public static float ClayBackgroundB { get => Get("clay_bg_b", 1.0f); set => Put("clay_bg_b", value); }
+    public static bool ClayFeatureEdgesEnabled { get => Get("clay_feature_edges", true); set => Put("clay_feature_edges", value); }
+    public static float ClayFeatureEdgeR { get => Get("clay_edge_r", 0.11975311f); set => Put("clay_edge_r", value); }
+    public static float ClayFeatureEdgeG { get => Get("clay_edge_g", 0.12004116f); set => Put("clay_edge_g", value); }
+    public static float ClayFeatureEdgeB { get => Get("clay_edge_b", 0.11650209f); set => Put("clay_edge_b", value); }
+    public static float ClayFeatureEdgeA { get => GetFloatInRange("clay_edge_a", 0.48666665f, 0.0f, 1.0f); set => Put("clay_edge_a", System.Math.Clamp(value, 0.0f, 1.0f)); }
+    public static float ClayFeatureEdgeWidth { get => GetFloatInRange("clay_edge_width", 0.95f, 0.05f, 4.0f); set => Put("clay_edge_width", System.Math.Clamp(value, 0.05f, 4.0f)); }
+    public static float ClayFeatureEdgeDepthBias { get => GetFloatInRange("clay_edge_depth_bias", 0.0f, 0.0f, 0.01f); set => Put("clay_edge_depth_bias", System.Math.Clamp(value, 0.0f, 0.01f)); }
+    public static float ClayFeatureEdgeCreaseAngleDegrees { get => GetFloatInRange("clay_edge_crease_angle", 35.0f, 1.0f, 150.0f); set => Put("clay_edge_crease_angle", System.Math.Clamp(value, 1.0f, 150.0f)); }
 
     // ── Lighting ───────────────────────────────────────────────────────
-    public static float BaseColorLift { get => Get("light_base_lift", 0.04f); set => Put("light_base_lift", value); }
-    public static float AmbientStrength { get => Get("light_ambient", 0.40f); set => Put("light_ambient", value); }
-    public static float HeadlightStrength { get => Get("light_headlight", 0.30f); set => Put("light_headlight", value); }
-    public static float KeyLightStrength { get => Get("light_key", 0.55f); set => Put("light_key", value); }
-    public static float FillLightStrength { get => Get("light_fill", 0.20f); set => Put("light_fill", value); }
-    public static float BounceLightStrength { get => Get("light_bounce", 0.15f); set => Put("light_bounce", value); }
-    public static float HemisphereStrength { get => Get("light_hemisphere", 0.40f); set => Put("light_hemisphere", value); }
-    public static float SpecularStrength { get => Get("light_spec_strength", 0.10f); set => Put("light_spec_strength", value); }
-    public static float SpecularPower { get => Get("light_spec_power", 32.0f); set => Put("light_spec_power", value); }
+    public static float BaseColorLift { get => Get("light_base_lift", 0.1095f); set => Put("light_base_lift", value); }
+    public static float AmbientStrength { get => Get("light_ambient", 0.306f); set => Put("light_ambient", value); }
+    public static float HeadlightStrength { get => Get("light_headlight", 0.14f); set => Put("light_headlight", value); }
+    public static float KeyLightStrength { get => Get("light_key", 0.34f); set => Put("light_key", value); }
+    public static float FillLightStrength { get => Get("light_fill", 0.24f); set => Put("light_fill", value); }
+    public static float BounceLightStrength { get => Get("light_bounce", 0.0f); set => Put("light_bounce", value); }
+    public static float HemisphereStrength { get => Get("light_hemisphere", 0.28f); set => Put("light_hemisphere", value); }
+    public static float SpecularStrength { get => Get("light_spec_strength", 0.354f); set => Put("light_spec_strength", value); }
+    public static float SpecularPower { get => Get("light_spec_power", 77.0f); set => Put("light_spec_power", value); }
 
     // ── AO + contour + MSAA ───────────────────────────────────────────
     public static bool AmbientOcclusionEnabled { get => Get("ao_enabled", true); set => Put("ao_enabled", value); }
-    public static float AoRadius { get => Get("ao_radius", 0.50f); set => Put("ao_radius", value); }
-    public static float AoBias { get => Get("ao_bias", 0.025f); set => Put("ao_bias", value); }
-    public static float AoIntensity { get => Get("ao_intensity", 1.0f); set => Put("ao_intensity", value); }
-    public static int AoBlurPasses { get => Get("ao_blur_passes", 2); set => Put("ao_blur_passes", System.Math.Clamp(value, 0, 8)); }
-    public static float ContourStrength { get => Get("contour_strength", 0.50f); set => Put("contour_strength", value); }
-    public static float ContourPower { get => Get("contour_power", 2.0f); set => Put("contour_power", value); }
-    public static int MsaaSamples { get => Get("msaa_samples", 4); set => Put("msaa_samples", value); }
+    public static int AoSampleCount { get => GetIntInRange("ao_sample_count", DefaultAoSampleCount, MinAoSampleCount, MaxAoSampleCount); set => Put("ao_sample_count", System.Math.Clamp(value, MinAoSampleCount, MaxAoSampleCount)); }
+    public static float AoRadius { get => GetFloatInRange("ao_radius", DefaultAoRadius, MinAoRadius, MaxAoRadius); set => Put("ao_radius", System.Math.Clamp(value, MinAoRadius, MaxAoRadius)); }
+    public static float AoBias { get => GetFloatInRange("ao_bias", DefaultAoBias, MinAoBias, MaxAoBias); set => Put("ao_bias", System.Math.Clamp(value, MinAoBias, MaxAoBias)); }
+    public static float AoIntensity { get => GetFloatInRange("ao_intensity", DefaultAoIntensity, MinAoIntensity, MaxAoIntensity); set => Put("ao_intensity", System.Math.Clamp(value, MinAoIntensity, MaxAoIntensity)); }
+    public static float AoPower { get => GetFloatInRange("ao_power", DefaultAoPower, MinAoPower, MaxAoPower); set => Put("ao_power", System.Math.Clamp(value, MinAoPower, MaxAoPower)); }
+    public static float AoContrast { get => GetFloatInRange("ao_contrast", DefaultAoContrast, MinAoContrast, MaxAoContrast); set => Put("ao_contrast", System.Math.Clamp(value, MinAoContrast, MaxAoContrast)); }
+    public static float AoMaxDistance { get => GetFloatInRange("ao_max_distance", DefaultAoMaxDistance, MinAoMaxDistance, MaxAoMaxDistance); set => Put("ao_max_distance", System.Math.Clamp(value, MinAoMaxDistance, MaxAoMaxDistance)); }
+    public static float AoFadeStart { get => GetFloatInRange("ao_fade_start", DefaultAoFadeStart, MinAoFade, MaxAoFade); set => Put("ao_fade_start", System.Math.Clamp(value, MinAoFade, MaxAoFade)); }
+    public static float AoFadeEnd { get => GetFloatInRange("ao_fade_end", DefaultAoFadeEnd, MinAoFade, MaxAoFade); set => Put("ao_fade_end", System.Math.Clamp(value, MinAoFade, MaxAoFade)); }
+    public static bool AoBlurEnabled { get => Get("ao_blur_enabled", DefaultAoBlurEnabled); set => Put("ao_blur_enabled", value); }
+    public static int AoBlurRadius { get => GetIntInRange("ao_blur_radius", DefaultAoBlurRadius, MinAoBlurRadius, MaxAoBlurRadius); set => Put("ao_blur_radius", System.Math.Clamp(value, MinAoBlurRadius, MaxAoBlurRadius)); }
+    public static float AoBlurSharpness { get => GetFloatInRange("ao_blur_sharpness", DefaultAoBlurSharpness, MinAoBlurSharpness, MaxAoBlurSharpness); set => Put("ao_blur_sharpness", System.Math.Clamp(value, MinAoBlurSharpness, MaxAoBlurSharpness)); }
+    public static int AoBlurPasses { get => GetIntInRange("ao_blur_passes", DefaultAoBlurPasses, MinAoBlurPasses, MaxAoBlurPasses); set => Put("ao_blur_passes", System.Math.Clamp(value, MinAoBlurPasses, MaxAoBlurPasses)); }
+    public static float AoNoiseScale { get => GetFloatInRange("ao_noise_scale", DefaultAoNoiseScale, MinAoNoiseScale, MaxAoNoiseScale); set => Put("ao_noise_scale", System.Math.Clamp(value, MinAoNoiseScale, MaxAoNoiseScale)); }
+    public static float ContourStrength { get => Get("contour_strength", 0.16080001f); set => Put("contour_strength", value); }
+    public static float ContourPower { get => Get("contour_power", 4.4105f); set => Put("contour_power", value); }
+    public static int MsaaSamples { get => ClampAndroidMsaaSamples(Get("msaa_samples", 0)); set => Put("msaa_samples", ClampAndroidMsaaSamples(value)); }
 
     // ── Selection ──────────────────────────────────────────────────────
     public static bool ShowSelectionHighlight { get => Get("show_selection", true); set => Put("show_selection", value); }
     public static bool OutlineEnabled { get => Get("outline_enabled", true); set => Put("outline_enabled", value); }
     public static float OutlineR { get => Get("outline_r", 1.0f); set => Put("outline_r", value); }
-    public static float OutlineG { get => Get("outline_g", 0.62f); set => Put("outline_g", value); }
-    public static float OutlineB { get => Get("outline_b", 0.20f); set => Put("outline_b", value); }
-    public static float OutlineThicknessPx { get => Get("outline_thickness", 2.5f); set => Put("outline_thickness", value); }
+    public static float OutlineG { get => Get("outline_g", 0.0f); set => Put("outline_g", value); }
+    public static float OutlineB { get => Get("outline_b", 0.0f); set => Put("outline_b", value); }
+    public static float OutlineThicknessPx { get => Get("outline_thickness", 3.2098765f); set => Put("outline_thickness", value); }
+    public static float HoverOutlineR { get => Get("hover_outline_r", 0.0f); set => Put("hover_outline_r", value); }
+    public static float HoverOutlineG { get => Get("hover_outline_g", 1.0f); set => Put("hover_outline_g", value); }
+    public static float HoverOutlineB { get => Get("hover_outline_b", 0.0f); set => Put("hover_outline_b", value); }
+    public static float HoverOutlineThicknessPx { get => GetFloatInRange("hover_outline_thickness", 0.37757202f, 0.05f, 8.0f); set => Put("hover_outline_thickness", System.Math.Clamp(value, 0.05f, 8.0f)); }
+    public static float HoverTintStrength { get => GetFloatInRange("hover_tint_strength", 0.2f, 0.0f, 1.0f); set => Put("hover_tint_strength", System.Math.Clamp(value, 0.0f, 1.0f)); }
+    public static float DimensionHighlightR { get => Get("dimension_highlight_r", 1.0f); set => Put("dimension_highlight_r", System.Math.Clamp(value, 0.0f, 1.0f)); }
+    public static float DimensionHighlightG { get => Get("dimension_highlight_g", 0.5019608f); set => Put("dimension_highlight_g", System.Math.Clamp(value, 0.0f, 1.0f)); }
+    public static float DimensionHighlightB { get => Get("dimension_highlight_b", 0.2509804f); set => Put("dimension_highlight_b", System.Math.Clamp(value, 0.0f, 1.0f)); }
+
+    // Measurement tools
+    public static int MeasureModeSelectionIndex { get => GetIntInRange("measure_mode", MeasureModePointToPoint, MeasureModePointToPoint, MeasureModeFaceToFace); set => Put("measure_mode", System.Math.Clamp(value, MeasureModePointToPoint, MeasureModeFaceToFace)); }
+    public static int MeasureBoxModeSelectionIndex { get => GetIntInRange("measure_box_mode", MeasureBoxModeBestFit, MeasureBoxModeAxisAligned, MeasureBoxModeBestFit); set => Put("measure_box_mode", System.Math.Clamp(value, MeasureBoxModeAxisAligned, MeasureBoxModeBestFit)); }
+    public static bool MeasureMultiMeasureEnabled { get => Get("measure_multi_enabled", true); set => Put("measure_multi_enabled", value); }
+    public static bool MeasureShowDeltaBreakdown { get => Get("measure_show_deltas", false); set => Put("measure_show_deltas", value); }
+    public static float DimensionTextScale { get => GetFloatInRange("dimension_text_scale", DefaultDimensionTextScale, MinDimensionTextScale, MaxDimensionTextScale); set => Put("dimension_text_scale", System.Math.Clamp(value, MinDimensionTextScale, MaxDimensionTextScale)); }
+
+    // Section tools
+    public static bool SectionFillVisible { get => Get("section_fill_visible", true); set => Put("section_fill_visible", value); }
+    public static bool SectionEdgesVisible { get => Get("section_edges_visible", true); set => Put("section_edges_visible", value); }
+    public static float SectionPlaneR { get => Get("section_plane_r", 0.19607843f); set => Put("section_plane_r", System.Math.Clamp(value, 0.0f, 1.0f)); }
+    public static float SectionPlaneG { get => Get("section_plane_g", 0.9019608f); set => Put("section_plane_g", System.Math.Clamp(value, 0.0f, 1.0f)); }
+    public static float SectionPlaneB { get => Get("section_plane_b", 0.19607843f); set => Put("section_plane_b", System.Math.Clamp(value, 0.0f, 1.0f)); }
+    public static float SectionPlaneOpacity { get => GetFloatInRange("section_plane_opacity", 0.20f, 0.0f, 1.0f); set => Put("section_plane_opacity", System.Math.Clamp(value, 0.0f, 1.0f)); }
+    public static float SectionEdgeR { get => Get("section_edge_r", 0.19607843f); set => Put("section_edge_r", System.Math.Clamp(value, 0.0f, 1.0f)); }
+    public static float SectionEdgeG { get => Get("section_edge_g", 0.9019608f); set => Put("section_edge_g", System.Math.Clamp(value, 0.0f, 1.0f)); }
+    public static float SectionEdgeB { get => Get("section_edge_b", 0.19607843f); set => Put("section_edge_b", System.Math.Clamp(value, 0.0f, 1.0f)); }
+    public static float SectionEdgeHighlightR { get => Get("section_edge_highlight_r", 1.0f); set => Put("section_edge_highlight_r", System.Math.Clamp(value, 0.0f, 1.0f)); }
+    public static float SectionEdgeHighlightG { get => Get("section_edge_highlight_g", 1.0f); set => Put("section_edge_highlight_g", System.Math.Clamp(value, 0.0f, 1.0f)); }
+    public static float SectionEdgeHighlightB { get => Get("section_edge_highlight_b", 1.0f); set => Put("section_edge_highlight_b", System.Math.Clamp(value, 0.0f, 1.0f)); }
+    public static float SectionCapR { get => Get("section_cap_r", 0.8509804f); set => Put("section_cap_r", System.Math.Clamp(value, 0.0f, 1.0f)); }
+    public static float SectionCapG { get => Get("section_cap_g", 0.8509804f); set => Put("section_cap_g", System.Math.Clamp(value, 0.0f, 1.0f)); }
+    public static float SectionCapB { get => Get("section_cap_b", 0.80f); set => Put("section_cap_b", System.Math.Clamp(value, 0.0f, 1.0f)); }
+    public static float SectionPlaneSizeFraction { get => GetFloatInRange("section_plane_size", 0.025f, 0.001f, 1.0f); set => Put("section_plane_size", System.Math.Clamp(value, 0.001f, 1.0f)); }
+    public static float SectionGizmoSizeFraction { get => GetFloatInRange("section_gizmo_size", DefaultSectionGizmoSizeFraction, MinSectionGizmoSizeFraction, MaxSectionGizmoSizeFraction); set => Put("section_gizmo_size", System.Math.Clamp(value, MinSectionGizmoSizeFraction, MaxSectionGizmoSizeFraction)); }
 
     /// <summary>
     /// Populates <paramref name="appearance"/> with every persisted value in
     /// one call. MainActivity.ApplySettingsToScene uses this to refresh the
     /// renderer in response to PreferencesBottomSheet.OnSettingsChanged.
+    /// Array fields are freshly allocated on each call; treat them as
+    /// immutable after assignment so the GL thread never observes in-place
+    /// mutations.
     /// </summary>
     public static void Apply(ref SceneAppearance appearance)
     {
-        appearance.Mode = (RenderMode)RenderMode;
+        int renderMode = EffectiveRenderMode(RenderMode, EdgesEnabled);
+        var requestedMode = (FabricationAssistant.Rendering.Gles.RenderMode)renderMode;
+        appearance.Mode = AndroidRenderModeShim.Effective(requestedMode);
 
         appearance.ShowGrid = ShowGrid;
         appearance.ShiftGridToModelMin = ShiftGridToModelMin;
@@ -125,6 +283,7 @@ public static class AppSettings
         appearance.ShowAxes = ShowAxes;
         appearance.ShowViewCube = ShowViewCube;
         appearance.IsPerspective = IsPerspective;
+        appearance.LightweightNavigationEnabled = LightweightNavigationEnabled;
 
         appearance.BackgroundColor = new[] { BackgroundR, BackgroundG, BackgroundB };
         appearance.SurfaceColor = new[] { SurfaceR, SurfaceG, SurfaceB };
@@ -143,6 +302,11 @@ public static class AppSettings
 
         appearance.ClaySurfaceColor = new[] { ClaySurfaceR, ClaySurfaceG, ClaySurfaceB };
         appearance.ClayBackgroundColor = new[] { ClayBackgroundR, ClayBackgroundG, ClayBackgroundB };
+        appearance.ClayFeatureEdgesEnabled = ClayFeatureEdgesEnabled;
+        appearance.ClayFeatureEdgeColor = new[] { ClayFeatureEdgeR, ClayFeatureEdgeG, ClayFeatureEdgeB, ClayFeatureEdgeA };
+        appearance.ClayFeatureEdgeWidth = ClayFeatureEdgeWidth;
+        appearance.ClayFeatureEdgeDepthBias = ClayFeatureEdgeDepthBias;
+        appearance.ClayFeatureEdgeCreaseAngleDegrees = ClayFeatureEdgeCreaseAngleDegrees;
 
         appearance.BaseColorLift = BaseColorLift;
         appearance.AmbientStrength = AmbientStrength;
@@ -155,10 +319,20 @@ public static class AppSettings
         appearance.SpecularPower = SpecularPower;
 
         appearance.AmbientOcclusionEnabled = AmbientOcclusionEnabled;
+        appearance.AoSampleCount = AoSampleCount;
         appearance.AoRadius = AoRadius;
         appearance.AoBias = AoBias;
         appearance.AoIntensity = AoIntensity;
+        appearance.AoPower = AoPower;
+        appearance.AoContrast = AoContrast;
+        appearance.AoMaxDistance = AoMaxDistance;
+        appearance.AoFadeStart = AoFadeStart;
+        appearance.AoFadeEnd = AoFadeEnd;
+        appearance.AoBlurEnabled = AoBlurEnabled;
+        appearance.AoBlurRadius = AoBlurRadius;
+        appearance.AoBlurSharpness = AoBlurSharpness;
         appearance.AoBlurPasses = AoBlurPasses;
+        appearance.AoNoiseScale = AoNoiseScale;
         appearance.ContourStrength = ContourStrength;
         appearance.ContourPower = ContourPower;
         appearance.MsaaSamples = MsaaSamples;
@@ -166,6 +340,9 @@ public static class AppSettings
         appearance.OutlineEnabled = OutlineEnabled;
         appearance.OutlineColor = new[] { OutlineR, OutlineG, OutlineB };
         appearance.OutlineThicknessPx = OutlineThicknessPx;
+        appearance.HoverOutlineColor = new[] { HoverOutlineR, HoverOutlineG, HoverOutlineB };
+        appearance.HoverOutlineThicknessPx = HoverOutlineThicknessPx;
+        appearance.HoverTintStrength = HoverTintStrength;
     }
 
     private static float Get(string k, float def) => Prefs.GetFloat(k, def);
@@ -175,14 +352,29 @@ public static class AppSettings
     private static void Put(string k, bool v) { var ed = Prefs.Edit()!; ed.PutBoolean(k, v); ed.Apply(); }
     private static void Put(string k, int v) { var ed = Prefs.Edit()!; ed.PutInt(k, v); ed.Apply(); }
 
+    private static int EffectiveRenderMode(int renderMode, bool edgesEnabled)
+        => IsShadedRenderMode(renderMode)
+            ? edgesEnabled ? ModeShadedWithEdges : ModeShaded
+            : renderMode;
+
+    private static bool IsShadedRenderMode(int renderMode)
+        => renderMode == ModeShadedWithEdges || renderMode == ModeShaded;
+
     private static void MigrateDefaultsIfNeeded()
     {
-        if (Get("settings_schema_version", 1) >= SettingsSchemaVersion)
+        int previousSchema = Get("settings_schema_version", 1);
+        if (previousSchema >= SettingsSchemaVersion)
         {
             return;
         }
 
         var editor = Prefs.Edit()!;
+
+        if (previousSchema < 9)
+            ResetAmbientOcclusionTuning(editor);
+
+        if (previousSchema < 13)
+            DoubleSectionGizmoSize(editor);
 
         if (Prefs.Contains("edge_feature_angle") && Approximately(Get("edge_feature_angle", 25.0f), 25.0f))
         {
@@ -199,6 +391,87 @@ public static class AppSettings
             editor.Remove("edge_depth_bias");
         }
 
+        if (Prefs.Contains("ao_radius") && Approximately(Get("ao_radius", 0.50f), 0.50f))
+        {
+            editor.Remove("ao_radius");
+        }
+
+        if (Prefs.Contains("ao_bias") && Approximately(Get("ao_bias", 0.025f), 0.025f))
+        {
+            editor.Remove("ao_bias");
+        }
+
+        if (Prefs.Contains("ao_intensity") && Approximately(Get("ao_intensity", 1.0f), 1.0f))
+        {
+            editor.Remove("ao_intensity");
+        }
+
+        if (Prefs.Contains("ao_blur_passes") && Get("ao_blur_passes", 2) == 2)
+        {
+            editor.Remove("ao_blur_passes");
+        }
+
+        RemoveFloatIfApproximately(editor, "ao_radius", 0.009f);
+        RemoveFloatIfApproximately(editor, "ao_bias", 0.0002f);
+        RemoveFloatIfApproximately(editor, "ao_intensity", 1.45f);
+        RemoveFloatIfApproximately(editor, "ao_power", 1.33f);
+        RemoveIntIfEquals(editor, "ao_sample_count", 32);
+        RemoveIntIfEquals(editor, "ao_blur_radius", 6);
+        RemoveFloatIfApproximately(editor, "ao_blur_sharpness", 10.9f);
+        RemoveIntIfEquals(editor, "ao_blur_passes", 1);
+        RemoveFloatIfApproximately(editor, "ao_noise_scale", 8.0f);
+
+        RemoveFloatIfApproximately(editor, "grid_spacing_mm", 10.0f);
+        RemoveFloatIfApproximately(editor, "grid_r", 0.28f);
+        RemoveFloatIfApproximately(editor, "grid_g", 0.30f);
+        RemoveFloatIfApproximately(editor, "grid_b", 0.33f);
+        RemoveFloatIfApproximately(editor, "bg_r", 0.10f);
+        RemoveFloatIfApproximately(editor, "bg_g", 0.11f);
+        RemoveFloatIfApproximately(editor, "bg_b", 0.12f);
+        RemoveFloatIfApproximately(editor, "surface_r", 0.78f);
+        RemoveFloatIfApproximately(editor, "surface_g", 0.80f);
+        RemoveFloatIfApproximately(editor, "edge_r", 0.05f);
+        RemoveFloatIfApproximately(editor, "edge_g", 0.05f);
+        RemoveFloatIfApproximately(editor, "edge_b", 0.06f);
+        RemoveFloatIfApproximately(editor, "edge_width", 1.0f);
+        RemoveFloatIfApproximately(editor, "edge_width", 0.28595f);
+        RemoveFloatIfBelow(editor, "edge_width", MinimumVisibleEdgeWidth);
+        RemoveFloatIfApproximately(editor, "clay_surface_r", 0.85f);
+        RemoveFloatIfApproximately(editor, "clay_surface_g", 0.78f);
+        RemoveFloatIfApproximately(editor, "clay_surface_b", 0.65f);
+        RemoveFloatIfApproximately(editor, "clay_bg_r", 0.14f);
+        RemoveFloatIfApproximately(editor, "clay_bg_g", 0.14f);
+        RemoveFloatIfApproximately(editor, "clay_bg_b", 0.16f);
+        RemoveFloatIfApproximately(editor, "light_base_lift", 0.04f);
+        RemoveFloatIfApproximately(editor, "light_ambient", 0.40f);
+        RemoveFloatIfApproximately(editor, "light_headlight", 0.30f);
+        RemoveFloatIfApproximately(editor, "light_key", 0.55f);
+        RemoveFloatIfApproximately(editor, "light_fill", 0.20f);
+        RemoveFloatIfApproximately(editor, "light_bounce", 0.15f);
+        RemoveFloatIfApproximately(editor, "light_hemisphere", 0.40f);
+        RemoveFloatIfApproximately(editor, "light_spec_strength", 0.10f);
+        RemoveFloatIfApproximately(editor, "light_spec_power", 32.0f);
+        RemoveFloatIfApproximately(editor, "contour_strength", 0.50f);
+        RemoveFloatIfApproximately(editor, "contour_power", 2.0f);
+        RemoveFloatIfApproximately(editor, "outline_g", 0.62f);
+        RemoveFloatIfApproximately(editor, "outline_b", 0.20f);
+        RemoveFloatIfApproximately(editor, "outline_thickness", 2.5f);
+
+        RemoveFloatIfOutOfRange(editor, "ao_radius", MinAoRadius, MaxAoRadius);
+        RemoveFloatIfOutOfRange(editor, "ao_bias", MinAoBias, MaxAoBias);
+        RemoveFloatIfOutOfRange(editor, "ao_intensity", MinAoIntensity, MaxAoIntensity);
+        RemoveFloatIfOutOfRange(editor, "ao_power", MinAoPower, MaxAoPower);
+        RemoveFloatIfOutOfRange(editor, "ao_contrast", MinAoContrast, MaxAoContrast);
+        RemoveFloatIfOutOfRange(editor, "ao_max_distance", MinAoMaxDistance, MaxAoMaxDistance);
+        RemoveFloatIfOutOfRange(editor, "ao_fade_start", MinAoFade, MaxAoFade);
+        RemoveFloatIfOutOfRange(editor, "ao_fade_end", MinAoFade, MaxAoFade);
+        RemoveIntIfOutOfRange(editor, "ao_sample_count", MinAoSampleCount, MaxAoSampleCount);
+        RemoveIntIfOutOfRange(editor, "ao_blur_radius", MinAoBlurRadius, MaxAoBlurRadius);
+        RemoveFloatIfOutOfRange(editor, "ao_blur_sharpness", MinAoBlurSharpness, MaxAoBlurSharpness);
+        RemoveIntIfOutOfRange(editor, "ao_blur_passes", MinAoBlurPasses, MaxAoBlurPasses);
+        RemoveFloatIfOutOfRange(editor, "ao_noise_scale", MinAoNoiseScale, MaxAoNoiseScale);
+        RemoveFloatIfOutOfRange(editor, "dimension_text_scale", MinDimensionTextScale, MaxDimensionTextScale);
+
         editor.PutInt("settings_schema_version", SettingsSchemaVersion);
         editor.Apply();
     }
@@ -206,5 +479,105 @@ public static class AppSettings
     private static bool Approximately(float left, float right)
     {
         return System.Math.Abs(left - right) <= 0.000001f;
+    }
+
+    private static float GetFloatInRange(string key, float defaultValue, float min, float max)
+    {
+        float value = Get(key, defaultValue);
+        return float.IsFinite(value) && value >= min && value <= max ? value : defaultValue;
+    }
+
+    private static int GetIntInRange(string key, int defaultValue, int min, int max)
+    {
+        int value = Get(key, defaultValue);
+        return value >= min && value <= max ? value : defaultValue;
+    }
+
+    private static void RemoveFloatIfOutOfRange(ISharedPreferencesEditor editor, string key, float min, float max)
+    {
+        if (!Prefs.Contains(key))
+            return;
+
+        float value = Get(key, float.NaN);
+        if (!float.IsFinite(value) || value < min || value > max)
+            editor.Remove(key);
+    }
+
+    private static void RemoveFloatIfApproximately(ISharedPreferencesEditor editor, string key, float expected)
+    {
+        if (!Prefs.Contains(key))
+            return;
+
+        float value = Get(key, float.NaN);
+        if (float.IsFinite(value) && Approximately(value, expected))
+            editor.Remove(key);
+    }
+
+    private static void RemoveFloatIfBelow(ISharedPreferencesEditor editor, string key, float minimum)
+    {
+        if (!Prefs.Contains(key))
+            return;
+
+        float value = Get(key, float.NaN);
+        if (float.IsFinite(value) && value < minimum)
+            editor.Remove(key);
+    }
+
+    private static void RemoveIntIfOutOfRange(ISharedPreferencesEditor editor, string key, int min, int max)
+    {
+        if (!Prefs.Contains(key))
+            return;
+
+        int value = Get(key, int.MinValue);
+        if (value < min || value > max)
+            editor.Remove(key);
+    }
+
+    private static void RemoveIntIfEquals(ISharedPreferencesEditor editor, string key, int expected)
+    {
+        if (Prefs.Contains(key) && Get(key, int.MinValue) == expected)
+            editor.Remove(key);
+    }
+
+    private static void ResetAmbientOcclusionTuning(ISharedPreferencesEditor editor)
+    {
+        editor.Remove("ao_sample_count");
+        editor.Remove("ao_radius");
+        editor.Remove("ao_bias");
+        editor.Remove("ao_intensity");
+        editor.Remove("ao_power");
+        editor.Remove("ao_contrast");
+        editor.Remove("ao_max_distance");
+        editor.Remove("ao_fade_start");
+        editor.Remove("ao_fade_end");
+        editor.Remove("ao_blur_radius");
+        editor.Remove("ao_blur_sharpness");
+        editor.Remove("ao_blur_passes");
+        editor.Remove("ao_noise_scale");
+    }
+
+    private static void DoubleSectionGizmoSize(ISharedPreferencesEditor editor)
+    {
+        if (!Prefs.Contains("section_gizmo_size"))
+            return;
+
+        float value = Get("section_gizmo_size", DefaultSectionGizmoSizeFraction);
+        if (!float.IsFinite(value))
+        {
+            editor.Remove("section_gizmo_size");
+            return;
+        }
+
+        editor.PutFloat(
+            "section_gizmo_size",
+            System.Math.Clamp(value * 2.0f, MinSectionGizmoSizeFraction, MaxSectionGizmoSizeFraction));
+    }
+
+    private static int ClampAndroidMsaaSamples(int value)
+    {
+        if (value <= 0)
+            return 0;
+
+        return value <= 2 ? 2 : 4;
     }
 }

@@ -16,11 +16,15 @@ public sealed class GlesOutlineRenderer : IDisposable
     private readonly ShaderProgram _maskProgram;
     private readonly ShaderProgram _outlineProgram;
     private readonly uint _fullscreenVao;
+    private readonly uint _fullscreenVbo;
 
     private uint _maskFbo;
     private uint _maskTex;
     private int _width;
     private int _height;
+    private readonly float[] _viewScratch = new float[16];
+    private readonly float[] _projectionScratch = new float[16];
+    public IReadOnlyList<GlesSectionPlane> SectionPlanes { get; set; } = Array.Empty<GlesSectionPlane>();
 
     public GlesOutlineRenderer(
         GL gl,
@@ -32,7 +36,7 @@ public sealed class GlesOutlineRenderer : IDisposable
         _gl = gl ?? throw new ArgumentNullException(nameof(gl));
         _maskProgram = new ShaderProgram(_gl, "outline.mask", maskVertSource, maskFragSource);
         _outlineProgram = new ShaderProgram(_gl, "outline.composite", fullscreenVertSource, outlineFragSource);
-        _fullscreenVao = _gl.GenVertexArray();
+        (_fullscreenVao, _fullscreenVbo) = GlesFullscreenTriangle.Create(_gl);
     }
 
     public void Resize(int width, int height)
@@ -97,12 +101,13 @@ public sealed class GlesOutlineRenderer : IDisposable
 
         _maskProgram.Use();
         float aspect = (float)_width / _height;
-        var view = ViewportCameraMath.ViewMatrix(camera);
-        var proj = ViewportCameraMath.ProjectionMatrix(camera, aspect);
+        ViewportCameraMath.FillViewMatrix(camera, _viewScratch);
+        ViewportCameraMath.FillProjectionMatrix(camera, aspect, _projectionScratch);
         var identity = ViewportCameraMath.IdentityModelMatrix();
-        SetMat4(_maskProgram, "uView", view);
-        SetMat4(_maskProgram, "uProjection", proj);
-        int modelLoc = _gl.GetUniformLocation(_maskProgram.Handle, "uModel");
+        SetMat4(_maskProgram, "uView", _viewScratch);
+        SetMat4(_maskProgram, "uProjection", _projectionScratch);
+        SetSectionUniforms(_maskProgram);
+        int modelLoc = _maskProgram.UniformLocation("uModel");
         float[] model = selected.WorldTransform ?? identity;
         if (modelLoc >= 0) _gl.UniformMatrix4(modelLoc, true, model);
         GlesRenderUtil.ApplyMeshCulling(_gl, selected);
@@ -115,6 +120,7 @@ public sealed class GlesOutlineRenderer : IDisposable
 
         _gl.Enable(EnableCap.Blend);
         _gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+        _gl.Disable(EnableCap.CullFace);
 
         _outlineProgram.Use();
         _gl.ActiveTexture(TextureUnit.Texture0);
@@ -124,27 +130,54 @@ public sealed class GlesOutlineRenderer : IDisposable
         SetVec3(_outlineProgram, "uOutlineColor", outlineColor[0], outlineColor[1], outlineColor[2]);
         SetFloat(_outlineProgram, "uThicknessPx", thicknessPx);
 
-        _gl.BindVertexArray(_fullscreenVao);
-        _gl.DrawArrays(PrimitiveType.Triangles, 0, 3);
-        _gl.BindVertexArray(0);
+        GlesFullscreenTriangle.Draw(_gl, _fullscreenVao);
 
         _gl.Disable(EnableCap.Blend);
     }
 
     private void SetMat4(ShaderProgram p, string name, float[] m)
     {
-        int loc = _gl.GetUniformLocation(p.Handle, name);
+        int loc = p.UniformLocation(name);
         if (loc < 0) return;
         _gl.UniformMatrix4(loc, true, m);
     }
     private void SetVec2(ShaderProgram p, string name, float x, float y)
-    { int loc = _gl.GetUniformLocation(p.Handle, name); if (loc >= 0) _gl.Uniform2(loc, x, y); }
+    { int loc = p.UniformLocation(name); if (loc >= 0) _gl.Uniform2(loc, x, y); }
     private void SetVec3(ShaderProgram p, string name, float x, float y, float z)
-    { int loc = _gl.GetUniformLocation(p.Handle, name); if (loc >= 0) _gl.Uniform3(loc, x, y, z); }
+    { int loc = p.UniformLocation(name); if (loc >= 0) _gl.Uniform3(loc, x, y, z); }
     private void SetFloat(ShaderProgram p, string name, float v)
-    { int loc = _gl.GetUniformLocation(p.Handle, name); if (loc >= 0) _gl.Uniform1(loc, v); }
+    { int loc = p.UniformLocation(name); if (loc >= 0) _gl.Uniform1(loc, v); }
     private void SetInt(ShaderProgram p, string name, int v)
-    { int loc = _gl.GetUniformLocation(p.Handle, name); if (loc >= 0) _gl.Uniform1(loc, v); }
+    { int loc = p.UniformLocation(name); if (loc >= 0) _gl.Uniform1(loc, v); }
+
+    private void SetSectionUniforms(ShaderProgram p)
+    {
+        int count = System.Math.Min(SectionPlanes.Count, 8);
+        int countLoc = p.UniformLocation("uSectionPlaneCount");
+        if (countLoc >= 0)
+            _gl.Uniform1(countLoc, count);
+
+        int planesLoc = p.UniformArrayLocation("uSectionPlanes");
+        if (planesLoc < 0 || count <= 0)
+            return;
+
+        float[] values = new float[32];
+        for (int i = 0; i < count; i++)
+        {
+            GlesSectionPlane plane = SectionPlanes[i];
+            int offset = i * 4;
+            values[offset + 0] = plane.NormalX;
+            values[offset + 1] = plane.NormalY;
+            values[offset + 2] = plane.NormalZ;
+            values[offset + 3] = plane.Offset;
+        }
+
+        unsafe
+        {
+            fixed (float* ptr = values)
+                _gl.Uniform4(planesLoc, (uint)count, ptr);
+        }
+    }
 
     private void DestroyResources()
     {
@@ -158,6 +191,7 @@ public sealed class GlesOutlineRenderer : IDisposable
     {
         DestroyResources();
         if (_fullscreenVao != 0) _gl.DeleteVertexArray(_fullscreenVao);
+        if (_fullscreenVbo != 0) _gl.DeleteBuffer(_fullscreenVbo);
         _maskProgram.Dispose();
         _outlineProgram.Dispose();
     }

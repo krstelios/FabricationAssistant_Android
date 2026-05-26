@@ -1,0 +1,16 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="@color/fa_toolbar_icon_accent"
+        android:pathData="M12,12.5L19,8.5V16L12,20Z" />
+    <path
+        android:fillColor="@android:color/transparent"
+        android:strokeColor="@color/fa_toolbar_icon_main"
+        android:strokeWidth="1.6"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M12,4.5L19,8.5V16L12,20L5,16V8.5Z" />
+</vector>

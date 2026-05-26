@@ -1,28 +1,32 @@
 using FabricationAssistant.Core.Camera;
+using FabricationAssistant.Core.Math;
 using Silk.NET.OpenGLES;
 
 namespace FabricationAssistant.Rendering.Gles;
 
 /// <summary>
-/// Screen-space ambient occlusion: samples the normal + depth textures
-/// produced by <see cref="GlesNormalDepthRenderer"/>, computes per-pixel
-/// occlusion via a hemispherical kernel rotated by a 4x4 noise texture,
-/// then bilaterally blurs (depth + normal weighted) into a final R8 texture.
-/// Algorithm and uniform set are a direct port of the desktop's
-/// ssao.frag.glsl + ssao_blur.frag.glsl.
+/// Screen-space ambient occlusion. The shader pair is shared in structure with
+/// the desktop renderer, while the Android texture formats stay GLES-friendly.
 /// </summary>
 public sealed class GlesSsaoRenderer : IDisposable
 {
-    private const int KernelSize = 32;       // Below the shader's 96-cap so per-frame work stays affordable on tablet GPUs.
-    private const int BlurRadius = 6;        // Below the shader's 25-cap for Gaussian weights.
+    private const int MaxKernelSamples = 96;
+    private const int MaxBlurKernelRadius = 24;
     private const int NoiseTextureSize = 4;
 
     private readonly GL _gl;
     private readonly ShaderProgram _ssaoProgram;
     private readonly ShaderProgram _blurProgram;
     private readonly uint _fullscreenVao;
-    private readonly float[] _kernel;          // KernelSize * 4 floats (vec4 alignment per std140-ish habit)
-    private readonly float[] _gaussian;        // BlurRadius + 1 floats
+    private readonly uint _fullscreenVbo;
+    private readonly float[] _kernel;
+    private readonly float[] _gaussianWeights = new float[MaxBlurKernelRadius + 1];
+    private readonly float[] _projectionScratch = new float[16];
+    private readonly int _samplesLocation;
+    private readonly int _gaussianWeightsLocation;
+    private int _gaussianWeightsRadius = -1;
+    private int _uploadedGaussianWeightsRadius = -1;
+    private bool _kernelUploaded;
     private uint _noiseTexture;
 
     private uint _ssaoFbo;
@@ -35,16 +39,18 @@ public sealed class GlesSsaoRenderer : IDisposable
     private int _height;
 
     public uint AoTexture { get; private set; }
+    public GlesSsaoRenderInfo LastRenderInfo { get; private set; }
 
     public GlesSsaoRenderer(GL gl, string fullscreenVert, string ssaoFrag, string blurFrag)
     {
         _gl = gl ?? throw new ArgumentNullException(nameof(gl));
         _ssaoProgram = new ShaderProgram(_gl, "ssao", fullscreenVert, ssaoFrag);
         _blurProgram = new ShaderProgram(_gl, "ssao_blur", fullscreenVert, blurFrag);
-        _fullscreenVao = _gl.GenVertexArray();
-        _kernel = BuildKernel();
-        _gaussian = BuildGaussianWeights(BlurRadius, sigma: 2.0f);
+        (_fullscreenVao, _fullscreenVbo) = GlesFullscreenTriangle.Create(_gl);
+        _kernel = BuildKernel(MaxKernelSamples);
         _noiseTexture = BuildNoiseTexture();
+        _samplesLocation = GetArrayUniformLocation(_ssaoProgram, "uSamples");
+        _gaussianWeightsLocation = GetArrayUniformLocation(_blurProgram, "uGaussianWeights");
     }
 
     public void Resize(int width, int height)
@@ -55,45 +61,75 @@ public sealed class GlesSsaoRenderer : IDisposable
         _width = width;
         _height = height;
 
-        _ssaoTex = MakeR8Texture(width, height);
+        _ssaoTex = MakeAoTexture(width, height);
         _ssaoFbo = MakeFboAround(_ssaoTex, "ssao");
-        _blurTexA = MakeR8Texture(width, height);
+        _blurTexA = MakeAoTexture(width, height);
         _blurFboA = MakeFboAround(_blurTexA, "ssao.blurA");
-        _blurTexB = MakeR8Texture(width, height);
+        _blurTexB = MakeAoTexture(width, height);
         _blurFboB = MakeFboAround(_blurTexB, "ssao.blurB");
-        AoTexture = _blurTexB;
+        AoTexture = _ssaoFbo != 0 ? _ssaoTex : 0;
     }
 
     /// <summary>
     /// Runs the SSAO pass against the supplied normal + depth textures, then
-    /// N x 2 bilateral blur passes (horizontal then vertical). Final AO ends
-    /// up in <see cref="AoTexture"/> for the mesh shader to sample.
+    /// optional horizontal/vertical bilateral blur passes.
     /// </summary>
     public void Render(
         uint normalTexture,
         uint depthTexture,
+        float linearDepthMin,
+        float linearDepthMax,
         CameraState camera,
-        SceneAppearance appearance)
+        BoundingBox sceneBounds,
+        SceneAppearance appearance,
+        bool collectDiagnostics = false)
     {
+        LastRenderInfo = default;
         if (_ssaoFbo == 0 || normalTexture == 0 || depthTexture == 0) return;
+        if (linearDepthMax <= linearDepthMin)
+            linearDepthMax = linearDepthMin + 1f;
 
         float aspect = (float)_width / _height;
-        var proj = ViewportCameraMath.ProjectionMatrix(camera, aspect);
+        ViewportCameraMath.FillProjectionMatrix(camera, aspect, _projectionScratch);
 
-        // Extract the projection-decomposition uniforms the SSAO shader
-        // needs to reconstruct view positions from depth. ViewportCameraMath
-        // emits a row-major float[16]; proj[row][col] = arr[row * 4 + col].
-        float scaleX = proj[0];
-        float scaleY = proj[5];
-        float offsetX = proj[8];
-        float offsetY = proj[9];
-        float depthA = proj[10];
-        float depthB = proj[11];
+        // ViewportCameraMath emits row-major float[16].
+        float scaleX = _projectionScratch[0];
+        float scaleY = _projectionScratch[5];
+        float offsetX = _projectionScratch[2];
+        float offsetY = _projectionScratch[6];
+        float depthA = _projectionScratch[10];
+        float depthB = _projectionScratch[11];
 
-        // SSAO pass
+        float sceneDiagonal = GetSceneDiagonal(sceneBounds);
+        float radius = ClampPositive(appearance.AoRadius * sceneDiagonal, sceneDiagonal * 0.00005f);
+        float bias = System.Math.Max(0.0f, appearance.AoBias * sceneDiagonal);
+        float maxDistance = ClampPositive(appearance.AoMaxDistance * sceneDiagonal, radius);
+        float fadeStart = System.Math.Max(0.0f, appearance.AoFadeStart * sceneDiagonal);
+        float fadeEnd = System.Math.Max(fadeStart + radius, appearance.AoFadeEnd * sceneDiagonal);
+        float cameraSceneDistance = GetCameraSceneDistance(camera, sceneBounds);
+        if (cameraSceneDistance > 0f)
+        {
+            float visibilityPad = System.Math.Max(sceneDiagonal * 0.75f, radius * 8f);
+            if (fadeStart < cameraSceneDistance)
+                fadeStart = cameraSceneDistance + radius * 2f;
+            if (fadeEnd < fadeStart + visibilityPad)
+                fadeEnd = fadeStart + visibilityPad;
+            if (maxDistance < fadeEnd)
+                maxDistance = fadeEnd;
+        }
+        int sampleCount = System.Math.Clamp(appearance.AoSampleCount, 1, MaxKernelSamples);
+        int blurRadius = System.Math.Clamp(appearance.AoBlurRadius, 0, MaxBlurKernelRadius);
+        int blurPassCount = System.Math.Clamp(appearance.AoBlurPasses, 0, 8);
+        float intensity = System.Math.Max(0.0f, appearance.AoIntensity);
+
         _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _ssaoFbo);
         _gl.Viewport(0, 0, (uint)_width, (uint)_height);
+        _gl.ClearColor(1.0f, 1.0f, 1.0f, 1.0f);
+        _gl.Clear((uint)ClearBufferMask.ColorBufferBit);
         _gl.Disable(EnableCap.DepthTest);
+        _gl.Disable(EnableCap.Blend);
+        _gl.Disable(EnableCap.CullFace);
+        _gl.DepthMask(false);
 
         _ssaoProgram.Use();
         _gl.ActiveTexture(TextureUnit.Texture0);
@@ -111,65 +147,95 @@ public sealed class GlesSsaoRenderer : IDisposable
         SetVec2(_ssaoProgram, "uInvProjectionScale",
             scaleX != 0 ? 1f / scaleX : 0f,
             scaleY != 0 ? 1f / scaleY : 0f);
-        // Forward proj: ndc.x = -scaleX * viewX/viewZ - offsetX; uv = (ndc + 1)/2
-        // so uv = (-scaleX/2) * (viewX/viewZ) + (1 - offsetX) / 2.
         SetVec2(_ssaoProgram, "uProjectionUvScale", -scaleX * 0.5f, -scaleY * 0.5f);
         SetVec2(_ssaoProgram, "uProjectionUvBias", 0.5f - offsetX * 0.5f, 0.5f - offsetY * 0.5f);
-        SetVec2(_ssaoProgram, "uNoiseScaleClamped", (float)_width / NoiseTextureSize, (float)_height / NoiseTextureSize);
+        SetVec2(_ssaoProgram, "uNoiseScaleClamped",
+            MathF.Max(_width / (float)NoiseTextureSize * appearance.AoNoiseScale, 0.05f),
+            MathF.Max(_height / (float)NoiseTextureSize * appearance.AoNoiseScale, 0.05f));
+        SetVec2(_ssaoProgram, "uLinearDepthRange", linearDepthMin, linearDepthMax);
+        SetInt(_ssaoProgram, "uIsPerspective", camera.IsPerspective ? 1 : 0);
 
-        SetInt(_ssaoProgram, "uSampleCount", KernelSize);
-        SetFloat(_ssaoProgram, "uRadius", appearance.AoRadius);
-        SetFloat(_ssaoProgram, "uBias", appearance.AoBias);
-        SetFloat(_ssaoProgram, "uPlaneWeightRange", 0.10f);
-        SetFloat(_ssaoProgram, "uIntensity", appearance.AoIntensity);
-        SetFloat(_ssaoProgram, "uPower", 1.0f);
-        SetFloat(_ssaoProgram, "uContrast", 1.0f);
-        SetFloat(_ssaoProgram, "uMaxDistance", 0f);
-        SetFloat(_ssaoProgram, "uFadeStart", 0f);
-        SetFloat(_ssaoProgram, "uFadeEnd", 0f);
+        SetInt(_ssaoProgram, "uSampleCount", sampleCount);
+        SetFloat(_ssaoProgram, "uRadius", radius);
+        SetFloat(_ssaoProgram, "uBias", bias);
+        SetFloat(_ssaoProgram, "uPlaneWeightRange", MathF.Max(radius * 0.08f, bias));
+        SetFloat(_ssaoProgram, "uIntensity", intensity);
+        SetFloat(_ssaoProgram, "uPower", System.Math.Max(0.05f, appearance.AoPower));
+        SetFloat(_ssaoProgram, "uContrast", System.Math.Max(0.0f, appearance.AoContrast));
+        SetFloat(_ssaoProgram, "uMaxDistance", maxDistance);
+        SetFloat(_ssaoProgram, "uFadeStart", fadeStart);
+        SetFloat(_ssaoProgram, "uFadeEnd", fadeEnd);
 
-        // GLSL spec guarantees consecutive locations for array elements -
-        // upload one vec4 at a time from the first element's location. Avoids
-        // pinning the array and Silk.NET overload-resolution pitfalls.
-        int kernelLoc = _gl.GetUniformLocation(_ssaoProgram.Handle, "uSamples[0]");
-        if (kernelLoc >= 0)
+        if (!_kernelUploaded)
         {
-            for (int i = 0; i < KernelSize; i++)
-            {
-                _gl.Uniform4(kernelLoc + i,
-                    _kernel[i * 4 + 0],
-                    _kernel[i * 4 + 1],
-                    _kernel[i * 4 + 2],
-                    _kernel[i * 4 + 3]);
-            }
+            UploadVec4Array(_samplesLocation, _kernel, MaxKernelSamples);
+            _kernelUploaded = true;
         }
 
         DrawFullscreen();
+        GLEnum renderError = _gl.GetError();
+        GlesSsaoTextureStats rawStats = collectDiagnostics ? ReadAoStats(_ssaoFbo) : default;
 
-        // Bilateral blur passes
+        if (!appearance.AoBlurEnabled || blurRadius <= 0 || blurPassCount <= 0 || _blurFboA == 0 || _blurFboB == 0)
+        {
+            AoTexture = _ssaoTex;
+            LastRenderInfo = new GlesSsaoRenderInfo(
+                true,
+                _width,
+                _height,
+                sampleCount,
+                radius,
+                bias,
+                intensity,
+                maxDistance,
+                fadeStart,
+                fadeEnd,
+                cameraSceneDistance,
+                sceneDiagonal,
+                camera.IsPerspective,
+                false,
+                blurRadius,
+                blurPassCount,
+                AoTexture,
+                linearDepthMin,
+                linearDepthMax,
+                rawStats,
+                rawStats,
+                renderError);
+            _gl.DepthMask(true);
+            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+            return;
+        }
+
         _blurProgram.Use();
         SetVec2(_blurProgram, "uTexelSize", 1f / _width, 1f / _height);
         SetInt(_blurProgram, "uAoTexture", 0);
         SetInt(_blurProgram, "uNormalTexture", 1);
         SetInt(_blurProgram, "uDepthTexture", 2);
-        SetInt(_blurProgram, "uRadius", BlurRadius);
-        SetFloat(_blurProgram, "uSharpness", 8f);
+        SetInt(_blurProgram, "uRadius", blurRadius);
+        SetInt(_blurProgram, "uIsPerspective", camera.IsPerspective ? 1 : 0);
+        SetFloat(_blurProgram, "uSharpness", System.Math.Max(0.0f, appearance.AoBlurSharpness));
 
-        int gaussLoc = _gl.GetUniformLocation(_blurProgram.Handle, "uGaussianWeights[0]");
-        if (gaussLoc >= 0)
+        float[] weights = GetGaussianWeights(blurRadius);
+        if (_uploadedGaussianWeightsRadius != blurRadius)
         {
-            for (int i = 0; i < _gaussian.Length; i++)
-                _gl.Uniform1(gaussLoc + i, _gaussian[i]);
+            UploadFloatArray(_gaussianWeightsLocation, weights, blurRadius + 1);
+            _uploadedGaussianWeightsRadius = blurRadius;
         }
 
         uint srcTex = _ssaoTex;
         uint dstFbo = _blurFboA;
         uint dstTex = _blurTexA;
-        int totalPasses = System.Math.Max(appearance.AoBlurPasses, 1) * 2;
+        int totalPasses = blurPassCount * 2;
         for (int i = 0; i < totalPasses; i++)
         {
             _gl.BindFramebuffer(FramebufferTarget.Framebuffer, dstFbo);
             _gl.Viewport(0, 0, (uint)_width, (uint)_height);
+            _gl.Disable(EnableCap.DepthTest);
+            _gl.Disable(EnableCap.Blend);
+            _gl.Disable(EnableCap.CullFace);
+            _gl.DepthMask(false);
+
             _gl.ActiveTexture(TextureUnit.Texture0);
             _gl.BindTexture(TextureTarget.Texture2D, srcTex);
             _gl.ActiveTexture(TextureUnit.Texture1);
@@ -185,19 +251,88 @@ public sealed class GlesSsaoRenderer : IDisposable
             if (dstFbo == _blurFboA) { dstFbo = _blurFboB; dstTex = _blurTexB; }
             else { dstFbo = _blurFboA; dstTex = _blurTexA; }
         }
-        AoTexture = srcTex;
 
+        AoTexture = srcTex;
+        uint finalFbo = srcTex == _blurTexA ? _blurFboA : _blurFboB;
+        if (renderError == GLEnum.NoError)
+            renderError = _gl.GetError();
+        GlesSsaoTextureStats finalStats = collectDiagnostics ? ReadAoStats(finalFbo) : default;
+        LastRenderInfo = new GlesSsaoRenderInfo(
+            true,
+            _width,
+            _height,
+            sampleCount,
+            radius,
+            bias,
+            intensity,
+            maxDistance,
+            fadeStart,
+            fadeEnd,
+            cameraSceneDistance,
+            sceneDiagonal,
+            camera.IsPerspective,
+            true,
+            blurRadius,
+            blurPassCount,
+            AoTexture,
+            linearDepthMin,
+            linearDepthMax,
+            rawStats,
+            finalStats,
+            renderError);
+        _gl.DepthMask(true);
         _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+    }
+
+    private unsafe GlesSsaoTextureStats ReadAoStats(uint fbo)
+    {
+        if (fbo == 0 || _width <= 0 || _height <= 0)
+            return default;
+
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, fbo);
+
+        const int roiSize = 32;
+        int roiWidth = System.Math.Min(roiSize, _width);
+        int roiHeight = System.Math.Min(roiSize, _height);
+        int x0 = System.Math.Max(0, (_width - roiWidth) / 2);
+        int y0 = System.Math.Max(0, (_height - roiHeight) / 2);
+        var pixels = new byte[roiWidth * roiHeight];
+        fixed (byte* p = pixels)
+        {
+            _gl.ReadPixels(x0, y0, (uint)roiWidth, (uint)roiHeight, PixelFormat.Red, PixelType.UnsignedByte, p);
+        }
+
+        byte min = byte.MaxValue;
+        byte max = byte.MinValue;
+        int sum = 0;
+        int count = pixels.Length;
+        for (int i = 0; i < pixels.Length; i++)
+        {
+            byte value = pixels[i];
+            min = System.Math.Min(min, value);
+            max = System.Math.Max(max, value);
+            sum += value;
+        }
+
+        int centerX = System.Math.Clamp(_width / 2 - x0, 0, roiWidth - 1);
+        int centerY = System.Math.Clamp(_height / 2 - y0, 0, roiHeight - 1);
+        byte center = pixels[centerY * roiWidth + centerX];
+        var error = _gl.GetError();
+        return new GlesSsaoTextureStats(
+            count > 0 && error == GLEnum.NoError,
+            min,
+            max,
+            count > 0 ? sum / (float)count : 0f,
+            center,
+            error);
     }
 
     private void DrawFullscreen()
     {
-        _gl.BindVertexArray(_fullscreenVao);
-        _gl.DrawArrays(PrimitiveType.Triangles, 0, 3);
-        _gl.BindVertexArray(0);
+        GlesFullscreenTriangle.Draw(_gl, _fullscreenVao);
     }
 
-    private unsafe uint MakeR8Texture(int w, int h)
+    private unsafe uint MakeAoTexture(int w, int h)
     {
         uint tex = _gl.GenTexture();
         _gl.BindTexture(TextureTarget.Texture2D, tex);
@@ -218,75 +353,60 @@ public sealed class GlesSsaoRenderer : IDisposable
         _gl.BindFramebuffer(FramebufferTarget.Framebuffer, fbo);
         _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.ColorAttachment0,
             TextureTarget.Texture2D, colorTex, 0);
-        var st = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
-        if (st != GLEnum.FramebufferComplete)
-            Android.Util.Log.Error("FA.Ssao", $"{label} FBO incomplete: 0x{(int)st:X4}");
-        return fbo;
+        var status = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+        if (status == GLEnum.FramebufferComplete)
+            return fbo;
+
+        Android.Util.Log.Error("FA.Ssao", $"{label} FBO incomplete: 0x{(int)status:X4}");
+        _gl.DeleteFramebuffer(fbo);
+        return 0;
     }
 
-    /// <summary>
-    /// Cosine-weighted hemisphere kernel - same shape as the desktop. Stored
-    /// as vec4 with .w = 0 to match the shader's uSamples[96] declaration.
-    /// </summary>
-    private static float[] BuildKernel()
+    private static float[] BuildKernel(int count)
     {
-        var rng = new Random(1337);
-        var k = new float[KernelSize * 4];
-        for (int i = 0; i < KernelSize; i++)
+        var random = new Random(9247);
+        var data = new float[count * 4];
+        for (int i = 0; i < count; i++)
         {
-            float x = (float)(rng.NextDouble() * 2.0 - 1.0);
-            float y = (float)(rng.NextDouble() * 2.0 - 1.0);
-            float z = (float)rng.NextDouble();
-            float len = MathF.Sqrt(x * x + y * y + z * z);
-            if (len < 1e-4f) { x = 0; y = 0; z = 1; len = 1; }
-            x /= len; y /= len; z /= len;
-            // Scale samples toward the centre so close samples weigh more.
-            float scale = (float)i / KernelSize;
-            scale = 0.1f + scale * scale * 0.9f;
-            k[i * 4 + 0] = x * scale;
-            k[i * 4 + 1] = y * scale;
-            k[i * 4 + 2] = z * scale;
-            k[i * 4 + 3] = 0f;
+            double x = random.NextDouble() * 2.0 - 1.0;
+            double y = random.NextDouble() * 2.0 - 1.0;
+            double z = random.NextDouble();
+            double length = System.Math.Sqrt(x * x + y * y + z * z);
+            if (length < 1e-7)
+            {
+                x = 0.0;
+                y = 0.0;
+                z = 1.0;
+                length = 1.0;
+            }
+
+            double scale = (double)i / count;
+            scale = 0.1 + 0.9 * scale * scale;
+            double randomRadius = 0.35 + random.NextDouble() * 0.65;
+            data[i * 4] = (float)(x / length * scale * randomRadius);
+            data[i * 4 + 1] = (float)(y / length * scale * randomRadius);
+            data[i * 4 + 2] = (float)(z / length * scale * randomRadius);
+            data[i * 4 + 3] = 0.0f;
         }
-        return k;
+
+        return data;
     }
 
-    /// <summary>
-    /// 1D Gaussian weights for the bilateral blur. weights[i] = exp(-i^2 / (2*sigma^2)).
-    /// Length = radius + 1 (the shader indexes by abs(offset)).
-    /// </summary>
-    private static float[] BuildGaussianWeights(int radius, float sigma)
-    {
-        var w = new float[radius + 1];
-        float sum = 0f;
-        for (int i = 0; i <= radius; i++)
-        {
-            w[i] = MathF.Exp(-(i * i) / (2f * sigma * sigma));
-            sum += i == 0 ? w[i] : 2f * w[i];
-        }
-        for (int i = 0; i <= radius; i++) w[i] /= sum;
-        return w;
-    }
-
-    /// <summary>
-    /// 4x4 RGB8 noise texture - random unit vectors with z = 0 in the
-    /// tangent plane. Stored as [0, 1] and remapped to [-1, 1] in the shader.
-    /// </summary>
     private unsafe uint BuildNoiseTexture()
     {
-        var rng = new Random(42);
+        var random = new Random(7301);
         var data = new byte[NoiseTextureSize * NoiseTextureSize * 3];
         for (int i = 0; i < NoiseTextureSize * NoiseTextureSize; i++)
         {
-            float x = (float)(rng.NextDouble() * 2.0 - 1.0);
-            float y = (float)(rng.NextDouble() * 2.0 - 1.0);
-            float len = MathF.Sqrt(x * x + y * y);
-            if (len < 1e-4f) { x = 1; y = 0; len = 1; }
-            x /= len; y /= len;
-            data[i * 3 + 0] = (byte)((x * 0.5f + 0.5f) * 255f);
-            data[i * 3 + 1] = (byte)((y * 0.5f + 0.5f) * 255f);
-            data[i * 3 + 2] = 128; // z = 0 in [-1, 1] -> 0.5 in [0, 1]
+            double angle = random.NextDouble() * System.Math.PI * 2.0;
+            float x = (float)System.Math.Cos(angle);
+            float y = (float)System.Math.Sin(angle);
+            data[i * 3] = ToUnormByte(x);
+            data[i * 3 + 1] = ToUnormByte(y);
+            data[i * 3 + 2] = 128;
         }
+
         uint tex = _gl.GenTexture();
         _gl.BindTexture(TextureTarget.Texture2D, tex);
         fixed (byte* p = data)
@@ -303,12 +423,73 @@ public sealed class GlesSsaoRenderer : IDisposable
         return tex;
     }
 
+    private float[] GetGaussianWeights(int radius)
+    {
+        radius = System.Math.Clamp(radius, 1, MaxBlurKernelRadius);
+        if (_gaussianWeightsRadius == radius)
+            return _gaussianWeights;
+
+        Array.Clear(_gaussianWeights);
+        float radiusScale = radius;
+        for (int offset = 0; offset <= radius; offset++)
+        {
+            float x = offset / radiusScale;
+            _gaussianWeights[offset] = MathF.Exp(-x * x * 2.0f);
+        }
+
+        _gaussianWeightsRadius = radius;
+        return _gaussianWeights;
+    }
+
+    private static float GetSceneDiagonal(BoundingBox bounds)
+        => bounds.IsValid && bounds.Diagonal > 0.0 ? (float)bounds.Diagonal : 1.0f;
+
+    private static float GetCameraSceneDistance(CameraState camera, BoundingBox bounds)
+        => bounds.IsValid
+            ? (float)Vector3d.Distance(camera.Position, bounds.Center)
+            : (float)camera.Distance;
+
+    private static float ClampPositive(float value, float fallback)
+        => value > 1e-7f ? value : fallback;
+
+    private static byte ToUnormByte(float signedUnit)
+        => (byte)System.Math.Clamp((int)System.Math.Round((signedUnit * 0.5f + 0.5f) * 255.0f), 0, 255);
+
     private void SetVec2(ShaderProgram p, string name, float x, float y)
-    { int loc = _gl.GetUniformLocation(p.Handle, name); if (loc >= 0) _gl.Uniform2(loc, x, y); }
+    { int loc = p.UniformLocation(name); if (loc >= 0) _gl.Uniform2(loc, x, y); }
     private void SetFloat(ShaderProgram p, string name, float v)
-    { int loc = _gl.GetUniformLocation(p.Handle, name); if (loc >= 0) _gl.Uniform1(loc, v); }
+    { int loc = p.UniformLocation(name); if (loc >= 0) _gl.Uniform1(loc, v); }
     private void SetInt(ShaderProgram p, string name, int v)
-    { int loc = _gl.GetUniformLocation(p.Handle, name); if (loc >= 0) _gl.Uniform1(loc, v); }
+    { int loc = p.UniformLocation(name); if (loc >= 0) _gl.Uniform1(loc, v); }
+
+    private unsafe void UploadVec4Array(int loc, float[] values, int count)
+    {
+        if (count <= 0 || values.Length < count * 4)
+            return;
+
+        if (loc < 0)
+            return;
+
+        fixed (float* ptr = values)
+            _gl.Uniform4(loc, (uint)count, ptr);
+    }
+
+    private unsafe void UploadFloatArray(int loc, float[] values, int count)
+    {
+        if (count <= 0 || values.Length < count)
+            return;
+
+        if (loc < 0)
+            return;
+
+        fixed (float* ptr = values)
+            _gl.Uniform1(loc, (uint)count, ptr);
+    }
+
+    private int GetArrayUniformLocation(ShaderProgram p, string name)
+    {
+        return p.UniformArrayLocation(name);
+    }
 
     private void DestroyResources()
     {
@@ -319,6 +500,7 @@ public sealed class GlesSsaoRenderer : IDisposable
         if (_blurTexA != 0) { _gl.DeleteTexture(_blurTexA); _blurTexA = 0; }
         if (_blurTexB != 0) { _gl.DeleteTexture(_blurTexB); _blurTexB = 0; }
         AoTexture = 0;
+        LastRenderInfo = default;
         _width = 0;
         _height = 0;
     }
@@ -327,8 +509,41 @@ public sealed class GlesSsaoRenderer : IDisposable
     {
         DestroyResources();
         if (_fullscreenVao != 0) _gl.DeleteVertexArray(_fullscreenVao);
+        if (_fullscreenVbo != 0) _gl.DeleteBuffer(_fullscreenVbo);
         if (_noiseTexture != 0) _gl.DeleteTexture(_noiseTexture);
         _ssaoProgram.Dispose();
         _blurProgram.Dispose();
     }
 }
+
+public readonly record struct GlesSsaoRenderInfo(
+    bool Rendered,
+    int Width,
+    int Height,
+    int SampleCount,
+    float Radius,
+    float Bias,
+    float Intensity,
+    float MaxDistance,
+    float FadeStart,
+    float FadeEnd,
+    float CameraSceneDistance,
+    float SceneDiagonal,
+    bool IsPerspective,
+    bool BlurEnabled,
+    int BlurRadius,
+    int BlurPasses,
+    uint AoTexture,
+    float LinearDepthMin,
+    float LinearDepthMax,
+    GlesSsaoTextureStats RawTextureStats,
+    GlesSsaoTextureStats TextureStats,
+    GLEnum RenderError);
+
+public readonly record struct GlesSsaoTextureStats(
+    bool Valid,
+    byte Min,
+    byte Max,
+    float Average,
+    byte Center,
+    GLEnum ReadError);

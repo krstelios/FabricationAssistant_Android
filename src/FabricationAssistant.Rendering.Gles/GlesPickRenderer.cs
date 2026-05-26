@@ -22,6 +22,15 @@ public sealed class GlesPickRenderer : IDisposable
     private uint _depthRb;
     private int _width;
     private int _height;
+    private HashSet<int> _xrayBackgroundNodeIdLookup = new();
+    public IReadOnlyList<GlesSectionPlane> SectionPlanes { get; set; } = Array.Empty<GlesSectionPlane>();
+
+    public IReadOnlyList<int> XrayBackgroundNodeIds
+    {
+        set => _xrayBackgroundNodeIdLookup = value is null
+            ? new HashSet<int>()
+            : value.ToHashSet();
+    }
 
     public GlesPickRenderer(GL gl, string vertSource, string fragSource)
     {
@@ -91,6 +100,9 @@ public sealed class GlesPickRenderer : IDisposable
         {
             Android.Util.Log.Error("FA.Pick",
                 $"Pick FBO incomplete: 0x{(int)status:X4} ({width}x{height})");
+            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+            DestroyResources();
+            return;
         }
         _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
     }
@@ -124,11 +136,15 @@ public sealed class GlesPickRenderer : IDisposable
 
         SetMat4("uView", view);
         SetMat4("uProjection", proj);
+        SetSectionUniforms(_program);
 
         int modelLoc = _gl.GetUniformLocation(_program.Handle, "uModel");
         int indexLoc = _gl.GetUniformLocation(_program.Handle, "uMeshIndex");
         foreach (var mesh in scene.Meshes)
         {
+            if (!mesh.Visible && !IsXrayBackgroundMesh(mesh))
+                continue;
+
             float[] model = mesh.WorldTransform ?? identity;
             if (modelLoc >= 0)
                 _gl.UniformMatrix4(modelLoc, true, model);
@@ -153,11 +169,43 @@ public sealed class GlesPickRenderer : IDisposable
         return pixel == 0u ? null : (int)pixel;
     }
 
+    private bool IsXrayBackgroundMesh(GpuMesh mesh)
+        => mesh.SourceNodeId >= 0 && _xrayBackgroundNodeIdLookup.Contains(mesh.SourceNodeId);
+
     private void SetMat4(string name, float[] m)
     {
         int loc = _gl.GetUniformLocation(_program.Handle, name);
         if (loc < 0) return;
         _gl.UniformMatrix4(loc, true, m);
+    }
+
+    private void SetSectionUniforms(ShaderProgram program)
+    {
+        int count = System.Math.Min(SectionPlanes.Count, 8);
+        int countLoc = program.UniformLocation("uSectionPlaneCount");
+        if (countLoc >= 0)
+            _gl.Uniform1(countLoc, count);
+
+        int planesLoc = program.UniformArrayLocation("uSectionPlanes");
+        if (planesLoc < 0 || count <= 0)
+            return;
+
+        float[] values = new float[32];
+        for (int i = 0; i < count; i++)
+        {
+            GlesSectionPlane plane = SectionPlanes[i];
+            int offset = i * 4;
+            values[offset + 0] = plane.NormalX;
+            values[offset + 1] = plane.NormalY;
+            values[offset + 2] = plane.NormalZ;
+            values[offset + 3] = plane.Offset;
+        }
+
+        unsafe
+        {
+            fixed (float* ptr = values)
+                _gl.Uniform4(planesLoc, (uint)count, ptr);
+        }
     }
 
     private void DestroyResources()

@@ -39,12 +39,28 @@ uniform vec2 uViewportInvSize;
 // outline post-process is the only selection visual).
 uniform int uMeshIndex;
 uniform int uSelectedMeshIndex;
+uniform int uHoveredMeshIndex;
 uniform vec3 uHighlightColor;
+uniform vec3 uHoverColor;
+uniform float uHoverTintStrength;
+
+const int MAX_SECTION_PLANES = 8;
+uniform int uSectionPlaneCount;
+uniform vec4 uSectionPlanes[MAX_SECTION_PLANES];
 
 out vec4 FragColor;
 
 void main()
 {
+    for (int i = 0; i < MAX_SECTION_PLANES; i++)
+    {
+        if (i >= uSectionPlaneCount)
+            break;
+        vec4 plane = uSectionPlanes[i];
+        if (dot(plane.xyz, vWorldPos) < plane.w)
+            discard;
+    }
+
     vec3 normal = normalize(vNormal);
     // Back-face flip: section cuts + double-sided meshes expose back faces
     // (gl_FrontFacing == false). Flipping prevents them from collapsing to
@@ -105,9 +121,13 @@ void main()
 
     color = mix(color, uTintColor, clamp(uTintStrength, 0.0, 1.0));
 
-    // Inline selection highlight (kept as fallback when OutlineEnabled is
-    // false; the host writes uSelectedMeshIndex = 0 when the post-process
-    // outline pass is on).
+    if (uHoveredMeshIndex != 0 && uMeshIndex == uHoveredMeshIndex)
+    {
+        color = mix(color, uHoverColor, clamp(uHoverTintStrength, 0.0, 1.0));
+    }
+
+    // Inline selection highlight stays on so selected bodies remain visible
+    // even when the post-process outline is subtle on mobile displays.
     if (uSelectedMeshIndex != 0 && uMeshIndex == uSelectedMeshIndex)
     {
         color = mix(color, uHighlightColor, 0.45) + uHighlightColor * 0.10;

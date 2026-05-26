@@ -14,6 +14,10 @@
   <Import Project="AndroidPlatformExclusions.targets" />
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\**\*.cs"
              Exclude="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\bin\**\*.cs;$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\obj\**\*.cs"
              LinkBase="Linked" />

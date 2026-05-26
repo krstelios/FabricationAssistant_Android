@@ -4,7 +4,7 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:background="@color/md_theme_surface">
+    android:background="@color/fa_surface_background">
 
     <TextView
         android:id="@+id/propertiesTitle"
@@ -17,7 +17,7 @@
     <com.google.android.material.divider.MaterialDivider
         android:layout_width="match_parent"
         android:layout_height="1dp"
-        app:dividerColor="@color/md_theme_surfaceVariant" />
+        app:dividerColor="@color/fa_border" />
 
     <TextView
         android:id="@+id/propertiesEmptyState"
@@ -26,5 +26,25 @@
         android:text="@string/properties_empty"
         android:textAppearance="@style/FA.TextAppearance.Caption"
         android:padding="@dimen/fa_space_l" />
+
+    <ScrollView
+        android:id="@+id/propertiesScroll"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="false"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:id="@+id/propertiesContent"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingStart="@dimen/fa_space_l"
+            android:paddingTop="@dimen/fa_space_m"
+            android:paddingEnd="@dimen/fa_space_l"
+            android:paddingBottom="@dimen/fa_space_l" />
+
+    </ScrollView>
 
 </LinearLayout>

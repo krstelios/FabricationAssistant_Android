@@ -1,6 +1,9 @@
 using Android.Content;
 using FabricationAssistant.Core.Camera;
 using FabricationAssistant.Core.Runtime;
+using FabricationAssistant.Core.Sections;
+using FabricationAssistant.Core.Selection;
+using FabricationAssistant.Import.Fa;
 using FabricationAssistant.Platform;
 using FabricationAssistant.Platform.Android;
 using Microsoft.Extensions.DependencyInjection;
@@ -20,8 +23,15 @@ public static class AppServices
         services.AddSingleton<IPlatformPaths>(_ => new AndroidPlatformPaths(applicationContext));
         services.AddSingleton<ImportPipeline>();
         services.AddSingleton<CameraState>();
+        services.AddSingleton<SectionService>();
+        services.AddSingleton<PackageSessionState>();
+        services.AddSingleton<FaPackageQueryService>();
 
-        var provider = services.BuildServiceProvider(validateScopes: true);
+        var provider = services.BuildServiceProvider(new ServiceProviderOptions
+        {
+            ValidateScopes = true,
+            ValidateOnBuild = true,
+        });
 
         var paths = provider.GetRequiredService<IPlatformPaths>();
         FabricationAssistantPaths.Configure(

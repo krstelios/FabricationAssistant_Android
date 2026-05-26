@@ -33,72 +33,96 @@ public static class SceneUploader
 
         var meshes = new List<GpuMesh>(document.Nodes.Count);
 
-        // Files that come through without scene nodes (rare; just raw meshes)
-        // fall back to one identity-transformed GpuMesh per MeshDto so we
-        // still render something instead of a black viewport.
-        if (document.Nodes.Count == 0)
+        try
         {
-            for (int i = 0; i < document.Meshes.Count; i++)
+            // Files that come through without scene nodes (rare; just raw meshes)
+            // fall back to one identity-transformed GpuMesh per MeshDto so we
+            // still render something instead of a black viewport.
+            if (document.Nodes.Count == 0)
             {
-                var meshDto = document.Meshes[i];
+                for (int i = 0; i < document.Meshes.Count; i++)
+                {
+                    var meshDto = document.Meshes[i];
+                    var gpu = UploadOne(gl, meshDto, featureAngleDeg);
+                    gpu.MeshIndex = i + 1;
+                    gpu.SourceMeshId = i;
+                    gpu.SourceNodeId = -1;
+                    gpu.DiffuseColor = TryExtractRgba(meshDto.DefaultColor) ?? new[] { 0.7f, 0.7f, 0.7f, 1.0f };
+                    gpu.DoubleSided = meshDto.IsDoubleSided;
+                    gpu.WorldTransform = null;
+                    gpu.WorldNormalMatrix = null;
+                    gpu.HasMirroredHandedness = false;
+                    gpu.WorldCenter = meshDto.Bounds.IsValid ? meshDto.Bounds.Center : Vector3d.Zero;
+                    gpu.WorldBounds = meshDto.Bounds;
+                    meshes.Add(gpu);
+                }
+                return meshes;
+            }
+
+            int instance = 0;
+            foreach (var node in document.Nodes)
+            {
+                if (node.MeshId is not int meshId) continue;
+                if (meshId < 0 || meshId >= document.Meshes.Count) continue;
+
+                var meshDto = document.Meshes[meshId];
                 var gpu = UploadOne(gl, meshDto, featureAngleDeg);
-                gpu.MeshIndex = i + 1;
-                gpu.SourceMeshId = i;
-                gpu.DiffuseColor = TryExtractRgb(meshDto.DefaultColor) ?? new[] { 0.7f, 0.7f, 0.7f };
+                instance++;
+                gpu.MeshIndex = instance;
+                gpu.SourceMeshId = meshId;
+                gpu.SourceNodeId = node.Id;
+                gpu.DiffuseColor = TryExtractRgba(node.Color)
+                    ?? TryExtractRgba(meshDto.DefaultColor)
+                    ?? new[] { 0.7f, 0.7f, 0.7f, 1.0f };
                 gpu.DoubleSided = meshDto.IsDoubleSided;
-                gpu.WorldTransform = null;
-                gpu.HasMirroredHandedness = false;
-                gpu.WorldCenter = meshDto.Bounds.IsValid ? meshDto.Bounds.Center : Vector3d.Zero;
-                gpu.WorldBounds = meshDto.Bounds;
+                gpu.WorldTransform = TransposeColumnMajorToRowMajor(node.WorldTransform);
+                gpu.WorldNormalMatrix = gpu.WorldTransform is null
+                    ? null
+                    : GlesRenderUtil.NormalMatrixFromWorld(gpu.WorldTransform);
+                gpu.HasMirroredHandedness = GlesRenderUtil.HasMirroredHandedness(gpu.WorldTransform);
+                gpu.WorldCenter = ComputeWorldCenter(meshDto.Bounds, gpu.WorldTransform);
+                gpu.WorldBounds = ComputeWorldBounds(meshDto.Bounds, gpu.WorldTransform);
                 meshes.Add(gpu);
             }
             return meshes;
         }
-
-        int instance = 0;
-        foreach (var node in document.Nodes)
+        catch
         {
-            if (node.MeshId is not int meshId) continue;
-            if (meshId < 0 || meshId >= document.Meshes.Count) continue;
-
-            var meshDto = document.Meshes[meshId];
-            var gpu = UploadOne(gl, meshDto, featureAngleDeg);
-            instance++;
-            gpu.MeshIndex = instance;
-            gpu.SourceMeshId = meshId;
-            gpu.DiffuseColor = TryExtractRgb(node.Color)
-                ?? TryExtractRgb(meshDto.DefaultColor)
-                ?? new[] { 0.7f, 0.7f, 0.7f };
-            gpu.DoubleSided = meshDto.IsDoubleSided;
-            gpu.WorldTransform = TransposeColumnMajorToRowMajor(node.WorldTransform);
-            gpu.HasMirroredHandedness = GlesRenderUtil.HasMirroredHandedness(gpu.WorldTransform);
-            gpu.WorldCenter = ComputeWorldCenter(meshDto.Bounds, gpu.WorldTransform);
-            gpu.WorldBounds = ComputeWorldBounds(meshDto.Bounds, gpu.WorldTransform);
-            meshes.Add(gpu);
+            foreach (var mesh in meshes)
+                mesh.Dispose();
+            throw;
         }
-        return meshes;
     }
 
     private static GpuMesh UploadOne(GL gl, MeshDto meshDto, float featureAngleDeg)
     {
-        var gpu = new GpuMesh(gl);
-        gpu.Upload(meshDto.Positions.AsSpan(), meshDto.Normals.AsSpan(), meshDto.Indices.AsSpan());
+        GpuMesh? gpu = new(gl);
+        try
+        {
+            gpu.Upload(meshDto.Positions.AsSpan(), meshDto.Normals.AsSpan(), meshDto.Indices.AsSpan());
 
-        // CAD edges - extracted at upload time via dihedral-angle test. The
-        // user can disable them at runtime via Appearance.EdgesEnabled; the
-        // GPU buffer is still allocated but unused.
-        var edgeVertices = meshDto.EdgePositions.Length > 0
-            ? CadEdgeBuilder.BuildImportedEdgeVertices(meshDto.EdgePositions)
-            : CadEdgeBuilder.BuildFeatureEdgeVertices(
-                meshDto,
-                featureAngleDeg,
-                DefaultCoplanarToleranceDeg,
-                DefaultWeldToleranceScale,
-                DefaultSilhouetteEnabled);
-        if (edgeVertices.Length > 0)
-            gpu.UploadEdges(edgeVertices);
+            // CAD edges - extracted at upload time via dihedral-angle test. The
+            // user can disable them at runtime via Appearance.EdgesEnabled; the
+            // GPU buffer is still allocated but unused.
+            var edgeVertices = meshDto.EdgePositions.Length > 0
+                ? CadEdgeBuilder.BuildImportedEdgeVertices(meshDto.EdgePositions)
+                : CadEdgeBuilder.BuildFeatureEdgeVertices(
+                    meshDto,
+                    featureAngleDeg,
+                    DefaultCoplanarToleranceDeg,
+                    DefaultWeldToleranceScale,
+                    DefaultSilhouetteEnabled);
+            if (edgeVertices.Length > 0)
+                gpu.UploadEdges(edgeVertices);
 
-        return gpu;
+            var uploaded = gpu;
+            gpu = null;
+            return uploaded;
+        }
+        finally
+        {
+            gpu?.Dispose();
+        }
     }
 
     /// <summary>
@@ -164,9 +188,9 @@ public static class SceneUploader
         return new Vector3d(x, y, z);
     }
 
-    private static float[]? TryExtractRgb(float[]? rgba)
+    private static float[]? TryExtractRgba(float[]? rgba)
     {
         if (rgba is null || rgba.Length < 3) return null;
-        return new[] { rgba[0], rgba[1], rgba[2] };
+        return new[] { rgba[0], rgba[1], rgba[2], rgba.Length >= 4 ? rgba[3] : 1.0f };
     }
 }

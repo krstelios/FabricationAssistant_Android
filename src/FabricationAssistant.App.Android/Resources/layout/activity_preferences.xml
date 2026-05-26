@@ -4,13 +4,13 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/md_theme_surface">
+    android:background="@color/fa_app_background">
 
     <com.google.android.material.appbar.MaterialToolbar
         android:id="@+id/prefsToolbar"
         android:layout_width="match_parent"
         android:layout_height="@dimen/fa_app_bar_height"
-        android:background="@color/md_theme_surfaceVariant"
+        android:background="@color/fa_surface_background"
         app:title="@string/preferences_title"
         app:titleTextAppearance="@style/FA.TextAppearance.Title"
         app:navigationIcon="@drawable/ic_chevron_right"
@@ -54,6 +54,7 @@
 
                     <com.google.android.material.materialswitch.MaterialSwitch
                         android:id="@+id/prefShowGrid"
+                        style="@style/FA.Switch"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="@dimen/fa_space_m"
@@ -62,6 +63,7 @@
 
                     <com.google.android.material.materialswitch.MaterialSwitch
                         android:id="@+id/prefShowSelectionHighlight"
+                        style="@style/FA.Switch"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="@dimen/fa_space_s"
@@ -229,14 +231,14 @@
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="@dimen/fa_space_s"
-                        android:text="@string/preferences_msaa_restart_hint"
+                        android:text="@string/preferences_msaa_live_hint"
                         android:textAppearance="@style/FA.TextAppearance.Caption" />
 
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="@dimen/fa_space_m"
-                        android:text="@string/preferences_deferred_hint"
+                        android:text="@string/preferences_rendering_live_hint"
                         android:textAppearance="@style/FA.TextAppearance.Caption" />
 
                 </LinearLayout>

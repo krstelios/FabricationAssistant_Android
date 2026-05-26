@@ -13,6 +13,8 @@ uniform float uFadeRadius;
 uniform vec3 uBackgroundColor;
 uniform vec3 uMinorColor;
 uniform vec3 uMajorColor;
+uniform vec3 uAxisUColor;
+uniform vec3 uAxisVColor;
 
 out vec4 fragColor;
 
@@ -39,6 +41,15 @@ void main()
     float minor = gridFactor(xy, uGridSpacing.x);
     float major = gridFactor(xy, uGridSpacing.x * uGridSpacing.y);
 
+    // Axis stripes are evaluated in the same scaled coordinate space as
+    // grid lines, keeping the red/green axes about one pixel wide at any
+    // zoom level. In the Z-up grid, U is world X and V is world Y.
+    vec2 scaled = xy / uGridSpacing.x;
+    vec2 axisDerivative = max(fwidth(scaled), vec2(1e-4));
+    vec2 axisDist = abs(scaled) / axisDerivative;
+    float axisU = 1.0 - smoothstep(0.5, 1.5, axisDist.y);
+    float axisV = 1.0 - smoothstep(0.5, 1.5, axisDist.x);
+
     // Radial distance fade so the grid blends into the background past
     // the model rather than sharply terminating at the plane edge.
     float dist = length(uCameraPosWorld.xy - xy);
@@ -47,7 +58,10 @@ void main()
 
     // Major lines win over minor where they overlap.
     vec3 lineColor = mix(uMinorColor, uMajorColor, major);
-    float intensity = max(minor, major) * fade;
+    vec3 axisColor = axisV >= axisU ? uAxisVColor : uAxisUColor;
+    float axis = max(axisU, axisV);
+    lineColor = mix(lineColor, axisColor, axis);
+    float intensity = max(max(minor, major), axis) * fade;
 
     // Fade toward the background color so the grid doesn't read as a hard
     // alpha hole. The viewport uses opaque rendering (no blending), so we

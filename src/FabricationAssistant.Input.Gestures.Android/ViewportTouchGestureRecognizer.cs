@@ -14,7 +14,7 @@ namespace FabricationAssistant.Input.Gestures.Android;
 ///   None
 ///    | PointerDown(id) when fingerCount == 1
 ///    v
-///   Pending -- Tick() at &gt;= 500ms with no movement -&gt; Pending (LongPress emitted)
+///   Pending -- Tick() at &gt;= 500ms with no movement -&gt; Locked (LongPress emitted)
 ///    |
 ///    | PointerMove totalDelta &gt;= 8px       PointerDown 2nd finger
 ///    v                                    v
@@ -116,7 +116,33 @@ public sealed class ViewportTouchGestureRecognizer
 
         touch.Previous = touch.Current;
         touch.Current = position;
+        return EmitMoveEvents(touch);
+    }
 
+    public IReadOnlyList<TouchGestureEvent> PointerMoveBatch(
+        IReadOnlyList<(int Id, Point2D Position)> samples,
+        DateTime time)
+    {
+        if (samples.Count == 0)
+            return Empty;
+
+        TouchPoint? firstMoved = null;
+        for (int i = 0; i < samples.Count; i++)
+        {
+            var sample = samples[i];
+            if (!_touches.TryGetValue(sample.Id, out TouchPoint? touch))
+                continue;
+
+            touch.Previous = touch.Current;
+            touch.Current = sample.Position;
+            firstMoved ??= touch;
+        }
+
+        return firstMoved is null ? Empty : EmitMoveEvents(firstMoved);
+    }
+
+    private IReadOnlyList<TouchGestureEvent> EmitMoveEvents(TouchPoint touch)
+    {
         switch (_state)
         {
             case InternalState.Pending:
@@ -126,7 +152,7 @@ public sealed class ViewportTouchGestureRecognizer
                     return Empty;
 
                 _state = InternalState.Orbit;
-                Vector2D frameDelta = touch.Current - touch.Previous;
+                Vector2D frameDelta = DeltaBeyondDragThreshold(touch.Start, touch.Current);
                 return new[]
                 {
                     new TouchGestureEvent(TouchGestureKind.OrbitBegin, touch.Start, Vector2D.Zero, 1.0),
@@ -192,7 +218,7 @@ public sealed class ViewportTouchGestureRecognizer
                 double durationMs = (time - downTime).TotalMilliseconds;
                 bool isTap = totalDelta.Length < TapMaxMovementPx
                           && durationMs < TapMaxDurationMs;
-                if (isTap)
+                if (!_longPressFired && isTap)
                 {
                     if (IsDoubleTap(upPosition, time))
                     {
@@ -250,6 +276,7 @@ public sealed class ViewportTouchGestureRecognizer
             return Empty;
 
         _longPressFired = true;
+        _state = InternalState.Locked;
         return new[]
         {
             new TouchGestureEvent(TouchGestureKind.LongPress, touch.Current, Vector2D.Zero, 1.0),
@@ -260,14 +287,16 @@ public sealed class ViewportTouchGestureRecognizer
     /// Cancels every active pointer and resets to None. Wired to
     /// MotionEventActions.Cancel - on touch loss (e.g. system interruption),
     /// we don't want to leave the recognizer stuck in Orbit/PanZoom forever.
-    /// Returns the End event for whichever gesture was active so the adapter
-    /// can release any held camera state. Idle Cancel returns empty.
+    /// Returns a Cancel event plus the End event for whichever gesture was
+    /// active so modal tools can abort and the adapter can release any held
+    /// camera state. Idle Cancel returns empty.
     /// </summary>
     public IReadOnlyList<TouchGestureEvent> Cancel(DateTime time)
     {
         if (_touches.Count == 0)
         {
             _state = InternalState.None;
+            _lastTapTime = null;
             return Empty;
         }
 
@@ -281,8 +310,10 @@ public sealed class ViewportTouchGestureRecognizer
         _touches.Clear();
         _state = InternalState.None;
         _longPressFired = false;
+        _lastTapTime = null;
 
-        return end is null ? Empty : new[] { end.Value };
+        var cancel = new TouchGestureEvent(TouchGestureKind.Cancel, end?.Position ?? new Point2D(0, 0), Vector2D.Zero, 1.0);
+        return end is null ? new[] { cancel } : new[] { cancel, end.Value };
     }
 
     private bool IsDoubleTap(Point2D upPosition, DateTime time)
@@ -322,5 +353,16 @@ public sealed class ViewportTouchGestureRecognizer
         double dx = a.X - b.X;
         double dy = a.Y - b.Y;
         return System.Math.Sqrt(dx * dx + dy * dy);
+    }
+
+    private static Vector2D DeltaBeyondDragThreshold(Point2D start, Point2D current)
+    {
+        Vector2D totalDelta = current - start;
+        double length = totalDelta.Length;
+        if (length <= DragThresholdPx || length <= 1e-9)
+            return Vector2D.Zero;
+
+        double scale = (length - DragThresholdPx) / length;
+        return new Vector2D(totalDelta.X * scale, totalDelta.Y * scale);
     }
 }

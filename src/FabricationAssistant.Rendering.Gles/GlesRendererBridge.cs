@@ -14,13 +14,19 @@ namespace FabricationAssistant.Rendering.Gles;
 public sealed class GlesRendererBridge : Java.Lang.Object, GLSurfaceView.IRenderer
 {
     private readonly GlesViewportRenderer _renderer;
+    private readonly Action? _surfaceCreated;
 
-    public GlesRendererBridge(GlesViewportRenderer renderer)
+    public GlesRendererBridge(GlesViewportRenderer renderer, Action? surfaceCreated = null)
     {
         _renderer = renderer ?? throw new ArgumentNullException(nameof(renderer));
+        _surfaceCreated = surfaceCreated;
     }
 
-    public void OnSurfaceCreated(IGL10? gl, EGLConfig? config) => _renderer.OnSurfaceCreated();
+    public void OnSurfaceCreated(IGL10? gl, EGLConfig? config)
+    {
+        _renderer.OnSurfaceCreated();
+        _surfaceCreated?.Invoke();
+    }
 
     public void OnSurfaceChanged(IGL10? gl, int width, int height) => _renderer.OnSurfaceChanged(width, height);
 

@@ -11,6 +11,8 @@ public enum TouchGestureKind
     PanZoomBegin,
     PanZoomDelta,
     PanZoomEnd,
+    SecondaryTap,
+    Cancel,
 }
 
 /// <summary>

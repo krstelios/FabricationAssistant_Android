@@ -10,6 +10,8 @@ namespace FabricationAssistant.Draco.Android;
 /// </summary>
 public sealed class DracoDecodingGltfImportService : ISceneImportService
 {
+    private static readonly TimeSpan StaleDecodedFileAge = TimeSpan.FromHours(1);
+
     private readonly ISceneImportService _inner;
     private readonly string _tempDir;
 
@@ -18,6 +20,7 @@ public sealed class DracoDecodingGltfImportService : ISceneImportService
         _inner = inner ?? throw new ArgumentNullException(nameof(inner));
         _tempDir = tempDir ?? throw new ArgumentNullException(nameof(tempDir));
         Directory.CreateDirectory(_tempDir);
+        TryPruneDecodedTempFiles(_tempDir);
     }
 
     public async Task<DocumentDto> ImportAsync(
@@ -36,12 +39,49 @@ public sealed class DracoDecodingGltfImportService : ISceneImportService
         string decoded = Path.Combine(_tempDir, $"{Path.GetFileNameWithoutExtension(filePath)}-{Guid.NewGuid():N}.glb");
         try
         {
-            await Task.Run(() => DracoGltfTranscoder.Transcode(filePath, decoded), ct).ConfigureAwait(false);
+            try
+            {
+                await Task.Run(() => DracoGltfTranscoder.Transcode(filePath, decoded), ct).ConfigureAwait(false);
+            }
+            catch (DllNotFoundException ex)
+            {
+                throw new NotSupportedException("Draco compression is not supported on this device.", ex);
+            }
+            catch (EntryPointNotFoundException ex)
+            {
+                throw new NotSupportedException("Draco compression is not supported on this device.", ex);
+            }
+            catch (BadImageFormatException ex)
+            {
+                throw new NotSupportedException("Draco compression is not supported on this device.", ex);
+            }
+
             return await _inner.ImportAsync(decoded, settings, progress, ct).ConfigureAwait(false);
         }
         finally
         {
             try { File.Delete(decoded); } catch { /* best-effort cleanup */ }
+        }
+    }
+
+    private static void TryPruneDecodedTempFiles(string tempDir)
+    {
+        try
+        {
+            var root = new DirectoryInfo(tempDir);
+            if (!root.Exists)
+                return;
+
+            DateTime cutoffUtc = DateTime.UtcNow - StaleDecodedFileAge;
+            foreach (FileInfo file in root.EnumerateFiles("*.glb"))
+            {
+                if (file.LastWriteTimeUtc < cutoffUtc)
+                    file.Delete();
+            }
+        }
+        catch
+        {
+            // Temp cleanup must never block model import.
         }
     }
 }

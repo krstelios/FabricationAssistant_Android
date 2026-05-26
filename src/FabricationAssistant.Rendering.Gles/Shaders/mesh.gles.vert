@@ -12,11 +12,6 @@ uniform mat3 uNormalMatrix;
 out vec3 vWorldPos;
 out vec3 vNormal;
 
-// NOTE: Desktop mesh.vert.glsl carries 8 gl_ClipDistance[] outputs for
-// section-plane clipping. GLES 3.1 doesn't expose gl_ClipDistance to user
-// shaders, so we drop it here and re-introduce it (via fragment discard)
-// when the Section feature lands in a later plan.
-
 void main()
 {
     vec4 worldPos = uModel * vec4(aPosition, 1.0);

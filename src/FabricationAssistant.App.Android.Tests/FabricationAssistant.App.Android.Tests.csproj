@@ -25,6 +25,12 @@
   <ItemGroup>
     <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Math\**\*.cs"
              LinkBase="Linked\Math" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Camera\CameraState.cs"
+             LinkBase="Linked\Camera" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Camera\StandardView.cs"
+             LinkBase="Linked\Camera" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Sections\SectionPlane.cs"
+             LinkBase="Linked\Sections" />
   </ItemGroup>
 
   <!--
@@ -42,6 +48,10 @@
              LinkBase="Linked\Gestures" />
     <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.Input.Gestures.Android\ViewportTouchGestureRecognizer.cs"
              LinkBase="Linked\Gestures" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.Input.Gestures.Android\ViewportInteractionAdapter.cs"
+             LinkBase="Linked\Gestures" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\Measurement\AndroidSectionClipper.cs"
+             LinkBase="Linked\Android.Measurement" />
   </ItemGroup>
 
   <!--
