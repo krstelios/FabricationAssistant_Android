@@ -219,6 +219,16 @@ public static class AppSettings
     public static float GridLineColorR { get => Get("grid_r", 0.35f); set => Put("grid_r", Clamp01(value)); }
     public static float GridLineColorG { get => Get("grid_g", 0.35f); set => Put("grid_g", Clamp01(value)); }
     public static float GridLineColorB { get => Get("grid_b", 0.35f); set => Put("grid_b", Clamp01(value)); }
+    public static void SetManualGridSpacing(float value)
+    {
+        float spacing = float.IsFinite(value) ? System.Math.Clamp(value, 0.001f, 1_000_000.0f) : 0.0f;
+        Edit(editor =>
+        {
+            editor.PutFloat("grid_spacing_mm", spacing);
+            editor.PutBoolean("auto_grid_spacing", false);
+        });
+    }
+    public static void SetGridLineColor(float r, float g, float b) => PutRgb("grid_r", "grid_g", "grid_b", r, g, b);
     public static bool ShowAxes { get => Get("show_axes", true); set => Put("show_axes", value); }
     public static bool IsPerspective { get => Get("is_perspective", true); set => Put("is_perspective", value); }
 
@@ -226,9 +236,11 @@ public static class AppSettings
     public static float BackgroundR { get => Get("bg_r", 0.079f); set => Put("bg_r", Clamp01(value)); }
     public static float BackgroundG { get => Get("bg_g", 0.086f); set => Put("bg_g", Clamp01(value)); }
     public static float BackgroundB { get => Get("bg_b", 0.097f); set => Put("bg_b", Clamp01(value)); }
+    public static void SetBackgroundColor(float r, float g, float b) => PutRgb("bg_r", "bg_g", "bg_b", r, g, b);
     public static float SurfaceR { get => Get("surface_r", 0.82f); set => Put("surface_r", Clamp01(value)); }
     public static float SurfaceG { get => Get("surface_g", 0.82f); set => Put("surface_g", Clamp01(value)); }
     public static float SurfaceB { get => Get("surface_b", 0.82f); set => Put("surface_b", Clamp01(value)); }
+    public static void SetSurfaceColor(float r, float g, float b) => PutRgb("surface_r", "surface_g", "surface_b", r, g, b);
     public static float SurfaceOpacity { get => GetFloatInRange("surface_opacity", 1.0f, 0.0f, 1.0f); set => Put("surface_opacity", Clamp01(value)); }
 
     // ── CAD Edges ──────────────────────────────────────────────────────
@@ -249,6 +261,7 @@ public static class AppSettings
     public static float EdgeR { get => Get("edge_r", 0.24028806f); set => Put("edge_r", Clamp01(value)); }
     public static float EdgeG { get => Get("edge_g", 0.24f); set => Put("edge_g", Clamp01(value)); }
     public static float EdgeB { get => Get("edge_b", 0.26f); set => Put("edge_b", Clamp01(value)); }
+    public static void SetEdgeColor(float r, float g, float b) => PutRgb("edge_r", "edge_g", "edge_b", r, g, b);
     public static float EdgeWidth { get => GetFloatInRange("edge_width", DefaultEdgeWidth, 0.05f, 2.0f); set => Put("edge_width", System.Math.Clamp(value, 0.05f, 2.0f)); }
     public static float CadEdgeFeatureAngleDegrees { get => GetFloatInRange("edge_feature_angle", 28.0f, 1.0f, 150.0f); set => Put("edge_feature_angle", System.Math.Clamp(value, 1.0f, 150.0f)); }
     public static float CadEdgeCoplanarToleranceDegrees { get => GetFloatInRange("edge_coplanar_tol", 5.0f, 0.0f, 30.0f); set => Put("edge_coplanar_tol", System.Math.Clamp(value, 0.0f, 30.0f)); }
@@ -262,13 +275,16 @@ public static class AppSettings
     public static float ClaySurfaceR { get => Get("clay_surface_r", 0.804f); set => Put("clay_surface_r", Clamp01(value)); }
     public static float ClaySurfaceG { get => Get("clay_surface_g", 0.796f); set => Put("clay_surface_g", Clamp01(value)); }
     public static float ClaySurfaceB { get => Get("clay_surface_b", 0.797f); set => Put("clay_surface_b", Clamp01(value)); }
+    public static void SetClaySurfaceColor(float r, float g, float b) => PutRgb("clay_surface_r", "clay_surface_g", "clay_surface_b", r, g, b);
     public static float ClayBackgroundR { get => Get("clay_bg_r", 1.0f); set => Put("clay_bg_r", Clamp01(value)); }
     public static float ClayBackgroundG { get => Get("clay_bg_g", 1.0f); set => Put("clay_bg_g", Clamp01(value)); }
     public static float ClayBackgroundB { get => Get("clay_bg_b", 1.0f); set => Put("clay_bg_b", Clamp01(value)); }
+    public static void SetClayBackgroundColor(float r, float g, float b) => PutRgb("clay_bg_r", "clay_bg_g", "clay_bg_b", r, g, b);
     public static bool ClayFeatureEdgesEnabled { get => Get("clay_feature_edges", true); set => Put("clay_feature_edges", value); }
     public static float ClayFeatureEdgeR { get => Get("clay_edge_r", 0.11975311f); set => Put("clay_edge_r", Clamp01(value)); }
     public static float ClayFeatureEdgeG { get => Get("clay_edge_g", 0.12004116f); set => Put("clay_edge_g", Clamp01(value)); }
     public static float ClayFeatureEdgeB { get => Get("clay_edge_b", 0.11650209f); set => Put("clay_edge_b", Clamp01(value)); }
+    public static void SetClayFeatureEdgeColor(float r, float g, float b) => PutRgb("clay_edge_r", "clay_edge_g", "clay_edge_b", r, g, b);
     public static float ClayFeatureEdgeA { get => GetFloatInRange("clay_edge_a", 0.48666665f, 0.0f, 1.0f); set => Put("clay_edge_a", System.Math.Clamp(value, 0.0f, 1.0f)); }
     public static float ClayFeatureEdgeWidth { get => GetFloatInRange("clay_edge_width", 0.95f, 0.05f, 4.0f); set => Put("clay_edge_width", System.Math.Clamp(value, 0.05f, 4.0f)); }
     public static float ClayFeatureEdgeDepthBias { get => GetFloatInRange("clay_edge_depth_bias", 0.0f, 0.0f, 0.01f); set => Put("clay_edge_depth_bias", System.Math.Clamp(value, 0.0f, 0.01f)); }
@@ -312,15 +328,18 @@ public static class AppSettings
     public static float OutlineR { get => Get("outline_r", 1.0f); set => Put("outline_r", Clamp01(value)); }
     public static float OutlineG { get => Get("outline_g", 0.0f); set => Put("outline_g", Clamp01(value)); }
     public static float OutlineB { get => Get("outline_b", 0.0f); set => Put("outline_b", Clamp01(value)); }
+    public static void SetOutlineColor(float r, float g, float b) => PutRgb("outline_r", "outline_g", "outline_b", r, g, b);
     public static float OutlineThicknessPx { get => GetFloatInRange("outline_thickness", 3.2098765f, 1.0f, 8.0f); set => Put("outline_thickness", System.Math.Clamp(value, 1.0f, 8.0f)); }
     public static float HoverOutlineR { get => Get("hover_outline_r", 0.0f); set => Put("hover_outline_r", Clamp01(value)); }
     public static float HoverOutlineG { get => Get("hover_outline_g", 1.0f); set => Put("hover_outline_g", Clamp01(value)); }
     public static float HoverOutlineB { get => Get("hover_outline_b", 0.0f); set => Put("hover_outline_b", Clamp01(value)); }
+    public static void SetHoverOutlineColor(float r, float g, float b) => PutRgb("hover_outline_r", "hover_outline_g", "hover_outline_b", r, g, b);
     public static float HoverOutlineThicknessPx { get => GetFloatInRange("hover_outline_thickness", 0.37757202f, 0.05f, 8.0f); set => Put("hover_outline_thickness", System.Math.Clamp(value, 0.05f, 8.0f)); }
     public static float HoverTintStrength { get => GetFloatInRange("hover_tint_strength", 0.2f, 0.0f, 1.0f); set => Put("hover_tint_strength", System.Math.Clamp(value, 0.0f, 1.0f)); }
     public static float DimensionHighlightR { get => Get("dimension_highlight_r", 1.0f); set => Put("dimension_highlight_r", Clamp01(value)); }
     public static float DimensionHighlightG { get => Get("dimension_highlight_g", 0.5019608f); set => Put("dimension_highlight_g", Clamp01(value)); }
     public static float DimensionHighlightB { get => Get("dimension_highlight_b", 0.2509804f); set => Put("dimension_highlight_b", Clamp01(value)); }
+    public static void SetDimensionHighlightColor(float r, float g, float b) => PutRgb("dimension_highlight_r", "dimension_highlight_g", "dimension_highlight_b", r, g, b);
 
     // Measurement tools
     public static int MeasureModeSelectionIndex { get => GetIntInRange("measure_mode", MeasureModePointToPoint, MeasureModePointToPoint, MeasureModeFaceToFace); set => Put("measure_mode", System.Math.Clamp(value, MeasureModePointToPoint, MeasureModeFaceToFace)); }
@@ -335,16 +354,20 @@ public static class AppSettings
     public static float SectionPlaneR { get => Get("section_plane_r", 0.19607843f); set => Put("section_plane_r", System.Math.Clamp(value, 0.0f, 1.0f)); }
     public static float SectionPlaneG { get => Get("section_plane_g", 0.9019608f); set => Put("section_plane_g", System.Math.Clamp(value, 0.0f, 1.0f)); }
     public static float SectionPlaneB { get => Get("section_plane_b", 0.19607843f); set => Put("section_plane_b", System.Math.Clamp(value, 0.0f, 1.0f)); }
+    public static void SetSectionPlaneColor(float r, float g, float b) => PutRgb("section_plane_r", "section_plane_g", "section_plane_b", r, g, b);
     public static float SectionPlaneOpacity { get => GetFloatInRange("section_plane_opacity", 0.20f, 0.0f, 1.0f); set => Put("section_plane_opacity", System.Math.Clamp(value, 0.0f, 1.0f)); }
     public static float SectionEdgeR { get => Get("section_edge_r", 0.19607843f); set => Put("section_edge_r", System.Math.Clamp(value, 0.0f, 1.0f)); }
     public static float SectionEdgeG { get => Get("section_edge_g", 0.9019608f); set => Put("section_edge_g", System.Math.Clamp(value, 0.0f, 1.0f)); }
     public static float SectionEdgeB { get => Get("section_edge_b", 0.19607843f); set => Put("section_edge_b", System.Math.Clamp(value, 0.0f, 1.0f)); }
+    public static void SetSectionEdgeColor(float r, float g, float b) => PutRgb("section_edge_r", "section_edge_g", "section_edge_b", r, g, b);
     public static float SectionEdgeHighlightR { get => Get("section_edge_highlight_r", 1.0f); set => Put("section_edge_highlight_r", System.Math.Clamp(value, 0.0f, 1.0f)); }
     public static float SectionEdgeHighlightG { get => Get("section_edge_highlight_g", 1.0f); set => Put("section_edge_highlight_g", System.Math.Clamp(value, 0.0f, 1.0f)); }
     public static float SectionEdgeHighlightB { get => Get("section_edge_highlight_b", 1.0f); set => Put("section_edge_highlight_b", System.Math.Clamp(value, 0.0f, 1.0f)); }
+    public static void SetSectionEdgeHighlightColor(float r, float g, float b) => PutRgb("section_edge_highlight_r", "section_edge_highlight_g", "section_edge_highlight_b", r, g, b);
     public static float SectionCapR { get => Get("section_cap_r", 0.8509804f); set => Put("section_cap_r", System.Math.Clamp(value, 0.0f, 1.0f)); }
     public static float SectionCapG { get => Get("section_cap_g", 0.8509804f); set => Put("section_cap_g", System.Math.Clamp(value, 0.0f, 1.0f)); }
     public static float SectionCapB { get => Get("section_cap_b", 0.80f); set => Put("section_cap_b", System.Math.Clamp(value, 0.0f, 1.0f)); }
+    public static void SetSectionCapColor(float r, float g, float b) => PutRgb("section_cap_r", "section_cap_g", "section_cap_b", r, g, b);
     public static float SectionPlaneSizeFraction { get => GetFloatInRange("section_plane_size", 0.025f, 0.001f, 1.0f); set => Put("section_plane_size", System.Math.Clamp(value, 0.001f, 1.0f)); }
     public static float SectionGizmoSizeFraction
     {
@@ -450,6 +473,16 @@ public static class AppSettings
     private static void Put(string k, float v) => Edit(ed => ed.PutFloat(k, float.IsFinite(v) ? v : 0.0f));
     private static void Put(string k, bool v) => Edit(ed => ed.PutBoolean(k, v));
     private static void Put(string k, int v) => Edit(ed => ed.PutInt(k, v));
+
+    private static void PutRgb(string rKey, string gKey, string bKey, float r, float g, float b)
+    {
+        Edit(editor =>
+        {
+            editor.PutFloat(rKey, Clamp01(r));
+            editor.PutFloat(gKey, Clamp01(g));
+            editor.PutFloat(bKey, Clamp01(b));
+        });
+    }
 
     private static int EffectiveRenderMode(int renderMode, bool edgesEnabled)
         => IsShadedRenderMode(renderMode)

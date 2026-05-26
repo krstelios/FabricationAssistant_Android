@@ -111,17 +111,11 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment
         AddSwitch(ctx, helpers, "Show ground grid", AppSettings.ShowGrid, v => AppSettings.ShowGrid = v);
         AddSwitch(ctx, helpers, "Push grid to model min", AppSettings.ShiftGridToModelMin, v => AppSettings.ShiftGridToModelMin = v);
         AddSwitch(ctx, helpers, "Automatic grid spacing", AppSettings.UseAutomaticGridSpacing, v => AppSettings.UseAutomaticGridSpacing = v);
-        AddFloatSlider(ctx, helpers, "Grid spacing (mm)", 0.001f, 1000f, AppSettings.GridSpacingMm, v =>
-        {
-            AppSettings.GridSpacingMm = v;
-            AppSettings.UseAutomaticGridSpacing = false;
-        });
+        AddFloatSlider(ctx, helpers, "Grid spacing (mm)", 0.001f, 1000f, AppSettings.GridSpacingMm, AppSettings.SetManualGridSpacing);
         AddFloatSlider(ctx, helpers, "Grid line thickness", 1f, 8f, AppSettings.GridLineThickness, v => AppSettings.GridLineThickness = v);
         AddRgbRow(ctx, helpers, "Grid color",
             AppSettings.GridLineColorR, AppSettings.GridLineColorG, AppSettings.GridLineColorB,
-            r => AppSettings.GridLineColorR = r,
-            g => AppSettings.GridLineColorG = g,
-            b => AppSettings.GridLineColorB = b);
+            AppSettings.SetGridLineColor);
         AddSwitch(ctx, helpers, "Show axes gizmo", AppSettings.ShowAxes, v => AppSettings.ShowAxes = v);
         AddToggleRow(ctx, helpers, new[] { "Perspective", "Orthographic" },
             AppSettings.IsPerspective ? 0 : 1, idx => AppSettings.IsPerspective = (idx == 0));
@@ -130,14 +124,10 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment
         var colors = AddSection(ctx, root, "Scene Colors", "Background and surface");
         AddRgbRow(ctx, colors, "Background",
             AppSettings.BackgroundR, AppSettings.BackgroundG, AppSettings.BackgroundB,
-            r => AppSettings.BackgroundR = r,
-            g => AppSettings.BackgroundG = g,
-            b => AppSettings.BackgroundB = b);
+            AppSettings.SetBackgroundColor);
         AddRgbRow(ctx, colors, "Surface",
             AppSettings.SurfaceR, AppSettings.SurfaceG, AppSettings.SurfaceB,
-            r => AppSettings.SurfaceR = r,
-            g => AppSettings.SurfaceG = g,
-            b => AppSettings.SurfaceB = b);
+            AppSettings.SetSurfaceColor);
         AddFloatSlider(ctx, colors, "Surface opacity", 0f, 1f, AppSettings.SurfaceOpacity, v => AppSettings.SurfaceOpacity = v);
 
         // ── CAD Edges ──────────────────────────────────────────────────
@@ -145,7 +135,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment
         AddSwitch(ctx, edges, "Enable edges", AppSettings.EdgesEnabled, AppSettings.SetEdgesEnabledFromUi);
         AddRgbRow(ctx, edges, "Edge color",
             AppSettings.EdgeR, AppSettings.EdgeG, AppSettings.EdgeB,
-            r => AppSettings.EdgeR = r, g => AppSettings.EdgeG = g, b => AppSettings.EdgeB = b);
+            AppSettings.SetEdgeColor);
         AddFloatSlider(ctx, edges, "Width", 0.05f, 2f, AppSettings.EdgeWidth, v => AppSettings.EdgeWidth = v);
         AddFloatSlider(ctx, edges, "Feature angle (deg)", 1f, 150f, AppSettings.CadEdgeFeatureAngleDegrees, v => AppSettings.CadEdgeFeatureAngleDegrees = v);
         AddFloatSlider(ctx, edges, "Coplanar tolerance (deg)", 0f, 30f, AppSettings.CadEdgeCoplanarToleranceDegrees, v => AppSettings.CadEdgeCoplanarToleranceDegrees = v);
@@ -159,14 +149,14 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment
         var clay = AddSection(ctx, root, "Clay Render", "Clay colors");
         AddRgbRow(ctx, clay, "Clay surface",
             AppSettings.ClaySurfaceR, AppSettings.ClaySurfaceG, AppSettings.ClaySurfaceB,
-            r => AppSettings.ClaySurfaceR = r, g => AppSettings.ClaySurfaceG = g, b => AppSettings.ClaySurfaceB = b);
+            AppSettings.SetClaySurfaceColor);
         AddRgbRow(ctx, clay, "Clay background",
             AppSettings.ClayBackgroundR, AppSettings.ClayBackgroundG, AppSettings.ClayBackgroundB,
-            r => AppSettings.ClayBackgroundR = r, g => AppSettings.ClayBackgroundG = g, b => AppSettings.ClayBackgroundB = b);
+            AppSettings.SetClayBackgroundColor);
         AddSwitch(ctx, clay, "Clay feature edges", AppSettings.ClayFeatureEdgesEnabled, v => AppSettings.ClayFeatureEdgesEnabled = v);
         AddRgbRow(ctx, clay, "Clay edge",
             AppSettings.ClayFeatureEdgeR, AppSettings.ClayFeatureEdgeG, AppSettings.ClayFeatureEdgeB,
-            r => AppSettings.ClayFeatureEdgeR = r, g => AppSettings.ClayFeatureEdgeG = g, b => AppSettings.ClayFeatureEdgeB = b);
+            AppSettings.SetClayFeatureEdgeColor);
         AddFloatSlider(ctx, clay, "Clay edge alpha", 0f, 1f, AppSettings.ClayFeatureEdgeA, v => AppSettings.ClayFeatureEdgeA = v);
         AddFloatSlider(ctx, clay, "Clay edge width", 0.05f, 4f, AppSettings.ClayFeatureEdgeWidth, v => AppSettings.ClayFeatureEdgeWidth = v);
         AddFloatSlider(ctx, clay, "Clay edge depth bias", 0f, 0.01f, AppSettings.ClayFeatureEdgeDepthBias, v => AppSettings.ClayFeatureEdgeDepthBias = v);
@@ -214,18 +204,16 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment
         AddSwitch(ctx, sel, "Outline selected body", AppSettings.OutlineEnabled, v => AppSettings.OutlineEnabled = v);
         AddRgbRow(ctx, sel, "Outline color",
             AppSettings.OutlineR, AppSettings.OutlineG, AppSettings.OutlineB,
-            r => AppSettings.OutlineR = r, g => AppSettings.OutlineG = g, b => AppSettings.OutlineB = b);
+            AppSettings.SetOutlineColor);
         AddFloatSlider(ctx, sel, "Outline thickness", 1f, 8f, AppSettings.OutlineThicknessPx, v => AppSettings.OutlineThicknessPx = v);
         AddRgbRow(ctx, sel, "Hover outline",
             AppSettings.HoverOutlineR, AppSettings.HoverOutlineG, AppSettings.HoverOutlineB,
-            r => AppSettings.HoverOutlineR = r, g => AppSettings.HoverOutlineG = g, b => AppSettings.HoverOutlineB = b);
+            AppSettings.SetHoverOutlineColor);
         AddFloatSlider(ctx, sel, "Hover thickness", 0.05f, 8f, AppSettings.HoverOutlineThicknessPx, v => AppSettings.HoverOutlineThicknessPx = v);
         AddFloatSlider(ctx, sel, "Hover tint", 0f, 1f, AppSettings.HoverTintStrength, v => AppSettings.HoverTintStrength = v);
         AddRgbRow(ctx, sel, "Dimension highlight",
             AppSettings.DimensionHighlightR, AppSettings.DimensionHighlightG, AppSettings.DimensionHighlightB,
-            r => AppSettings.DimensionHighlightR = r,
-            g => AppSettings.DimensionHighlightG = g,
-            b => AppSettings.DimensionHighlightB = b);
+            AppSettings.SetDimensionHighlightColor);
 
         // Measurement tools
         var measure = AddSection(ctx, root, "Measurement Tools", "Dimensions and boxes");
@@ -243,25 +231,17 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment
         AddSwitch(ctx, sections, "Show section edges", AppSettings.SectionEdgesVisible, v => AppSettings.SectionEdgesVisible = v);
         AddRgbRow(ctx, sections, "Plane color",
             AppSettings.SectionPlaneR, AppSettings.SectionPlaneG, AppSettings.SectionPlaneB,
-            r => AppSettings.SectionPlaneR = r,
-            g => AppSettings.SectionPlaneG = g,
-            b => AppSettings.SectionPlaneB = b);
+            AppSettings.SetSectionPlaneColor);
         AddFloatSlider(ctx, sections, "Plane opacity", 0f, 1f, AppSettings.SectionPlaneOpacity, v => AppSettings.SectionPlaneOpacity = v);
         AddRgbRow(ctx, sections, "Edge color",
             AppSettings.SectionEdgeR, AppSettings.SectionEdgeG, AppSettings.SectionEdgeB,
-            r => AppSettings.SectionEdgeR = r,
-            g => AppSettings.SectionEdgeG = g,
-            b => AppSettings.SectionEdgeB = b);
+            AppSettings.SetSectionEdgeColor);
         AddRgbRow(ctx, sections, "Selected edge",
             AppSettings.SectionEdgeHighlightR, AppSettings.SectionEdgeHighlightG, AppSettings.SectionEdgeHighlightB,
-            r => AppSettings.SectionEdgeHighlightR = r,
-            g => AppSettings.SectionEdgeHighlightG = g,
-            b => AppSettings.SectionEdgeHighlightB = b);
+            AppSettings.SetSectionEdgeHighlightColor);
         AddRgbRow(ctx, sections, "Cap color",
             AppSettings.SectionCapR, AppSettings.SectionCapG, AppSettings.SectionCapB,
-            r => AppSettings.SectionCapR = r,
-            g => AppSettings.SectionCapG = g,
-            b => AppSettings.SectionCapB = b);
+            AppSettings.SetSectionCapColor);
         AddFloatSlider(ctx, sections, "Plane size", 0.005f, 0.20f, AppSettings.SectionPlaneSizeFraction, v => AppSettings.SectionPlaneSizeFraction = v);
 
         // ── Navigation ─────────────────────────────────────────────────
@@ -793,7 +773,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment
     }
 
     private void AddRgbRow(Context ctx, ViewGroup parent, string label, float r0, float g0, float b0,
-        Action<float> saveR, Action<float> saveG, Action<float> saveB)
+        Action<float, float, float> save)
     {
         float currentR = Clamp01(r0);
         float currentG = Clamp01(g0);
@@ -857,9 +837,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment
             currentR = Clamp01(r);
             currentG = Clamp01(g);
             currentB = Clamp01(b);
-            saveR(currentR);
-            saveG(currentG);
-            saveB(currentB);
+            save(currentR, currentG, currentB);
             ApplyRowState();
             NotifySettingsChanged();
         }
