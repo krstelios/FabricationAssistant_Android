@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Buffers.Binary;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -28,9 +29,9 @@ public static class DracoGltfTranscoder
         if (sourceLength > MaxSourceBytes)
             throw new InvalidDataException($"Draco source GLB is too large ({sourceLength:n0} bytes). Maximum supported size is {MaxSourceBytes:n0} bytes.");
 
-        var (json, bin) = ReadGlb(sourceGlbPath);
+        GlbSource glb = ReadGlb(sourceGlbPath);
 
-        var root = JsonNode.Parse(json) ?? throw new InvalidDataException("glTF JSON parse failed");
+        var root = JsonNode.Parse(glb.Json) ?? throw new InvalidDataException("glTF JSON parse failed");
 
         string tempBinPath = Path.Combine(
             Path.GetDirectoryName(destinationGlbPath) ?? Path.GetTempPath(),
@@ -45,12 +46,13 @@ public static class DracoGltfTranscoder
                 FileShare.None,
                 bufferSize: 128 * 1024,
                 FileOptions.SequentialScan);
+            using var sourceGlb = File.OpenRead(sourceGlbPath);
 
             // Preserve the original binary chunk content as the prefix of the
             // new chunk. This keeps every non-Draco bufferView (textures,
             // animations, skins, anything else the file embeds) pointing at
             // valid bytes. Decoded Draco buffers are appended after this prefix.
-            newBin.Write(bin);
+            CopyBinaryChunk(sourceGlb, newBin, glb.BinOffset, glb.BinLength);
             EnsureDecodedBudget(newBin.Length);
             PadTo4Bytes(newBin);
 
@@ -74,10 +76,17 @@ public static class DracoGltfTranscoder
                     if (ext is null) continue;
 
                     int viewIndex = ext["bufferView"]!.GetValue<int>();
-                    var view = bufferViews[viewIndex]!;
+                    if (viewIndex < 0 || viewIndex >= bufferViews.Count || bufferViews[viewIndex] is not JsonObject view)
+                        throw new InvalidDataException("Draco bufferView index is invalid.");
+
                     int offset = view["byteOffset"]?.GetValue<int>() ?? 0;
                     int length = view["byteLength"]!.GetValue<int>();
-                    var encoded = new ReadOnlySpan<byte>(bin, offset, length);
+                    byte[] encoded = ReadBinaryChunkRange(
+                        sourceGlb,
+                        glb.BinOffset,
+                        glb.BinLength,
+                        offset,
+                        length);
 
                     using var dm = DracoMesh.Decode(encoded)
                         ?? throw new InvalidDataException("Draco decode failed for primitive");
@@ -263,7 +272,7 @@ public static class DracoGltfTranscoder
             throw new InvalidDataException($"Decoded Draco GLB exceeds the maximum supported size of {MaxDecodedBytes:n0} bytes.");
     }
 
-    private static (string json, byte[] bin) ReadGlb(string path)
+    private static GlbSource ReadGlb(string path)
     {
         using var fs = File.OpenRead(path);
         if (fs.Length < 12) throw new InvalidDataException("GLB too short");
@@ -279,7 +288,8 @@ public static class DracoGltfTranscoder
         if (declaredLength != fs.Length) throw new InvalidDataException("GLB declared length does not match file length.");
 
         string? json = null;
-        byte[] bin = Array.Empty<byte>();
+        long binOffset = 0;
+        int binLength = 0;
         Span<byte> chunkHeader = stackalloc byte[8];
         while (fs.Position < fs.Length)
         {
@@ -300,8 +310,9 @@ public static class DracoGltfTranscoder
             }
             else if (chunkType == ChunkTypeBin)
             {
-                bin = new byte[checked((int)chunkLength)];
-                fs.ReadExactly(bin);
+                binOffset = fs.Position;
+                binLength = checked((int)chunkLength);
+                fs.Position += chunkLength;
             }
             else
             {
@@ -309,7 +320,49 @@ public static class DracoGltfTranscoder
             }
         }
         if (json is null) throw new InvalidDataException("GLB missing JSON chunk");
-        return (json, bin);
+        return new GlbSource(json, binOffset, binLength);
+    }
+
+    private static void CopyBinaryChunk(Stream source, Stream destination, long sourceOffset, int length)
+    {
+        if (length <= 0)
+            return;
+
+        source.Position = sourceOffset;
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(128 * 1024);
+        try
+        {
+            int remaining = length;
+            while (remaining > 0)
+            {
+                int read = source.Read(buffer, 0, Math.Min(buffer.Length, remaining));
+                if (read == 0)
+                    throw new EndOfStreamException("GLB binary chunk ended unexpectedly.");
+
+                destination.Write(buffer, 0, read);
+                remaining -= read;
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    private static byte[] ReadBinaryChunkRange(
+        Stream source,
+        long binOffset,
+        int binLength,
+        int byteOffset,
+        int byteLength)
+    {
+        if (byteOffset < 0 || byteLength < 0 || (long)byteOffset + byteLength > binLength)
+            throw new InvalidDataException("Draco bufferView range exceeds GLB binary chunk bounds.");
+
+        byte[] data = new byte[byteLength];
+        source.Position = binOffset + byteOffset;
+        source.ReadExactly(data);
+        return data;
     }
 
     private static void WriteGlb(string path, string json, Stream bin)
@@ -348,4 +401,6 @@ public static class DracoGltfTranscoder
     {
         try { File.Delete(path); } catch { }
     }
+
+    private readonly record struct GlbSource(string Json, long BinOffset, int BinLength);
 }

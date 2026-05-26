@@ -5,6 +5,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <IsPackable>false</IsPackable>
     <RootNamespace>FabricationAssistant.App.Android.Tests</RootNamespace>
     <AssemblyName>FabricationAssistant.App.Android.Tests</AssemblyName>
@@ -76,6 +77,13 @@
              LinkBase="Linked\Rendering.Gles" />
     <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.Rendering.Gles\SceneAppearance.cs"
              LinkBase="Linked\Rendering.Gles" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.Draco.Android\DracoGltfTranscoder.cs"
+             LinkBase="Linked\Draco.Android" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.Draco.Android\DracoNativeDecoder.cs"
+             LinkBase="Linked\Draco.Android" />
   </ItemGroup>
 
 </Project>
