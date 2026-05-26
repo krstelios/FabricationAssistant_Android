@@ -95,7 +95,7 @@ public struct SceneAppearance
     public float AoNoiseScale;
     public float ContourStrength;
     public float ContourPower;
-    public int MsaaSamples;             // 0 / 2 / 4
+    public int MsaaSamples;             // 0 / 2 / 4 / 8
 
     // ── Selection outline ──────────────────────────────────────────────
     public bool OutlineEnabled;

@@ -19,7 +19,10 @@ public sealed class AppSettingsValueGuardsTests
     [InlineData(1, 2)]
     [InlineData(2, 2)]
     [InlineData(3, 4)]
-    [InlineData(16, 4)]
+    [InlineData(4, 4)]
+    [InlineData(5, 8)]
+    [InlineData(8, 8)]
+    [InlineData(16, 8)]
     public void ClampAndroidMsaaSamples_maps_to_supported_android_values(int value, int expected)
         => Assert.Equal(expected, AppSettingsValueGuards.ClampAndroidMsaaSamples(value));
 }

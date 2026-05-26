@@ -4,7 +4,7 @@ public sealed partial class MsaaSceneFramebuffer
 {
     /// <summary>
     /// Snaps a desired sample count to the nearest Android-supported bucket
-    /// (1, 2, 4). Pure arithmetic - does not read GL state.
+    /// (1, 2, 4, 8). Pure arithmetic - does not read GL state.
     /// The effective sample count is further capped against
     /// GL_MAX_SAMPLES inside <see cref="Ensure"/>.
     /// </summary>
@@ -14,7 +14,8 @@ public sealed partial class MsaaSceneFramebuffer
         {
             <= 1 => 1,
             <= 2 => 2,
-            _ => 4
+            <= 4 => 4,
+            _ => 8
         };
     }
 
@@ -30,6 +31,8 @@ public sealed partial class MsaaSceneFramebuffer
             return 1;
         if (clamped <= maxSamples)
             return clamped;
+        if (maxSamples >= 8)
+            return 8;
         if (maxSamples >= 4)
             return 4;
         return 2;

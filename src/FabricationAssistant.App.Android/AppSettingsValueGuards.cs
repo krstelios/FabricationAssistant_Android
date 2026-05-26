@@ -10,6 +10,10 @@ internal static class AppSettingsValueGuards
         if (value <= 0)
             return 0;
 
-        return value <= 2 ? 2 : 4;
+        if (value <= 2)
+            return 2;
+        if (value <= 4)
+            return 4;
+        return 8;
     }
 }

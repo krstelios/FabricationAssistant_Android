@@ -19,13 +19,13 @@ internal sealed class StyledTooltipController : Java.Lang.Object, View.IOnHoverL
     private readonly Context _context;
     private readonly WeakReference<View> _anchor;
     private readonly Handler _handler = new(Looper.MainLooper!);
-    private readonly Action _requestDismissOthers;
+    private readonly Action<StyledTooltipController> _requestDismissOthers;
     private PopupWindow? _popup;
     private string _text;
     private bool _disposed;
     private int _showGeneration;
 
-    public StyledTooltipController(Context context, View anchor, string text, Action requestDismissOthers)
+    public StyledTooltipController(Context context, View anchor, string text, Action<StyledTooltipController> requestDismissOthers)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(anchor);
@@ -150,8 +150,7 @@ internal sealed class StyledTooltipController : Java.Lang.Object, View.IOnHoverL
             return;
         }
 
-        _requestDismissOthers();
-        generation = Volatile.Read(ref _showGeneration);
+        _requestDismissOthers(this);
         if (_disposed
             || generation != Volatile.Read(ref _showGeneration)
             || !_anchor.TryGetTarget(out anchor)

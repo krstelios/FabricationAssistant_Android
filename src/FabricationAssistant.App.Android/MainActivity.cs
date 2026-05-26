@@ -6043,13 +6043,22 @@ public sealed class MainActivity : AppCompatActivity
             return;
         }
 
-        _styledTooltips[view] = new StyledTooltipController(this, view, text, DismissStyledTooltips);
+        _styledTooltips[view] = new StyledTooltipController(this, view, text, DismissStyledTooltipsExcept);
     }
 
     private void DismissStyledTooltips()
     {
         foreach (StyledTooltipController tooltip in _styledTooltips.Values)
             tooltip.Dismiss();
+    }
+
+    private void DismissStyledTooltipsExcept(StyledTooltipController activeTooltip)
+    {
+        foreach (StyledTooltipController tooltip in _styledTooltips.Values)
+        {
+            if (!ReferenceEquals(tooltip, activeTooltip))
+                tooltip.Dismiss();
+        }
     }
 
     private void DisposeStyledTooltips()
