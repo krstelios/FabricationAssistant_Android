@@ -101,13 +101,17 @@ Updated 2026-05-27 after implementation and tablet verification.
 
 - **S3:** color picker RGB saves and manual grid spacing now persist grouped settings through one `AppSettings.Edit` transaction per UI action instead of multiple setter transactions, avoiding partial persisted values for grouped controls.
 
+### Fixed in `5dc1bd3` (`Stream Draco GLB binary chunks`)
+
+- **B12/I9/I10:** Draco GLB transcoding no longer loads the entire source BIN chunk into a managed `byte[]`. The original BIN chunk is streamed into the decoded temp file, and only the compressed Draco `bufferView` slice needed for each primitive is read into memory. The path now validates bad Draco `bufferView` indices/ranges before decode, and host tests cover non-Draco copy-through plus out-of-bounds Draco range rejection.
+
 ### Latest tablet verification
 
-- Installed the debug APK containing `e92e4be` on tablet `R52TA040AQT`.
+- Installed the debug APK containing `5dc1bd3` on tablet `R52TA040AQT`.
 - Opened the app, loaded recent file `50-0001916_00.fa`.
-- Load log scan: `documentNodes=1937`, `documentMeshes=666`, `visibleMeshNodes=666`, diagonal `4.622`; tablet reports `GL_MAX_SAMPLES=4`, so the 8x-capable MSAA path clamps to 4x on this hardware. Initial `load-document` GL command run was `5296.9ms`.
-- Scripted interaction: no fatal exception, ANR, import failure, GLES error, framebuffer failure, or JNI error; sampled frame timing blocks averaged `16.8-18.4ms`, max `26.0ms`, with `0` frame timing blocks over `33ms` / `50ms`.
-- Render queue burst: top `pick:tap` run `38.2ms`, top wait `70.1ms`, slow-frame log count `4`, Choreographer skipped-frame log count during scripted interaction `0`.
+- Load log scan: `documentNodes=1937`, `documentMeshes=666`, `visibleMeshNodes=666`, diagonal `4.622`; tablet reports `GL_MAX_SAMPLES=4`, so the 8x-capable MSAA path clamps to 4x on this hardware. Initial `load-document` GL command run was `5186.4ms`.
+- Scripted interaction: no fatal exception, ANR, import failure, GLES error, framebuffer failure, or JNI error; sampled frame timing blocks averaged `16.2-18.4ms`, max `27.3ms`, with `0` frame timing blocks over `33ms` / `50ms`.
+- Render queue burst: top `pick:tap` run `71.3ms`, top wait `53.5ms`, slow-frame log count `3`, Choreographer skipped-frame log count during scripted interaction `0`.
 - Final app-PID logcat regression scan after scripted interaction: no crash, ANR, import, GLES, framebuffer, render, or load failure.
 
 ---
