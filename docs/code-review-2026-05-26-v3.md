@@ -113,14 +113,19 @@ Updated 2026-05-27 after implementation and tablet verification.
 
 - **B5 follow-up:** `GlesViewportRenderer.Appearance` now snapshots `SceneAppearance` array fields on public get/set, so direct callers and backwards-compatible aliases cannot mutate renderer-owned arrays after assignment. Hot render paths read the private renderer snapshot directly to avoid per-frame clone allocations.
 
+### Fixed in `71b9346` (`Dispose BOM panel listeners on teardown`)
+
+- **D5 / U10 follow-up:** BOM left-panel content is now explicitly disposed when the host replaces, closes, or destroys the left tool panel. `AndroidBomPanel` clears its horizontal table touch listeners, list item callback, search text callback, action click listeners, and delayed width-refresh callbacks now no-op after disposal.
+
 ### Latest tablet verification
 
-- Installed the debug APK containing `268bbb5` on tablet `R52TA040AQT`.
+- Installed the debug APK containing `71b9346` on tablet `R52TA040AQT`.
 - Opened the app, loaded recent file `50-0001916_00.fa`.
-- Load log scan: `documentNodes=1937`, `documentMeshes=666`, `visibleMeshNodes=666`, diagonal `4.622`; tablet reports `GL_MAX_SAMPLES=4`, so the 8x-capable MSAA path clamps to 4x on this hardware. Initial `load-document` GL command run was `5115.3ms`.
-- Scripted interaction: no fatal exception, ANR, import failure, GLES error, framebuffer failure, or JNI error. The first scripted pass was functionally clean but logged one Choreographer skipped-frame warning during pick bursts; a rerun on the already-loaded model did not reproduce that warning.
-- Latest render-queue rerun: sampled frame timing blocks averaged `17.8-19.3ms`, max `53.0ms`, with `2` blocks over `33ms` and `1` over `50ms` during pick-command queueing.
-- Render queue burst: top `pick:tap` run `48.7ms`, top wait `51.6ms`, slow-frame log count `5`, Choreographer skipped-frame log count during the latest scripted interaction `0`.
+- Load log scan: `documentNodes=1937`, `documentMeshes=666`, `visibleMeshNodes=666`, diagonal `4.622`; tablet reports `GL_MAX_SAMPLES=4`, so the 8x-capable MSAA path clamps to 4x on this hardware. Initial `load-document` GL command run was `5174.2ms`.
+- BOM panel exercise: opened hierarchy BOM, horizontally swiped the table, replaced it with consolidated BOM, swiped again, replaced with Recent files, reopened hierarchy BOM, then closed it. The app stayed alive; no left-panel disposal warning was logged.
+- Scripted interaction: no fatal exception, ANR, import failure, GLES error, framebuffer failure, JNI error, or Choreographer skipped-frame warning.
+- Latest render-queue run: sampled frame timing blocks averaged `16.2-17.4ms`, max `27.9ms`, with `0` blocks over `33ms` or `50ms`.
+- Render queue burst: top `pick:tap` run `81.0ms`, top wait `192.6ms`, slow-frame log count `4`, Choreographer skipped-frame log count during scripted interaction `0`.
 - Final app-PID logcat regression scan after scripted interaction: no crash, ANR, import, GLES, framebuffer, render, or load failure.
 
 ---
