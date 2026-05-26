@@ -273,6 +273,7 @@ public sealed class MainActivity : AppCompatActivity
     private FrameLayout? _renderBusyOverlay;
     private TextView? _renderBusyDetail;
     private readonly object _loadGate = new();
+    private readonly SemaphoreSlim _loadSemaphore = new(1, 1);
     private CancellationTokenSource? _loadCts;
     private int _loadVersion;
     private int _renderModeBusyVersion;
@@ -6946,22 +6947,40 @@ public sealed class MainActivity : AppCompatActivity
         await OpenModelUriAsync(uri);
     }
 
-    private async Task<bool> OpenModelUriAsync(AndroidUri uri, Action<Exception>? onImportError = null)
+    private async Task<bool> OpenModelUriAsync(
+        AndroidUri uri,
+        Action<Exception>? onImportError = null,
+        bool replaceActiveLoad = true)
     {
         if (_import is null || _viewport is null || _camera is null)
             return false;
 
         var cts = new CancellationTokenSource();
-        int loadVersion = Interlocked.Increment(ref _loadVersion);
-        CancellationTokenSource? previousLoad = ReplaceActiveLoad(cts);
-        previousLoad?.Cancel();
+        int loadVersion;
+        if (replaceActiveLoad)
+        {
+            loadVersion = BeginReplacingActiveLoad(cts, out CancellationTokenSource? previousLoad);
+            previousLoad?.Cancel();
+        }
+        else if (!TryBeginExclusiveLoad(cts, out loadVersion))
+        {
+            cts.Dispose();
+            return false;
+        }
+
         string? errorMessage = null;
         bool loaded = false;
+        bool loadSlotAcquired = false;
 
         ShowLoading("Preparing model...");
 
         try
         {
+            await _loadSemaphore.WaitAsync(cts.Token);
+            loadSlotAcquired = true;
+            cts.Token.ThrowIfCancellationRequested();
+            if (!IsCurrentLoad(loadVersion, cts)) return false;
+
             var progress = new Progress<string>(message =>
             {
                 if (IsCurrentLoad(loadVersion, cts))
@@ -7020,6 +7039,9 @@ public sealed class MainActivity : AppCompatActivity
         }
         finally
         {
+            if (loadSlotAcquired)
+                _loadSemaphore.Release();
+
             ClearActiveLoad(cts);
 
             cts.Dispose();
@@ -8880,13 +8902,38 @@ public sealed class MainActivity : AppCompatActivity
             return _loadCts is not null;
     }
 
-    private CancellationTokenSource? ReplaceActiveLoad(CancellationTokenSource cts)
+    private int BeginReplacingActiveLoad(CancellationTokenSource cts, out CancellationTokenSource? previous)
     {
         lock (_loadGate)
         {
-            CancellationTokenSource? previous = _loadCts;
+            int loadVersion = unchecked(_loadVersion + 1);
+            if (loadVersion == 0)
+                loadVersion = 1;
+
+            _loadVersion = loadVersion;
+            previous = _loadCts;
             _loadCts = cts;
-            return previous;
+            return loadVersion;
+        }
+    }
+
+    private bool TryBeginExclusiveLoad(CancellationTokenSource cts, out int loadVersion)
+    {
+        lock (_loadGate)
+        {
+            if (_isDestroyed || _loadCts is not null)
+            {
+                loadVersion = Volatile.Read(ref _loadVersion);
+                return false;
+            }
+
+            loadVersion = unchecked(_loadVersion + 1);
+            if (loadVersion == 0)
+                loadVersion = 1;
+
+            _loadVersion = loadVersion;
+            _loadCts = cts;
+            return true;
         }
     }
 
@@ -8914,6 +8961,7 @@ public sealed class MainActivity : AppCompatActivity
         {
             CancellationTokenSource? cts = _loadCts;
             _loadCts = null;
+            unchecked { _loadVersion++; }
             return cts;
         }
     }
@@ -9110,6 +9158,8 @@ public sealed class MainActivity : AppCompatActivity
     {
         var viewport = _viewport;
         Scene? runtimeScene = _runtimeScene;
+        DocumentDto? retainedDocument = _lastLoadedDocument;
+        string? lastLoadedUriText = _lastLoadedUriText;
         if (_isDestroyed
             || viewport is null
             || viewport.Renderer.Scene is not null
@@ -9119,58 +9169,104 @@ public sealed class MainActivity : AppCompatActivity
             return;
         }
 
-        if (_lastLoadedDocument is { } retainedDocument)
+        var cts = new CancellationTokenSource();
+        if (!TryBeginExclusiveLoad(cts, out int loadVersion))
         {
-            try
-            {
-                global::Android.Util.Log.Warn(
-                    "FA.Renderer",
-                    "Renderer scene is missing after GL context recreation; re-uploading retained model data.");
-                await LoadDocumentOnRendererAsync(
-                    retainedDocument,
-                    CancellationToken.None,
-                    () => !_isDestroyed && ReferenceEquals(_runtimeScene, runtimeScene) && !HasActiveLoad());
-
-                if (_isDestroyed || !ReferenceEquals(_runtimeScene, runtimeScene) || HasActiveLoad())
-                    return;
-
-                ApplySettingsToScene();
-                SyncRuntimeSceneTransformsToRenderer("context reload");
-                SyncRuntimeSceneVisibilityToRenderer("context reload");
-                SyncRendererSelectionFromSelectedNodes(runtimeScene);
-                UpdateSectionRendererState();
-                UpdateBodyMoveGizmoRendererState();
-                RefreshMeasurementOverlays();
-                viewport.RequestRender();
-                return;
-            }
-            catch (System.OperationCanceledException)
-            {
-                return;
-            }
-            catch (Exception ex)
-            {
-                global::Android.Util.Log.Warn(
-                    "FA.Renderer",
-                    "Retained model re-upload failed after context recreation; falling back to URI reload: " + ex.Message);
-            }
-        }
-
-        if (string.IsNullOrWhiteSpace(_lastLoadedUriText))
-        {
-            if (!_isDestroyed)
-                ShowError("Model reload required", "Open the model again to restore the view after Android reclaimed graphics memory.");
+            cts.Dispose();
             return;
         }
 
-        AndroidUri? uri = AndroidUri.Parse(_lastLoadedUriText);
+        bool loadSlotAcquired = false;
+        bool reloadFromUri = false;
+
+        try
+        {
+            await _loadSemaphore.WaitAsync(cts.Token);
+            loadSlotAcquired = true;
+            cts.Token.ThrowIfCancellationRequested();
+            if (!IsCurrentLoad(loadVersion, cts)
+                || _isDestroyed
+                || !ReferenceEquals(_runtimeScene, runtimeScene)
+                || viewport.Renderer.Scene is not null)
+            {
+                return;
+            }
+
+            if (retainedDocument is not null)
+            {
+                try
+                {
+                    global::Android.Util.Log.Warn(
+                        "FA.Renderer",
+                        "Renderer scene is missing after GL context recreation; re-uploading retained model data.");
+                    await LoadDocumentOnRendererAsync(
+                        retainedDocument,
+                        cts.Token,
+                        () => IsCurrentLoad(loadVersion, cts) && ReferenceEquals(_runtimeScene, runtimeScene));
+
+                    cts.Token.ThrowIfCancellationRequested();
+                    if (!IsCurrentLoad(loadVersion, cts)
+                        || _isDestroyed
+                        || !ReferenceEquals(_runtimeScene, runtimeScene))
+                    {
+                        return;
+                    }
+
+                    ApplySettingsToScene();
+                    SyncRuntimeSceneTransformsToRenderer("context reload");
+                    SyncRuntimeSceneVisibilityToRenderer("context reload");
+                    SyncRendererSelectionFromSelectedNodes(runtimeScene);
+                    UpdateSectionRendererState();
+                    UpdateBodyMoveGizmoRendererState();
+                    RefreshMeasurementOverlays();
+                    viewport.RequestRender();
+                    return;
+                }
+                catch (System.OperationCanceledException) when (cts.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    global::Android.Util.Log.Warn(
+                        "FA.Renderer",
+                        "Retained model re-upload failed after context recreation; falling back to URI reload: " + ex.Message);
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(lastLoadedUriText))
+            {
+                if (!_isDestroyed)
+                    ShowError("Model reload required", "Open the model again to restore the view after Android reclaimed graphics memory.");
+                return;
+            }
+
+            reloadFromUri = true;
+        }
+        catch (System.OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+            return;
+        }
+        finally
+        {
+            if (loadSlotAcquired)
+                _loadSemaphore.Release();
+
+            ClearActiveLoad(cts);
+            cts.Dispose();
+        }
+
+        if (!reloadFromUri)
+            return;
+
+        AndroidUri? uri = AndroidUri.Parse(lastLoadedUriText);
         if (uri is null)
             return;
 
         global::Android.Util.Log.Warn(
             "FA.Renderer",
             "Renderer scene is missing after resume; reloading the last model after GL context recreation.");
-        bool reloaded = await OpenModelUriAsync(uri);
+        bool reloaded = await OpenModelUriAsync(uri, replaceActiveLoad: false);
         if (!reloaded && !_isDestroyed)
             global::Android.Util.Log.Warn("FA.Renderer", "Context-loss URI reload did not complete; the user may need to reopen the model.");
     }
