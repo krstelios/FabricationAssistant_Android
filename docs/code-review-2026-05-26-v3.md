@@ -117,15 +117,23 @@ Updated 2026-05-27 after implementation and tablet verification.
 
 - **D5 / U10 follow-up:** BOM left-panel content is now explicitly disposed when the host replaces, closes, or destroys the left tool panel. `AndroidBomPanel` clears its horizontal table touch listeners, list item callback, search text callback, action click listeners, and delayed width-refresh callbacks now no-op after disposal.
 
+### Fixed in `478395f` (`Harden Android panel and lifecycle cleanup`)
+
+- **S6 / embedded settings follow-up:** the settings panel is now passed to the left-panel disposal path, so embedded settings cleanup dismisses tracked color-picker dialogs and clears `OnSettingsChanged` when the panel is replaced, closed, or destroyed instead of relying only on fragment `OnDestroy`.
+- **D6 / BOM UI cleanup:** hierarchy BOM rows now use a dedicated `+` / `-` disclosure control with accessibility labels instead of prefixing the part number with `>` / `v`; row-width measurement accounts for the disclosure control.
+- **C1:** `AppSettings.Initialize` now uses `Interlocked.CompareExchange` for one-time SharedPreferences publication instead of a lock around `??=`, while leaving schema migration idempotent.
+- **L7:** lifecycle background tasks are now observed via an async try/catch helper, so faults are logged directly and cancellation is explicitly ignored without relying on a fault-only continuation.
+- **D3:** preferred-pointer fallback logging is now scoped to the activity instance instead of a process-wide static field.
+
 ### Latest tablet verification
 
-- Installed the debug APK containing `71b9346` on tablet `R52TA040AQT`.
+- Installed the debug APK containing `478395f` on tablet `R52TA040AQT`.
 - Opened the app, loaded recent file `50-0001916_00.fa`.
-- Load log scan: `documentNodes=1937`, `documentMeshes=666`, `visibleMeshNodes=666`, diagonal `4.622`; tablet reports `GL_MAX_SAMPLES=4`, so the 8x-capable MSAA path clamps to 4x on this hardware. Initial `load-document` GL command run was `5174.2ms`.
-- BOM panel exercise: opened hierarchy BOM, horizontally swiped the table, replaced it with consolidated BOM, swiped again, replaced with Recent files, reopened hierarchy BOM, then closed it. The app stayed alive; no left-panel disposal warning was logged.
+- Load log scan: `documentNodes=1937`, `documentMeshes=666`, `visibleMeshNodes=666`, diagonal `4.622`; tablet reports `GL_MAX_SAMPLES=4`, so the 8x-capable MSAA path clamps to 4x on this hardware. Initial `load-document` GL command run was `5118.0ms`.
+- Panel exercise: opened Settings, scrolled it, replaced it with hierarchy BOM, toggled the new BOM disclosure control, horizontally swiped the table, replaced it with consolidated BOM, then replaced it with Recent files. The app stayed alive; no left-panel disposal warning or lifecycle task failure was logged.
 - Scripted interaction: no fatal exception, ANR, import failure, GLES error, framebuffer failure, JNI error, or Choreographer skipped-frame warning.
-- Latest render-queue run: sampled frame timing blocks averaged `16.2-17.4ms`, max `27.9ms`, with `0` blocks over `33ms` or `50ms`.
-- Render queue burst: top `pick:tap` run `81.0ms`, top wait `192.6ms`, slow-frame log count `4`, Choreographer skipped-frame log count during scripted interaction `0`.
+- Latest full-viewport render-queue run: sampled frame timing blocks averaged `15.7-17.5ms`, max `22.4ms`, with `0` blocks over `33ms` or `50ms`.
+- Render queue burst: top `pick:tap` run `36.8ms`, top wait `41.7ms`, slow-frame log count `2`, Choreographer skipped-frame log count during scripted interaction `0`.
 - Final app-PID logcat regression scan after scripted interaction: no crash, ANR, import, GLES, framebuffer, render, or load failure.
 
 ---
