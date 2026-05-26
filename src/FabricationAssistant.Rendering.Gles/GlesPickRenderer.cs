@@ -181,7 +181,7 @@ public sealed class GlesPickRenderer : IDisposable
 
         uint pixel = 0u;
         DrainGlErrors("before-readpixels");
-        _gl.Finish();
+        _gl.Flush();
         _gl.ReadPixels(x, glY, 1u, 1u, PixelFormat.RedInteger, PixelType.UnsignedInt, &pixel);
         DrainGlErrors("readpixels");
 
