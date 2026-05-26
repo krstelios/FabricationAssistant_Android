@@ -85,13 +85,17 @@ Updated 2026-05-27 after implementation and tablet verification.
 
 - **B7:** MainActivity-owned navigation, properties, bottom-toolbar, section/explode/render-mode, and loading-cancel handlers now use named methods and are explicitly detached during `OnDestroy`; JNI listener clearing remains as a cleanup backstop.
 
+### Fixed in `7b45c9b` (`Snapshot renderer appearance arrays`)
+
+- **B5:** settings-to-renderer handoff now snapshots every `SceneAppearance` array field before queueing the GL-thread command, so future UI-side array mutation cannot alias an in-flight renderer appearance update. Unit coverage verifies array fields are cloned and scalar fields are preserved.
+
 ### Latest tablet verification
 
-- Installed the debug APK containing `9c7e651` on tablet `R52TA040AQT`.
+- Installed the debug APK containing `7b45c9b` on tablet `R52TA040AQT`.
 - Opened the app, loaded recent file `50-0001916_00.fa`.
-- Load log scan: `documentNodes=1937`, `documentMeshes=666`, `visibleMeshNodes=666`, diagonal `4.622`; tablet reports `GL_MAX_SAMPLES=4`, so the 8x-capable MSAA path clamps to 4x on this hardware. Initial `load-document` GL command run was `5178.8ms`.
-- Scripted interaction: no fatal exception, ANR, import failure, GLES error, framebuffer failure, or JNI error; sampled frame timing blocks averaged `16.3-17.9ms`, max `24.8ms`, with `0` frames over `33ms` / `50ms`.
-- Render queue burst: top `pick:tap` run `74.1ms`, top wait `65.4ms`, slow-frame log count `3`, Choreographer skipped-frame log count `0`.
+- Load log scan: `documentNodes=1937`, `documentMeshes=666`, `visibleMeshNodes=666`, diagonal `4.622`; tablet reports `GL_MAX_SAMPLES=4`, so the 8x-capable MSAA path clamps to 4x on this hardware. Initial `load-document` GL command run was `5161.5ms`.
+- Scripted interaction: no fatal exception, ANR, import failure, GLES error, framebuffer failure, or JNI error; sampled frame timing blocks averaged `16.3-17.1ms`, max `34.0ms`, with `1` frame over `33ms` and `0` frames over `50ms`.
+- Render queue burst: top `pick:tap` run `71.5ms`, top wait `63.3ms`, slow-frame log count `5`, Choreographer skipped-frame log count during scripted interaction `0`. Cold launch emitted one pre-load Choreographer skipped-frame line.
 - Final app-PID logcat regression scan after scripted interaction: no crash, ANR, import, GLES, framebuffer, render, or load failure.
 
 ---
