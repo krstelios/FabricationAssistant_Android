@@ -36,13 +36,25 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment
     public override global::Android.App.Dialog OnCreateDialog(Bundle? savedInstanceState)
     {
         var dialog = (BottomSheetDialog)base.OnCreateDialog(savedInstanceState);
-        dialog.Behavior.PeekHeight = (int)(Resources?.DisplayMetrics?.HeightPixels * 0.80f ?? 800);
+        dialog.Behavior.PeekHeight = ResolvePeekHeightPx();
         dialog.Behavior.FitToContents = false;
         dialog.Behavior.State = BottomSheetBehavior.StateExpanded;
         dialog.Behavior.Hideable = false;
         dialog.Behavior.SkipCollapsed = true;
         dialog.Behavior.Draggable = false;
         return dialog;
+    }
+
+    private int ResolvePeekHeightPx()
+    {
+        DisplayMetrics? metrics = Resources?.DisplayMetrics;
+        float density = metrics?.Density ?? 1.0f;
+        int displayHeight = metrics?.HeightPixels ?? (int)(640f * density);
+        int minViewportReserve = (int)(96f * density);
+        int minPeek = (int)(280f * density);
+        int maxPeek = System.Math.Max(minPeek, displayHeight - minViewportReserve);
+        int desiredPeek = (int)(displayHeight * 0.72f);
+        return System.Math.Clamp(desiredPeek, minPeek, maxPeek);
     }
 
     public override void OnStart()

@@ -12,6 +12,9 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster
     private readonly Func<IReadOnlyList<SectionPlane>>? _sectionPlanesAccessor;
     private readonly Dictionary<int, AccelerationEntry> _accelerations = new();
     private Scene? _cachedScene;
+    private long _cachedVisibilityVersion = -1;
+    private long _cachedTransientTransformVersion = -1;
+    private long _cachedMoveTransformVersion = -1;
     private string _lastRaycastLogKey = "";
     private long _lastRaycastLogMs;
     private int? _preferredNodeId;
@@ -53,6 +56,9 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster
         int count = _accelerations.Count;
         _accelerations.Clear();
         _cachedScene = null;
+        _cachedVisibilityVersion = -1;
+        _cachedTransientTransformVersion = -1;
+        _cachedMoveTransformVersion = -1;
         _preferredNodeId = null;
         ResetDiagnostics();
         Log.Debug("FA.MeasureRaycast", $"Acceleration cache cleared: reason={reason}, entries={count}.");
@@ -77,13 +83,7 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster
             return null;
         }
 
-        if (!ReferenceEquals(scene, _cachedScene))
-        {
-            _accelerations.Clear();
-            _cachedScene = scene;
-            if (collectDiagnostics)
-                Log.Debug("FA.MeasureRaycast", $"Scene cache reset: nodes={scene.NodesById.Count}, visibleMeshNodes={scene.GetVisibleNodes().Count}, meshes={scene.MeshesById.Count}.");
-        }
+        ResetSceneCacheIfNeeded(scene, collectDiagnostics);
 
         if (!IsFinite(origin) || !TryNormalize(direction, out Vector3d rayDir))
         {
@@ -174,6 +174,36 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster
 
         candidates.Sort(static (a, b) => a.EntryDistance.CompareTo(b.EntryDistance));
         return candidates;
+    }
+
+    private void ResetSceneCacheIfNeeded(Scene scene, bool collectDiagnostics)
+    {
+        long visibilityVersion = scene.VisibilityVersion;
+        long transientTransformVersion = scene.TransientTransformVersion;
+        long moveTransformVersion = scene.MoveTransformVersion;
+        bool sceneChanged = !ReferenceEquals(scene, _cachedScene);
+        bool versionChanged = !sceneChanged
+            && (visibilityVersion != _cachedVisibilityVersion
+                || transientTransformVersion != _cachedTransientTransformVersion
+                || moveTransformVersion != _cachedMoveTransformVersion);
+
+        if (!sceneChanged && !versionChanged)
+            return;
+
+        int entries = _accelerations.Count;
+        _accelerations.Clear();
+        _cachedScene = scene;
+        _cachedVisibilityVersion = visibilityVersion;
+        _cachedTransientTransformVersion = transientTransformVersion;
+        _cachedMoveTransformVersion = moveTransformVersion;
+
+        if (collectDiagnostics)
+        {
+            string reason = sceneChanged ? "scene-reference" : "scene-version";
+            Log.Debug(
+                "FA.MeasureRaycast",
+                $"Scene cache reset: reason={reason}, entries={entries}, nodes={scene.NodesById.Count}, visibleMeshNodes={scene.GetVisibleNodes().Count}, meshes={scene.MeshesById.Count}, visibilityVersion={visibilityVersion}, transientTransformVersion={transientTransformVersion}, moveTransformVersion={moveTransformVersion}.");
+        }
     }
 
     private AndroidMeshRaycastAcceleration GetAcceleration(MeshDto mesh)

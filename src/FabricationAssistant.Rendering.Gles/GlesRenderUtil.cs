@@ -6,6 +6,39 @@ internal static class GlesRenderUtil
 {
     private const double NormalMatrixDeterminantEpsilon = 1e-30;
 
+    public static GlesPrimitiveLimits QueryPrimitiveLimits(GL gl)
+    {
+        ArgumentNullException.ThrowIfNull(gl);
+
+        float lineMin = 1.0f;
+        float lineMax = 1.0f;
+        float pointMin = 1.0f;
+        float pointMax = 64.0f;
+
+        try
+        {
+            if (TryReadFloatRange(gl, GLEnum.AliasedLineWidthRange, out float queriedLineMin, out float queriedLineMax))
+            {
+                lineMin = queriedLineMin;
+                lineMax = queriedLineMax;
+            }
+
+#pragma warning disable CS0618 // GLES exposes the aliased point-size range for gl_PointSize clamping.
+            if (TryReadFloatRange(gl, GLEnum.AliasedPointSizeRange, out float queriedPointMin, out float queriedPointMax))
+#pragma warning restore CS0618
+            {
+                pointMin = queriedPointMin;
+                pointMax = queriedPointMax;
+            }
+        }
+        catch (Exception ex)
+        {
+            Android.Util.Log.Warn("FA.Renderer", "Unable to query GLES primitive limits; using conservative defaults: " + ex.Message);
+        }
+
+        return new GlesPrimitiveLimits(lineMin, lineMax, pointMin, pointMax);
+    }
+
     public static void ApplyMeshCulling(GL gl, GpuMesh mesh)
     {
         ArgumentNullException.ThrowIfNull(gl);
@@ -129,5 +162,49 @@ internal static class GlesRenderUtil
         destination[7] = 0f;
         destination[8] = 1f;
         return false;
+    }
+
+    private static unsafe bool TryReadFloatRange(GL gl, GLEnum pname, out float min, out float max)
+    {
+        min = 1.0f;
+        max = 1.0f;
+
+        float* values = stackalloc float[2];
+        values[0] = 0.0f;
+        values[1] = 0.0f;
+        gl.GetFloat(pname, values);
+
+        float low = values[0];
+        float high = values[1];
+        if (!float.IsFinite(low) || !float.IsFinite(high) || high <= 0.0f)
+            return false;
+
+        min = Math.Max(0.0f, Math.Min(low, high));
+        max = Math.Max(min, Math.Max(low, high));
+        return true;
+    }
+}
+
+internal readonly record struct GlesPrimitiveLimits(
+    float LineWidthMin,
+    float LineWidthMax,
+    float PointSizeMin,
+    float PointSizeMax)
+{
+    public float ClampLineWidth(float value)
+        => ClampFinite(value, LineWidthMin, LineWidthMax, fallback: 1.0f);
+
+    public float ClampPointSize(float value)
+        => ClampFinite(value, PointSizeMin, PointSizeMax, fallback: 1.0f);
+
+    private static float ClampFinite(float value, float min, float max, float fallback)
+    {
+        if (!float.IsFinite(value))
+            value = fallback;
+        if (!float.IsFinite(min) || min < 0.0f)
+            min = 0.0f;
+        if (!float.IsFinite(max) || max < min)
+            max = min;
+        return Math.Clamp(value, min, max);
     }
 }

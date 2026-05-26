@@ -29,6 +29,7 @@ internal sealed class GlesSectionOverlay : IDisposable
 
     private readonly GL _gl;
     private readonly ShaderProgram _program;
+    private readonly GlesPrimitiveLimits _primitiveLimits;
     private uint _vao;
     private uint _vbo;
     private readonly List<float> _data = new();
@@ -37,6 +38,7 @@ internal sealed class GlesSectionOverlay : IDisposable
     {
         _gl = gl ?? throw new ArgumentNullException(nameof(gl));
         _program = new ShaderProgram(gl, "section.overlay", vertexSource, fragmentSource);
+        _primitiveLimits = GlesRenderUtil.QueryPrimitiveLimits(gl);
         CreateBuffers();
     }
 
@@ -232,7 +234,7 @@ internal sealed class GlesSectionOverlay : IDisposable
         _program.Use();
         SetMat4("uView", view);
         SetMat4("uProjection", projection);
-        SetFloat("uPointSize", pointSize);
+        SetFloat("uPointSize", _primitiveLimits.ClampPointSize(pointSize));
         SetInt("uRoundPoints", roundPoints ? 1 : 0);
 
         if (depthTest)
@@ -260,7 +262,7 @@ internal sealed class GlesSectionOverlay : IDisposable
         if (_vao == 0 || _vbo == 0)
             CreateBuffers();
 
-        _gl.LineWidth(lineWidth);
+        _gl.LineWidth(_primitiveLimits.ClampLineWidth(lineWidth));
         _gl.BindVertexArray(_vao);
         _gl.BindBuffer(BufferTargetARB.ArrayBuffer, _vbo);
         Span<float> span = CollectionsMarshal.AsSpan(_data);
@@ -275,7 +277,7 @@ internal sealed class GlesSectionOverlay : IDisposable
         _gl.DrawArrays(primitive, 0, (uint)vertexCount);
         _gl.BindVertexArray(0);
 
-        _gl.LineWidth(1.0f);
+        _gl.LineWidth(_primitiveLimits.ClampLineWidth(1.0f));
         _gl.DepthMask(true);
         _gl.Disable(EnableCap.Blend);
         _gl.Enable(EnableCap.DepthTest);

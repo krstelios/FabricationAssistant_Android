@@ -25,6 +25,7 @@ internal sealed class GlesMeasurementOverlay : IDisposable
     private readonly GL _gl;
     private readonly ShaderProgram _program;
     private readonly ShaderProgram _diskProgram;
+    private readonly GlesPrimitiveLimits _primitiveLimits;
     private uint _vao;
     private uint _vbo;
     private uint _diskVao;
@@ -46,6 +47,7 @@ internal sealed class GlesMeasurementOverlay : IDisposable
         _gl = gl ?? throw new ArgumentNullException(nameof(gl));
         _program = new ShaderProgram(gl, "measure.overlay", vertexSource, fragmentSource);
         _diskProgram = new ShaderProgram(gl, "measure.disk", diskVertexSource, diskFragmentSource);
+        _primitiveLimits = GlesRenderUtil.QueryPrimitiveLimits(gl);
         CreateBuffers();
         CreateDiskBuffers();
     }
@@ -105,9 +107,9 @@ internal sealed class GlesMeasurementOverlay : IDisposable
 
         if (_lineData.Count > 0)
         {
-            SetFloat("uPointSize", 1.0f);
+            SetFloat("uPointSize", _primitiveLimits.ClampPointSize(1.0f));
             SetInt("uRoundPoints", 0);
-            _gl.LineWidth(2.0f);
+            _gl.LineWidth(_primitiveLimits.ClampLineWidth(2.0f));
             UploadAndDraw(_lineData, PrimitiveType.Lines);
         }
 
@@ -135,7 +137,7 @@ internal sealed class GlesMeasurementOverlay : IDisposable
 
         if (_pointData.Count > 0)
         {
-            SetFloat("uPointSize", BallPixelSize);
+            SetFloat("uPointSize", _primitiveLimits.ClampPointSize(BallPixelSize));
             SetInt("uRoundPoints", 1);
             UploadAndDraw(_pointData, PrimitiveType.Points);
         }

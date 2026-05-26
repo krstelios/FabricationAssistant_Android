@@ -91,6 +91,7 @@ public sealed class MainActivity : AppCompatActivity
     private const float MeasurementTouchHitSlopDp = 12f;
     private const int SectionDeleteButtonSizeDp = 28;
     private const long BodyMovePromptToastDebounceMs = 1500;
+    private const long SpenPalmToggleToastDebounceMs = 750;
     private const int AndroidStateFocused = 16842908;
     private const int AndroidStatePressed = 16842919;
     private const int AndroidStateHovered = 16843623;
@@ -138,6 +139,7 @@ public sealed class MainActivity : AppCompatActivity
     private bool _spenPalmGuardActive;
     private bool _stylusHoverLogged;
     private bool _stylusSecondaryContextActive;
+    private long _lastSpenPalmToggleToastMs;
     private View? _topAppBar;
     private View? _navRail;
     private View? _navRailDivider;
@@ -613,8 +615,9 @@ public sealed class MainActivity : AppCompatActivity
 
     private void SetPropertiesPanelExpanded(bool expanded)
     {
-        _propertiesPanelExpanded = expanded;
-        ViewStates visibility = expanded ? ViewStates.Visible : ViewStates.Gone;
+        bool hasPanel = _propertiesPanel is not null || _propertiesPanelDivider is not null;
+        _propertiesPanelExpanded = expanded && hasPanel;
+        ViewStates visibility = _propertiesPanelExpanded ? ViewStates.Visible : ViewStates.Gone;
 
         if (_propertiesPanel is not null)
             _propertiesPanel.Visibility = visibility;
@@ -624,9 +627,9 @@ public sealed class MainActivity : AppCompatActivity
 
         if (_propertiesToggle is not null)
         {
-            _propertiesToggle.Selected = expanded;
-            _propertiesToggle.Rotation = expanded ? 0f : 180f;
-            _propertiesToggle.ContentDescription = GetString(expanded
+            _propertiesToggle.Selected = _propertiesPanelExpanded;
+            _propertiesToggle.Rotation = _propertiesPanelExpanded ? 0f : 180f;
+            _propertiesToggle.ContentDescription = GetString(_propertiesPanelExpanded
                 ? Resource.String.cd_close_properties
                 : Resource.String.cd_open_properties);
         }
@@ -1451,7 +1454,17 @@ public sealed class MainActivity : AppCompatActivity
     private void ToggleSpenPalmRejection()
     {
         AppSettings.SpenPalmRejectionEnabled = !AppSettings.SpenPalmRejectionEnabled;
-        ApplySpenPalmRejectionState(showToast: true);
+        ApplySpenPalmRejectionState(showToast: ShouldShowSpenPalmToggleToast());
+    }
+
+    private bool ShouldShowSpenPalmToggleToast()
+    {
+        long nowMs = SystemClock.ElapsedRealtime();
+        if (nowMs - _lastSpenPalmToggleToastMs < SpenPalmToggleToastDebounceMs)
+            return false;
+
+        _lastSpenPalmToggleToastMs = nowMs;
+        return true;
     }
 
     private void ApplySpenPalmRejectionState(bool showToast)
@@ -5881,7 +5894,7 @@ public sealed class MainActivity : AppCompatActivity
         if (active)
         {
             SetLeftToolPanelExpanded(false, animate: false);
-            _propertiesPanelExpandedBeforeFullscreen = _propertiesPanelExpanded;
+            _propertiesPanelExpandedBeforeFullscreen = _propertiesPanelExpanded && _propertiesPanel is not null;
             SetPropertiesPanelExpanded(false);
         }
 
@@ -5893,8 +5906,10 @@ public sealed class MainActivity : AppCompatActivity
         SetVisibility(_navRail, chromeVisibility);
         SetVisibility(_navRailDivider, chromeVisibility);
 
-        if (!active && _propertiesPanelExpandedBeforeFullscreen)
+        if (!active && _propertiesPanelExpandedBeforeFullscreen && _propertiesPanel is not null)
             SetPropertiesPanelExpanded(true);
+        if (!active)
+            _propertiesPanelExpandedBeforeFullscreen = false;
 
         UpdateFullscreenButtonState();
         _viewport?.RequestLayout();
@@ -5994,6 +6009,19 @@ public sealed class MainActivity : AppCompatActivity
         _toolFullscreenButton.ContentDescription = GetString(contentDescriptionId);
         _toolFullscreenButton.Selected = _fullscreenUiActive;
         SetTooltip(_toolFullscreenButton, contentDescriptionId);
+    }
+
+    private void RebindStyledTooltips()
+    {
+        DisposeStyledTooltips();
+        ApplyMainTooltips();
+        ApplyMeasureTooltips();
+        ApplyViewPresetTooltips();
+        ApplySectionTooltips();
+        ApplyExplodeTooltips();
+        ApplyRenderModeTooltips();
+        ApplySpenPalmRejectionState(showToast: false);
+        UpdateFullscreenButtonState();
     }
 
     private void SetTooltip(View? view, int stringId)
@@ -8962,6 +8990,7 @@ public sealed class MainActivity : AppCompatActivity
 
         ApplySystemBarsForFullscreen(_fullscreenUiActive);
         UpdateBottomToolbarVisibility();
+        RebindStyledTooltips();
         RefreshMeasurementOverlays();
         _viewport?.RequestLayout();
         _viewport?.Post(() => _viewport?.RequestRender());
@@ -9008,14 +9037,14 @@ public sealed class MainActivity : AppCompatActivity
             outState.PutDoubleArray(SavedStateCameraKey, cameraState);
         if (_selectedNodeIds.Count > 0)
             outState.PutIntArray(SavedStateSelectedNodeIdsKey, _selectedNodeIds.OrderBy(id => id).ToArray());
+        var selectedOccurrenceIds = _packageSession?.SelectedOccurrenceIds;
         if (_runtimeScene is { } selectionScene
             && AndroidScenePackageState.IsFa(selectionScene.PackageInfo)
-            && _packageSession is not null
-            && _packageSession.SelectedOccurrenceIds.Count > 0)
+            && selectedOccurrenceIds is { Count: > 0 })
         {
             outState.PutStringArray(
                 SavedStateSelectedOccurrencesKey,
-                _packageSession.SelectedOccurrenceIds.OrderBy(id => id, StringComparer.Ordinal).ToArray());
+                selectedOccurrenceIds.OrderBy(id => id, StringComparer.Ordinal).ToArray());
         }
         if (_explodeAmount > 0.0)
             outState.PutDouble(SavedStateExplodeAmountKey, Math.Clamp(_explodeAmount, 0.0, 1.0));
@@ -9128,7 +9157,11 @@ public sealed class MainActivity : AppCompatActivity
         }
 
         if (string.IsNullOrWhiteSpace(_lastLoadedUriText))
+        {
+            if (!_isDestroyed)
+                ShowError("Model reload required", "Open the model again to restore the view after Android reclaimed graphics memory.");
             return;
+        }
 
         AndroidUri? uri = AndroidUri.Parse(_lastLoadedUriText);
         if (uri is null)
@@ -9137,7 +9170,9 @@ public sealed class MainActivity : AppCompatActivity
         global::Android.Util.Log.Warn(
             "FA.Renderer",
             "Renderer scene is missing after resume; reloading the last model after GL context recreation.");
-        await OpenModelUriAsync(uri);
+        bool reloaded = await OpenModelUriAsync(uri);
+        if (!reloaded && !_isDestroyed)
+            global::Android.Util.Log.Warn("FA.Renderer", "Context-loss URI reload did not complete; the user may need to reopen the model.");
     }
 
     private void ClearAndroidViewListeners()

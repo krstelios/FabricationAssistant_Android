@@ -24,6 +24,8 @@ public sealed class GlesPickRenderer : IDisposable
     private uint _depthRb;
     private int _width;
     private int _height;
+    private string? _lastFramebufferError;
+    private bool _loggedFramebufferUnavailable;
     private readonly float[] _sectionUniformScratch = new float[32];
     private HashSet<int> _xrayBackgroundNodeIdLookup = new();
     public IReadOnlyList<GlesSectionPlane> SectionPlanes { get; set; } = Array.Empty<GlesSectionPlane>();
@@ -101,12 +103,15 @@ public sealed class GlesPickRenderer : IDisposable
         var status = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
         if (status != GLEnum.FramebufferComplete)
         {
-            Android.Util.Log.Error("FA.Pick",
-                $"Pick FBO incomplete: 0x{(int)status:X4} ({width}x{height})");
+            _lastFramebufferError = $"Pick FBO incomplete: 0x{(int)status:X4} ({width}x{height})";
+            _loggedFramebufferUnavailable = false;
+            Android.Util.Log.Error("FA.Pick", _lastFramebufferError);
             _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
             DestroyResources();
             return;
         }
+        _lastFramebufferError = null;
+        _loggedFramebufferUnavailable = false;
         _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
     }
 
@@ -118,7 +123,15 @@ public sealed class GlesPickRenderer : IDisposable
     /// </summary>
     public unsafe int? Pick(int x, int y, GpuScene scene, CameraState camera)
     {
-        if (_fbo == 0 || _width == 0 || _height == 0) return null;
+        if (_fbo == 0 || _width == 0 || _height == 0)
+        {
+            if (!_loggedFramebufferUnavailable && _lastFramebufferError is not null)
+            {
+                Android.Util.Log.Warn("FA.Pick", "Pick unavailable after framebuffer setup failure: " + _lastFramebufferError);
+                _loggedFramebufferUnavailable = true;
+            }
+            return null;
+        }
         if (x < 0 || y < 0 || x >= _width || y >= _height) return null;
 
         _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _fbo);
@@ -168,6 +181,7 @@ public sealed class GlesPickRenderer : IDisposable
 
         uint pixel = 0u;
         DrainGlErrors("before-readpixels");
+        _gl.Finish();
         _gl.ReadPixels(x, glY, 1u, 1u, PixelFormat.RedInteger, PixelType.UnsignedInt, &pixel);
         DrainGlErrors("readpixels");
 
