@@ -97,13 +97,17 @@ Updated 2026-05-27 after implementation and tablet verification.
 
 - **I5:** recent-file access checks now distinguish accessible, revoked, and unknown states. Loading/promoting recents prunes definitively revoked entries but keeps entries whose SAF probe fails transiently, avoiding panel flicker or accidental recents loss when a provider cannot be verified at that moment. Unit coverage now locks this behavior.
 
+### Fixed in `e92e4be` (`Batch related settings writes`)
+
+- **S3:** color picker RGB saves and manual grid spacing now persist grouped settings through one `AppSettings.Edit` transaction per UI action instead of multiple setter transactions, avoiding partial persisted values for grouped controls.
+
 ### Latest tablet verification
 
-- Installed the debug APK containing `64c602d` on tablet `R52TA040AQT`.
+- Installed the debug APK containing `e92e4be` on tablet `R52TA040AQT`.
 - Opened the app, loaded recent file `50-0001916_00.fa`.
-- Load log scan: `documentNodes=1937`, `documentMeshes=666`, `visibleMeshNodes=666`, diagonal `4.622`; tablet reports `GL_MAX_SAMPLES=4`, so the 8x-capable MSAA path clamps to 4x on this hardware. Initial `load-document` GL command run was `5207.9ms`.
-- Scripted interaction: no fatal exception, ANR, import failure, GLES error, framebuffer failure, or JNI error; sampled frame timing blocks averaged `16.9-18.2ms`, max `51.1ms`, with `1` frame over `33ms` / `50ms`.
-- Render queue burst: top `pick:tap` run `73.3ms`, top wait `71.8ms`, slow-frame log count `4`, Choreographer skipped-frame log count during scripted interaction `1`.
+- Load log scan: `documentNodes=1937`, `documentMeshes=666`, `visibleMeshNodes=666`, diagonal `4.622`; tablet reports `GL_MAX_SAMPLES=4`, so the 8x-capable MSAA path clamps to 4x on this hardware. Initial `load-document` GL command run was `5296.9ms`.
+- Scripted interaction: no fatal exception, ANR, import failure, GLES error, framebuffer failure, or JNI error; sampled frame timing blocks averaged `16.8-18.4ms`, max `26.0ms`, with `0` frame timing blocks over `33ms` / `50ms`.
+- Render queue burst: top `pick:tap` run `38.2ms`, top wait `70.1ms`, slow-frame log count `4`, Choreographer skipped-frame log count during scripted interaction `0`.
 - Final app-PID logcat regression scan after scripted interaction: no crash, ANR, import, GLES, framebuffer, render, or load failure.
 
 ---
