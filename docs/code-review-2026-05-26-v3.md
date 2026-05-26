@@ -76,12 +76,17 @@ Updated 2026-05-27 after implementation and tablet verification.
 - **B9:** context-loss reload now acquires the same model-load gate and uses a non-replacing exclusive load when falling back to URI reload, so automatic reloads do not trample fresh user opens.
 - **U2 / L6:** active load CTS replacement and load-version assignment now happen under the same lock; pause/destroy cancellation reads the active CTS through the same gate.
 
+### Fixed in `c0c36d6` (`Harden tooltip and MSAA settings behavior`)
+
+- **U4:** styled tooltip dismissal now excludes the active tooltip instead of dismissing itself and then continuing with a refreshed generation, closing the hover/long-press show-vs-dismiss race.
+- **S4:** Android MSAA settings and framebuffer clamp helpers now preserve an 8x bucket instead of silently downgrading every value above 2x to 4x; unit coverage now includes the 8x setting and hardware-limit path.
+
 ### Latest tablet verification
 
-- Installed the debug APK containing `deac167` on tablet `R52TA040AQT`.
+- Installed the debug APK containing `c0c36d6` on tablet `R52TA040AQT`.
 - Opened the app, loaded recent file `50-0001916_00.fa`.
-- Load log scan: `documentNodes=1937`, `documentMeshes=666`, `visibleMeshNodes=666`, diagonal `4.622`; no fatal exception, ANR, import failure, GLES error, framebuffer failure, or JNI error.
-- Steady-state scripted interaction: 7 frame-timing blocks, top `pick:tap` run `33.1ms`, slow-frame log count `1`, Choreographer skipped-frame log count `0`.
+- Load log scan: `documentNodes=1937`, `documentMeshes=666`, `visibleMeshNodes=666`, diagonal `4.622`; tablet reports `GL_MAX_SAMPLES=4`, so the 8x-capable MSAA path clamps to 4x on this hardware.
+- Scripted interaction: no fatal exception, ANR, import failure, GLES error, framebuffer failure, or JNI error; top burst `pick:tap` run `131.1ms`, slow-frame log count `4`, Choreographer skipped-frame log count `0`.
 - Final logcat regression scan after scripted interaction: no crash, ANR, import, GLES, framebuffer, render, or load failure.
 
 ---
