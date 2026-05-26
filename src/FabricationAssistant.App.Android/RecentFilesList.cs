@@ -16,34 +16,34 @@ internal static class RecentFilesList
             .ToArray();
     }
 
-    public static IReadOnlyList<RecentFileEntry> FilterAccessible(
+    public static IReadOnlyList<RecentFileEntry> FilterReadableOrUnknown(
         IEnumerable<RecentFileEntry> entries,
-        Func<string, bool> hasReadableAccess,
+        Func<string, RecentFileAccessStatus> probeAccess,
         int maxEntries)
     {
         ArgumentNullException.ThrowIfNull(entries);
-        ArgumentNullException.ThrowIfNull(hasReadableAccess);
+        ArgumentNullException.ThrowIfNull(probeAccess);
 
         return Normalize(entries, maxEntries)
-            .Where(e => hasReadableAccess(e.Uri))
+            .Where(e => probeAccess(e.Uri) != RecentFileAccessStatus.Revoked)
             .ToArray();
     }
 
     public static IReadOnlyList<RecentFileEntry> AddOrPromote(
         IEnumerable<RecentFileEntry> existingEntries,
         RecentFileEntry newEntry,
-        Func<string, bool> hasReadableAccess,
+        Func<string, RecentFileAccessStatus> probeAccess,
         int maxEntries)
     {
         ArgumentNullException.ThrowIfNull(existingEntries);
         ArgumentNullException.ThrowIfNull(newEntry);
-        ArgumentNullException.ThrowIfNull(hasReadableAccess);
+        ArgumentNullException.ThrowIfNull(probeAccess);
 
         if (string.IsNullOrWhiteSpace(newEntry.Uri) || maxEntries <= 0)
             return Normalize(existingEntries, maxEntries);
 
         var entries = Normalize(existingEntries, maxEntries)
-            .Where(e => hasReadableAccess(e.Uri))
+            .Where(e => probeAccess(e.Uri) != RecentFileAccessStatus.Revoked)
             .Where(e => !string.Equals(
                 CanonicalizeUri(e.Uri),
                 CanonicalizeUri(newEntry.Uri),
@@ -67,4 +67,11 @@ internal static class RecentFilesList
             return trimmed;
         }
     }
+}
+
+internal enum RecentFileAccessStatus
+{
+    Accessible,
+    Revoked,
+    Unknown,
 }

@@ -5,7 +5,7 @@ namespace FabricationAssistant.App.Android.Tests;
 public sealed class RecentFilesListTests
 {
     [Fact]
-    public void FilterAccessible_removes_revoked_entries_and_keeps_recent_order()
+    public void FilterReadableOrUnknown_removes_revoked_entries_and_keeps_recent_order()
     {
         var entries = new[]
         {
@@ -14,9 +14,11 @@ public sealed class RecentFilesListTests
             Entry("content://new", 20),
         };
 
-        var filtered = RecentFilesList.FilterAccessible(
+        var filtered = RecentFilesList.FilterReadableOrUnknown(
             entries,
-            uri => uri != "content://revoked",
+            uri => uri == "content://revoked"
+                ? RecentFileAccessStatus.Revoked
+                : RecentFileAccessStatus.Accessible,
             maxEntries: 10);
 
         Assert.Collection(
@@ -38,7 +40,9 @@ public sealed class RecentFilesListTests
         var promoted = RecentFilesList.AddOrPromote(
             entries,
             Entry("content://b", 50, "B2"),
-            uri => uri != "content://revoked",
+            uri => uri == "content://revoked"
+                ? RecentFileAccessStatus.Revoked
+                : RecentFileAccessStatus.Accessible,
             maxEntries: 10);
 
         Assert.Collection(
@@ -61,7 +65,7 @@ public sealed class RecentFilesListTests
         var promoted = RecentFilesList.AddOrPromote(
             entries,
             Entry("content://new", 200),
-            _ => true,
+            _ => RecentFileAccessStatus.Accessible,
             maxEntries: 10);
 
         Assert.Equal(10, promoted.Count);
@@ -81,13 +85,62 @@ public sealed class RecentFilesListTests
         var promoted = RecentFilesList.AddOrPromote(
             entries,
             Entry("content://provider/models/part a.glb", 50),
-            _ => true,
+            _ => RecentFileAccessStatus.Accessible,
             maxEntries: 10);
 
         Assert.Collection(
             promoted,
             e => Assert.Equal("content://provider/models/part a.glb", e.Uri),
             e => Assert.Equal("content://provider/models/other.glb", e.Uri));
+    }
+
+    [Fact]
+    public void FilterReadableOrUnknown_preserves_transient_probe_failures()
+    {
+        var entries = new[]
+        {
+            Entry("content://accessible", 30),
+            Entry("content://unknown", 20),
+            Entry("content://revoked", 10),
+        };
+
+        var filtered = RecentFilesList.FilterReadableOrUnknown(
+            entries,
+            uri => uri switch
+            {
+                "content://revoked" => RecentFileAccessStatus.Revoked,
+                "content://unknown" => RecentFileAccessStatus.Unknown,
+                _ => RecentFileAccessStatus.Accessible,
+            },
+            maxEntries: 10);
+
+        Assert.Collection(
+            filtered,
+            e => Assert.Equal("content://accessible", e.Uri),
+            e => Assert.Equal("content://unknown", e.Uri));
+    }
+
+    [Fact]
+    public void AddOrPromote_preserves_unknown_existing_entries()
+    {
+        var entries = new[]
+        {
+            Entry("content://unknown", 30),
+            Entry("content://revoked", 20),
+        };
+
+        var promoted = RecentFilesList.AddOrPromote(
+            entries,
+            Entry("content://new", 40),
+            uri => uri == "content://revoked"
+                ? RecentFileAccessStatus.Revoked
+                : RecentFileAccessStatus.Unknown,
+            maxEntries: 10);
+
+        Assert.Collection(
+            promoted,
+            e => Assert.Equal("content://new", e.Uri),
+            e => Assert.Equal("content://unknown", e.Uri));
     }
 
     private static RecentFileEntry Entry(string uri, long lastOpenedUnixMs, string? displayName = null)

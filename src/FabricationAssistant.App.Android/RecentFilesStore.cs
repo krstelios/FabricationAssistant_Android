@@ -24,9 +24,9 @@ public static class RecentFilesStore
         lock (Gate)
         {
             var entries = LoadUnsafe(context);
-            var accessible = RecentFilesList.FilterAccessible(
+            var accessible = RecentFilesList.FilterReadableOrUnknown(
                 entries,
-                uriText => HasReadableAccess(context, uriText),
+                uriText => ProbeReadableAccess(context, uriText),
                 MaxEntries);
             if (accessible.Count != entries.Count)
                 SaveUnsafe(context, accessible);
@@ -80,7 +80,7 @@ public static class RecentFilesStore
             var entries = RecentFilesList.AddOrPromote(
                 LoadUnsafe(context),
                 entry,
-                entryUri => HasReadableAccess(context, entryUri),
+                entryUri => ProbeReadableAccess(context, entryUri),
                 MaxEntries);
 
             SaveUnsafe(context, entries);
@@ -137,29 +137,33 @@ public static class RecentFilesStore
             global::Android.Util.Log.Warn("FA.Recent", "Failed to commit recent files to SharedPreferences.");
     }
 
-    private static bool HasReadableAccess(Context context, string uriText)
+    private static RecentFileAccessStatus ProbeReadableAccess(Context context, string uriText)
     {
         if (string.IsNullOrWhiteSpace(uriText))
-            return false;
+            return RecentFileAccessStatus.Revoked;
 
         AndroidUri? uri = AndroidUri.Parse(uriText);
         if (uri is null)
-            return false;
+            return RecentFileAccessStatus.Revoked;
 
         try
         {
             using var descriptor = context.ContentResolver?.OpenFileDescriptor(uri, "r");
-            return descriptor is not null;
+            if (descriptor is not null)
+                return RecentFileAccessStatus.Accessible;
+
+            global::Android.Util.Log.Warn("FA.Recent", "Could not verify recent file access: descriptor unavailable.");
+            return RecentFileAccessStatus.Unknown;
         }
         catch (Exception ex) when (IsAccessRevoked(ex))
         {
             global::Android.Util.Log.Info("FA.Recent", "Pruned inaccessible recent file: " + uriText);
-            return false;
+            return RecentFileAccessStatus.Revoked;
         }
         catch (Exception ex)
         {
-            global::Android.Util.Log.Warn("FA.Recent", "Could not verify recent file access: " + ex.Message);
-            return false;
+            global::Android.Util.Log.Warn("FA.Recent", "Could not verify recent file access; keeping entry for retry: " + ex.Message);
+            return RecentFileAccessStatus.Unknown;
         }
     }
 
