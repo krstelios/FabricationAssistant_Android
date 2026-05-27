@@ -9,6 +9,7 @@ public static class RecentFilesStore
 {
     private const string PreferencesName = "fa_recent_files";
     private const string EntriesKey = "entries_json";
+    private const string EntriesPendingKey = "entries_json_pending";
     private const int MaxEntries = 10;
     private static readonly object Gate = new();
 
@@ -126,14 +127,28 @@ public static class RecentFilesStore
     private static void SaveUnsafe(Context context, IReadOnlyList<RecentFileEntry> entries)
     {
         string json = JsonSerializer.Serialize(entries.Take(MaxEntries), JsonOptions);
-        var editor = context
-            .GetSharedPreferences(PreferencesName, FileCreationMode.Private)
-            ?.Edit();
-        if (editor is null)
+        var prefs = context.GetSharedPreferences(PreferencesName, FileCreationMode.Private);
+        if (prefs is null)
             return;
 
-        editor.PutString(EntriesKey, json);
-        if (!editor.Commit())
+        var pendingEditor = prefs.Edit();
+        if (pendingEditor is null)
+            return;
+
+        pendingEditor.PutString(EntriesPendingKey, json);
+        if (!pendingEditor.Commit())
+        {
+            global::Android.Util.Log.Warn("FA.Recent", "Failed to stage recent files in SharedPreferences.");
+            return;
+        }
+
+        var finalEditor = prefs.Edit();
+        if (finalEditor is null)
+            return;
+
+        finalEditor.PutString(EntriesKey, json);
+        finalEditor.Remove(EntriesPendingKey);
+        if (!finalEditor.Commit())
             global::Android.Util.Log.Warn("FA.Recent", "Failed to commit recent files to SharedPreferences.");
     }
 

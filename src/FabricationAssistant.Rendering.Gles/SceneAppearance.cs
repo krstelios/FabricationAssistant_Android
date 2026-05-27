@@ -15,6 +15,173 @@ public enum RenderMode
     Realistic = 4,
 }
 
+public static class SceneAppearanceDefaults
+{
+    public const RenderMode Mode = RenderMode.ShadedWithEdges;
+
+    public const bool ShowGrid = true;
+    public const bool ShiftGridToModelMin = true;
+    public const bool UseAutomaticGridSpacing = true;
+    public const float GridSpacingMm = 100.8f;
+    public const float GridLineThickness = 1.0f;
+    public const float GridLineColorR = 0.35f;
+    public const float GridLineColorG = 0.35f;
+    public const float GridLineColorB = 0.35f;
+    public const bool ShowAxes = true;
+    public const bool IsPerspective = true;
+    public const bool LightweightNavigationEnabled = true;
+
+    public const float BackgroundR = 0.079f;
+    public const float BackgroundG = 0.086f;
+    public const float BackgroundB = 0.097f;
+    public const float SurfaceR = 0.82f;
+    public const float SurfaceG = 0.82f;
+    public const float SurfaceB = 0.82f;
+    public const float SurfaceOpacity = 1.0f;
+
+    public const bool EdgesEnabled = true;
+    public const float EdgeR = 0.24028806f;
+    public const float EdgeG = 0.24f;
+    public const float EdgeB = 0.26f;
+    public const float EdgeWidth = 1.0f;
+    public const float CadEdgeFeatureAngleDegrees = 28.0f;
+    public const float CadEdgeCoplanarToleranceDegrees = 5.0f;
+    public const float CadEdgeWeldToleranceScale = 1.0e-5f;
+    public const bool CadEdgeSilhouetteEnabled = true;
+    public const float EdgeDepthBias = 0.0f;
+    public const float SurfaceOffsetFactor = 2.44f;
+    public const float SurfaceOffsetUnits = 0.0f;
+
+    public const float ClaySurfaceR = 0.804f;
+    public const float ClaySurfaceG = 0.796f;
+    public const float ClaySurfaceB = 0.797f;
+    public const float ClayBackgroundR = 1.0f;
+    public const float ClayBackgroundG = 1.0f;
+    public const float ClayBackgroundB = 1.0f;
+    public const bool ClayFeatureEdgesEnabled = true;
+    public const float ClayFeatureEdgeR = 0.11975311f;
+    public const float ClayFeatureEdgeG = 0.12004116f;
+    public const float ClayFeatureEdgeB = 0.11650209f;
+    public const float ClayFeatureEdgeA = 0.48666665f;
+    public const float ClayFeatureEdgeWidth = 0.95f;
+    public const float ClayFeatureEdgeDepthBias = 0.0f;
+    public const float ClayFeatureEdgeCreaseAngleDegrees = 35.0f;
+
+    public const float BaseColorLift = 0.1095f;
+    public const float AmbientStrength = 0.306f;
+    public const float HeadlightStrength = 0.14f;
+    public const float KeyLightStrength = 0.34f;
+    public const float FillLightStrength = 0.24f;
+    public const float BounceLightStrength = 0.0f;
+    public const float HemisphereStrength = 0.28f;
+    public const float SpecularStrength = 0.354f;
+    public const float SpecularPower = 77.0f;
+
+    public const bool AmbientOcclusionEnabled = true;
+    public const int AoSampleCount = 4;
+    public const float AoRadius = 0.018617f;
+    public const float AoBias = 0.00064f;
+    public const float AoIntensity = 1.516f;
+    public const float AoPower = 1.33f;
+    public const float AoContrast = 1.0f;
+    public const float AoMaxDistance = 2.0f;
+    public const float AoFadeStart = 1.094f;
+    public const float AoFadeEnd = 2.0f;
+    public const bool AoBlurEnabled = true;
+    public const int AoBlurRadius = 24;
+    public const float AoBlurSharpness = 8.96f;
+    public const int AoBlurPasses = 1;
+    public const float AoNoiseScale = 2.52075f;
+    public const float ContourStrength = 0.20040001f;
+    public const float ContourPower = 4.4105f;
+    public const int MsaaSamples = 4;
+
+    public const bool OutlineEnabled = true;
+    public const float OutlineR = 1.0f;
+    public const float OutlineG = 0.0f;
+    public const float OutlineB = 0.0f;
+    public const float OutlineThicknessPx = 3.2098765f;
+    public const float HoverOutlineR = 0.0f;
+    public const float HoverOutlineG = 1.0f;
+    public const float HoverOutlineB = 0.0f;
+    public const float HoverOutlineThicknessPx = 0.37757202f;
+    public const float HoverTintStrength = 0.2f;
+
+    public static SceneAppearance Create() => new()
+    {
+        Mode = Mode,
+
+        ShowGrid = ShowGrid,
+        ShiftGridToModelMin = ShiftGridToModelMin,
+        UseAutomaticGridSpacing = UseAutomaticGridSpacing,
+        GridSpacingMm = GridSpacingMm,
+        GridLineThickness = GridLineThickness,
+        GridLineColor = new[] { GridLineColorR, GridLineColorG, GridLineColorB },
+        ShowAxes = ShowAxes,
+        IsPerspective = IsPerspective,
+        LightweightNavigationEnabled = LightweightNavigationEnabled,
+
+        BackgroundColor = new[] { BackgroundR, BackgroundG, BackgroundB },
+        SurfaceColor = new[] { SurfaceR, SurfaceG, SurfaceB },
+        SurfaceOpacity = SurfaceOpacity,
+
+        EdgesEnabled = EdgesEnabled,
+        EdgeColor = new[] { EdgeR, EdgeG, EdgeB },
+        EdgeWidth = EdgeWidth,
+        CadEdgeFeatureAngleDegrees = CadEdgeFeatureAngleDegrees,
+        CadEdgeCoplanarToleranceDegrees = CadEdgeCoplanarToleranceDegrees,
+        CadEdgeWeldToleranceScale = CadEdgeWeldToleranceScale,
+        CadEdgeSilhouetteEnabled = CadEdgeSilhouetteEnabled,
+        EdgeDepthBias = EdgeDepthBias,
+        SurfaceOffsetFactor = SurfaceOffsetFactor,
+        SurfaceOffsetUnits = SurfaceOffsetUnits,
+
+        ClaySurfaceColor = new[] { ClaySurfaceR, ClaySurfaceG, ClaySurfaceB },
+        ClayBackgroundColor = new[] { ClayBackgroundR, ClayBackgroundG, ClayBackgroundB },
+        ClayFeatureEdgesEnabled = ClayFeatureEdgesEnabled,
+        ClayFeatureEdgeColor = new[] { ClayFeatureEdgeR, ClayFeatureEdgeG, ClayFeatureEdgeB, ClayFeatureEdgeA },
+        ClayFeatureEdgeWidth = ClayFeatureEdgeWidth,
+        ClayFeatureEdgeDepthBias = ClayFeatureEdgeDepthBias,
+        ClayFeatureEdgeCreaseAngleDegrees = ClayFeatureEdgeCreaseAngleDegrees,
+
+        BaseColorLift = BaseColorLift,
+        AmbientStrength = AmbientStrength,
+        HeadlightStrength = HeadlightStrength,
+        KeyLightStrength = KeyLightStrength,
+        FillLightStrength = FillLightStrength,
+        BounceLightStrength = BounceLightStrength,
+        HemisphereStrength = HemisphereStrength,
+        SpecularStrength = SpecularStrength,
+        SpecularPower = SpecularPower,
+
+        AmbientOcclusionEnabled = AmbientOcclusionEnabled,
+        AoSampleCount = AoSampleCount,
+        AoRadius = AoRadius,
+        AoBias = AoBias,
+        AoIntensity = AoIntensity,
+        AoPower = AoPower,
+        AoContrast = AoContrast,
+        AoMaxDistance = AoMaxDistance,
+        AoFadeStart = AoFadeStart,
+        AoFadeEnd = AoFadeEnd,
+        AoBlurEnabled = AoBlurEnabled,
+        AoBlurRadius = AoBlurRadius,
+        AoBlurSharpness = AoBlurSharpness,
+        AoBlurPasses = AoBlurPasses,
+        AoNoiseScale = AoNoiseScale,
+        ContourStrength = ContourStrength,
+        ContourPower = ContourPower,
+        MsaaSamples = MsaaSamples,
+
+        OutlineEnabled = OutlineEnabled,
+        OutlineColor = new[] { OutlineR, OutlineG, OutlineB },
+        OutlineThicknessPx = OutlineThicknessPx,
+        HoverOutlineColor = new[] { HoverOutlineR, HoverOutlineG, HoverOutlineB },
+        HoverOutlineThicknessPx = HoverOutlineThicknessPx,
+        HoverTintStrength = HoverTintStrength,
+    };
+}
+
 /// <summary>
 /// Per-frame appearance state for the viewport renderer. Mirrors the desktop
 /// SceneAppearanceViewModel so user-tunable settings (lighting, edges, clay
@@ -106,83 +273,10 @@ public struct SceneAppearance
     public float HoverTintStrength;
 
     /// <summary>
-    /// Returns the defaults that match the desktop SceneAppearanceViewModel
-    /// at boot. Each field's value mirrors the desktop default so first-load
-    /// behavior is consistent between the two apps.
+    /// Returns the defaults consumed by Android before SharedPreferences
+    /// overrides are applied. Keep these values aligned with AppSettings.
     /// </summary>
-    public static SceneAppearance CreateDefault() => new()
-    {
-        Mode = RenderMode.ShadedWithEdges,
-
-        ShowGrid = true,
-        ShiftGridToModelMin = true,
-        UseAutomaticGridSpacing = true,
-        GridSpacingMm = 100.8f,
-        GridLineThickness = 1.0f,
-        GridLineColor = new[] { 0.35f, 0.35f, 0.35f },
-        ShowAxes = true,
-        IsPerspective = true,
-        LightweightNavigationEnabled = false,
-
-        BackgroundColor = new[] { 0.079f, 0.086f, 0.097f },
-        SurfaceColor = new[] { 0.82f, 0.82f, 0.82f },
-        SurfaceOpacity = 1.0f,
-
-        EdgesEnabled = true,
-        EdgeColor = new[] { 0.24028806f, 0.24f, 0.26f },
-        EdgeWidth = 1.0f,
-        CadEdgeFeatureAngleDegrees = 28.0f,
-        CadEdgeCoplanarToleranceDegrees = 5.0f,
-        CadEdgeWeldToleranceScale = 1.0e-5f,
-        CadEdgeSilhouetteEnabled = true,
-        EdgeDepthBias = 0.0f,
-        SurfaceOffsetFactor = 1.0f,
-        SurfaceOffsetUnits = 1.0f,
-
-        ClaySurfaceColor = new[] { 0.804f, 0.796f, 0.797f },
-        ClayBackgroundColor = new[] { 1.0f, 1.0f, 1.0f },
-        ClayFeatureEdgesEnabled = true,
-        ClayFeatureEdgeColor = new[] { 0.11975311f, 0.12004116f, 0.11650209f, 0.48666665f },
-        ClayFeatureEdgeWidth = 0.95f,
-        ClayFeatureEdgeDepthBias = 0.0f,
-        ClayFeatureEdgeCreaseAngleDegrees = 35.0f,
-
-        BaseColorLift = 0.1095f,
-        AmbientStrength = 0.306f,
-        HeadlightStrength = 0.14f,
-        KeyLightStrength = 0.34f,
-        FillLightStrength = 0.24f,
-        BounceLightStrength = 0.0f,
-        HemisphereStrength = 0.28f,
-        SpecularStrength = 0.354f,
-        SpecularPower = 77.0f,
-
-        AmbientOcclusionEnabled = true,
-        AoSampleCount = 32,
-        AoRadius = 0.009f,
-        AoBias = 0.0002f,
-        AoIntensity = 1.45f,
-        AoPower = 1.33f,
-        AoContrast = 1.0f,
-        AoMaxDistance = 1.50f,
-        AoFadeStart = 0.50f,
-        AoFadeEnd = 1.31f,
-        AoBlurEnabled = true,
-        AoBlurRadius = 6,
-        AoBlurSharpness = 10.9f,
-        AoBlurPasses = 1,
-        AoNoiseScale = 8.0f,
-        ContourStrength = 0.16080001f,
-        ContourPower = 4.4105f,
-        MsaaSamples = 0,
-
-        OutlineEnabled = true,
-        OutlineColor = new[] { 1.0f, 0.0f, 0.0f },
-        OutlineThicknessPx = 3.2098765f,
-        HoverOutlineColor = new[] { 0.0f, 1.0f, 0.0f },
-        HoverOutlineThicknessPx = 0.37757202f,
-        HoverTintStrength = 0.2f,
-    };
+    public static SceneAppearance CreateDefault() => SceneAppearanceDefaults.Create();
 
     /// <summary>
     /// Returns a GL-thread handoff copy whose array fields cannot be changed

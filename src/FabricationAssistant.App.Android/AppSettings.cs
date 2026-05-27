@@ -12,44 +12,44 @@ namespace FabricationAssistant.App.Android;
 public static class AppSettings
 {
     private const string FileName = "fa_settings";
-    private const int SettingsSchemaVersion = 14;
+    private const int SettingsSchemaVersion = 15;
 
-    private const int DefaultAoSampleCount = 4;
+    private const int DefaultAoSampleCount = SceneAppearanceDefaults.AoSampleCount;
     private const int MinAoSampleCount = 1;
     private const int MaxAoSampleCount = 96;
-    private const float DefaultAoRadius = 0.018617f;
+    private const float DefaultAoRadius = SceneAppearanceDefaults.AoRadius;
     private const float MinAoRadius = 0.001f;
     private const float MaxAoRadius = 0.08f;
-    private const float DefaultAoBias = 0.00064f;
+    private const float DefaultAoBias = SceneAppearanceDefaults.AoBias;
     private const float MinAoBias = 0.0f;
     private const float MaxAoBias = 0.01f;
-    private const float DefaultAoIntensity = 1.516f;
+    private const float DefaultAoIntensity = SceneAppearanceDefaults.AoIntensity;
     private const float MinAoIntensity = 0.0f;
     private const float MaxAoIntensity = 4.0f;
-    private const float DefaultAoPower = 1.33f;
+    private const float DefaultAoPower = SceneAppearanceDefaults.AoPower;
     private const float MinAoPower = 0.25f;
     private const float MaxAoPower = 4.0f;
-    private const float DefaultAoContrast = 1.0f;
+    private const float DefaultAoContrast = SceneAppearanceDefaults.AoContrast;
     private const float MinAoContrast = 0.0f;
     private const float MaxAoContrast = 4.0f;
-    private const float DefaultAoMaxDistance = 2.0f;
+    private const float DefaultAoMaxDistance = SceneAppearanceDefaults.AoMaxDistance;
     private const float MinAoMaxDistance = 0.05f;
     private const float MaxAoMaxDistance = 2.0f;
-    private const float DefaultAoFadeStart = 1.094f;
-    private const float DefaultAoFadeEnd = 2.0f;
+    private const float DefaultAoFadeStart = SceneAppearanceDefaults.AoFadeStart;
+    private const float DefaultAoFadeEnd = SceneAppearanceDefaults.AoFadeEnd;
     private const float MinAoFade = 0.0f;
     private const float MaxAoFade = 2.0f;
-    private const bool DefaultAoBlurEnabled = true;
-    private const int DefaultAoBlurRadius = 24;
+    private const bool DefaultAoBlurEnabled = SceneAppearanceDefaults.AoBlurEnabled;
+    private const int DefaultAoBlurRadius = SceneAppearanceDefaults.AoBlurRadius;
     private const int MinAoBlurRadius = 0;
     private const int MaxAoBlurRadius = 24;
-    private const float DefaultAoBlurSharpness = 8.96f;
+    private const float DefaultAoBlurSharpness = SceneAppearanceDefaults.AoBlurSharpness;
     private const float MinAoBlurSharpness = 0.0f;
     private const float MaxAoBlurSharpness = 32.0f;
-    private const int DefaultAoBlurPasses = 1;
+    private const int DefaultAoBlurPasses = SceneAppearanceDefaults.AoBlurPasses;
     private const int MinAoBlurPasses = 0;
     private const int MaxAoBlurPasses = 8;
-    private const float DefaultAoNoiseScale = 2.52075f;
+    private const float DefaultAoNoiseScale = SceneAppearanceDefaults.AoNoiseScale;
     private const float MinAoNoiseScale = 0.25f;
     private const float MaxAoNoiseScale = 8.0f;
     private const int ModeShadedWithEdges = (int)FabricationAssistant.Rendering.Gles.RenderMode.ShadedWithEdges;
@@ -58,6 +58,8 @@ public static class AppSettings
     private const int ModeClay = (int)FabricationAssistant.Rendering.Gles.RenderMode.Clay;
     private const int ModeRealistic = (int)FabricationAssistant.Rendering.Gles.RenderMode.Realistic;
     private const float DefaultEdgeWidth = 1.0f;
+    private const float DefaultSurfaceOffsetFactor = SceneAppearanceDefaults.SurfaceOffsetFactor;
+    private const float DefaultSurfaceOffsetUnits = SceneAppearanceDefaults.SurfaceOffsetUnits;
     private const float MinimumVisibleEdgeWidth = 0.75f;
     private const int MeasureModePointToPoint = 0;
     private const int MeasureModeFaceToPoint = 1;
@@ -78,6 +80,7 @@ public static class AppSettings
     private static ISharedPreferences? _prefs;
     private static readonly (string Key, float Expected)[] LegacyFloatDefaultsToRemove =
     [
+        // Duplicate keys intentionally cover separate historical schema defaults.
         ("edge_feature_angle", 25.0f),
         ("edge_coplanar_tol", 1.5f),
         ("edge_depth_bias", 0.00005f),
@@ -127,6 +130,7 @@ public static class AppSettings
     ];
     private static readonly (string Key, int Expected)[] LegacyIntDefaultsToRemove =
     [
+        // Duplicate keys intentionally cover separate historical schema defaults.
         ("ao_blur_passes", 2),
         ("ao_sample_count", 32),
         ("ao_blur_radius", 6),
@@ -152,6 +156,7 @@ public static class AppSettings
         ("ao_sample_count", MinAoSampleCount, MaxAoSampleCount),
         ("ao_blur_radius", MinAoBlurRadius, MaxAoBlurRadius),
         ("ao_blur_passes", MinAoBlurPasses, MaxAoBlurPasses),
+        ("msaa_samples", AppSettingsValueGuards.MinAndroidMsaaSamples, AppSettingsValueGuards.MaxAndroidMsaaSamples),
     ];
 
     public static void Initialize(Context context)
@@ -267,8 +272,8 @@ public static class AppSettings
     public static float CadEdgeWeldToleranceScale { get => GetFloatInRange("edge_weld_tol", 1.0e-5f, 1.0e-6f, 1.0e-4f); set => Put("edge_weld_tol", System.Math.Clamp(value, 1.0e-6f, 1.0e-4f)); }
     public static bool CadEdgeSilhouetteEnabled { get => Get("edge_silhouette", true); set => Put("edge_silhouette", value); }
     public static float EdgeDepthBias { get => GetFloatInRange("edge_depth_bias", 0.0f, 0.0f, 0.002f); set => Put("edge_depth_bias", System.Math.Clamp(value, 0.0f, 0.002f)); }
-    public static float SurfaceOffsetFactor { get => GetFloatInRange("surface_offset_f", 2.44f, 0.0f, 4.0f); set => Put("surface_offset_f", System.Math.Clamp(value, 0.0f, 4.0f)); }
-    public static float SurfaceOffsetUnits { get => GetFloatInRange("surface_offset_u", 0.0f, 0.0f, 4.0f); set => Put("surface_offset_u", System.Math.Clamp(value, 0.0f, 4.0f)); }
+    public static float SurfaceOffsetFactor { get => GetFloatInRange("surface_offset_f", DefaultSurfaceOffsetFactor, 0.0f, 4.0f); set => Put("surface_offset_f", System.Math.Clamp(value, 0.0f, 4.0f)); }
+    public static float SurfaceOffsetUnits { get => GetFloatInRange("surface_offset_u", DefaultSurfaceOffsetUnits, 0.0f, 4.0f); set => Put("surface_offset_u", System.Math.Clamp(value, 0.0f, 4.0f)); }
 
     // ── Clay ───────────────────────────────────────────────────────────
     public static float ClaySurfaceR { get => Get("clay_surface_r", 0.804f); set => Put("clay_surface_r", Clamp01(value)); }
@@ -318,8 +323,8 @@ public static class AppSettings
     public static float AoNoiseScale { get => GetFloatInRange("ao_noise_scale", DefaultAoNoiseScale, MinAoNoiseScale, MaxAoNoiseScale); set => Put("ao_noise_scale", System.Math.Clamp(value, MinAoNoiseScale, MaxAoNoiseScale)); }
     public static float ContourStrength { get => GetFloatInRange("contour_strength", 0.20040001f, 0.0f, 1.2f); set => Put("contour_strength", System.Math.Clamp(value, 0.0f, 1.2f)); }
     public static float ContourPower { get => GetFloatInRange("contour_power", 4.4105f, 0.5f, 6.0f); set => Put("contour_power", System.Math.Clamp(value, 0.5f, 6.0f)); }
-    // Read-side clamp keeps forward-incompatible persisted MSAA values from poisoning startup.
-    public static int MsaaSamples { get => ClampAndroidMsaaSamples(Get("msaa_samples", 4)); set => Put("msaa_samples", ClampAndroidMsaaSamples(value)); }
+    // Read-side clamp remains defence-in-depth; schema migration removes invalid persisted values.
+    public static int MsaaSamples { get => ClampAndroidMsaaSamples(Get("msaa_samples", SceneAppearanceDefaults.MsaaSamples)); set => Put("msaa_samples", ClampAndroidMsaaSamples(value)); }
 
     // ── Selection ──────────────────────────────────────────────────────
     public static bool ShowSelectionHighlight { get => Get("show_selection", true); set => Put("show_selection", value); }
@@ -521,8 +526,7 @@ public static class AppSettings
         RemoveOutOfRangeValues(editor);
 
         editor.PutInt("settings_schema_version", SettingsSchemaVersion);
-        if (!editor.Commit())
-            global::Android.Util.Log.Warn("FA.Settings", "Failed to commit settings schema migration.");
+        editor.Apply();
     }
 
     private static void RemoveLegacyDefaultValues(ISharedPreferencesEditor editor)
@@ -625,7 +629,7 @@ public static class AppSettings
 
     private static void DoubleSectionGizmoSize(ISharedPreferencesEditor editor)
     {
-        if (!Prefs.Contains("section_gizmo_size"))
+        if (!Prefs.Contains("section_gizmo_size") || Prefs.Contains("section_gizmo_scale"))
             return;
 
         float value = Get("section_gizmo_size", LegacySectionGizmoSizeFractionBase);
@@ -642,7 +646,7 @@ public static class AppSettings
 
     private static void ConvertSectionGizmoSizeToScale(ISharedPreferencesEditor editor)
     {
-        if (!Prefs.Contains("section_gizmo_size"))
+        if (!Prefs.Contains("section_gizmo_size") || Prefs.Contains("section_gizmo_scale"))
             return;
 
         float value = Get("section_gizmo_size", LegacySectionGizmoSizeFractionBase);

@@ -1,345 +1,316 @@
-# Fabrication Assistant Android - Senior Code Review
+# Fabrication Assistant Android - Code Review
 
 Date: 2026-05-27
-Reviewer: Senior Android / .NET review
+Reviewer: Senior Android / .NET / GLES review
 Scope: `Android/` only. No desktop changes proposed.
 Goal: find real bugs, lifecycle / threading / rendering hazards, and hardening opportunities without restructuring the codebase.
 
-Constraints respected: no file splits, no project reorganisation, no cosmetic refactors, no edits under `../src` outside this review document, no emojis or non-ASCII in source / GLSL, regular hyphens only in prose.
+Constraints respected: no file splits, no project reorganisation, no cosmetic refactors, no edits under `../src`, no emojis or non-ASCII, regular hyphens only.
 
-> Note on agent claims: I dispatched four parallel sub-reviews; the verified findings below pass my fact-check. Several other agent-proposed bugs (HorizontalResizeTouchListener density, color-picker orphan dialogs, slider thrashing, glReadPixels format, ActivityFlags wrong type, S-Pen hover-in-recognizer) do NOT hold up against the actual code and are explicitly excluded.
+> Note on agent claims: I dispatched six parallel sub-reviews and fact-checked every finding against current source. The list below excludes claims that did not survive verification, in particular: a supposed `WaitForNextRenderedFrameAsync` race (the code is correct), a supposed `AndroidPointerSource` `ACTION_UP` bug using `GetPointerId(0)` (this is correct per Android semantics - the last finger is always at index 0), the `LegacyFloatDefaultsToRemove` duplicate-keys "bug" (the duplicates are intentional historical defaults and the iteration is safe), and `StripUtf8BomInPlaceIfPresentAsync` "tempPath leak" (the finally block uses `if (!moved)` correctly).
 
 ---
 
 ## 1. High-level Android codebase map
 
-```
-Android/
-  FabricationAssistant.Android.sln
-  tools/build.ps1                       (drives the Android solution only)
-  deps/prebuilt/{arm64-v8a,x86_64}/libdraco_native.so
-  src/
-    FabricationAssistant.App.Android/   (.NET 8 Android app: net8.0-android34.0)
-      MainActivity.cs                   (9956 LOC, single Activity, [Activity] attribute-driven)
-      AppServices.cs                    (DI bootstrap, singletons)
-      AppSettings.cs                    (SharedPreferences-backed, schema v14, Apply(ref SceneAppearance))
-      PreferencesBottomSheet.cs         (1572 LOC, programmatic settings UI)
-      SafFilePicker.cs                  (ActivityResultContracts.OpenDocument wrapper)
-      ImportPipeline.cs                 (SAF URI -> cache -> gltf/glb/fa import)
-      ImportFileTypeResolver.cs         (display-name + MIME fallback to extension)
-      ImportFileSignatureValidator.cs   (.glb / .gltf / .fa signature checks)
-      RecentFilesStore.cs               (JSON-encoded recent file list, MaxEntries=10)
-      ViewportSurfaceView.cs            (GLSurfaceView host + GL command queue + vsync coalescing)
-      MultisampleConfigChooser.cs       (EGL config chooser)
-      AndroidModelExplorerPanel.cs      (scene tree explorer)
-      AndroidBomPanel.cs                (BOM hierarchical / consolidated)
-      PropertiesPanelBinder.cs          (properties panel binder)
-      RecentFilesBottomSheet.cs
-      AndroidScenePackageState.cs       (FA-package occurrence selection / visibility)
-      HorizontalResizeTouchListener.cs  (panel divider drag)
-      AppSettingsValueGuards.cs         (clamp helpers; MSAA bucket clamp)
-      StyledTooltipController.cs        (touch-mode tooltips)
-      Tools/AndroidQrScannerDialog.cs   (ZXing + legacy android.hardware.Camera)
-      Tools/AndroidViewportExplodeView.cs
-      Measurement/AndroidMeasureIntegration.cs
-      Measurement/AndroidMeasureRaycaster.cs
-      Measurement/AndroidSectionClipper.cs
-      Measurement/AndroidMeshRaycastAcceleration.cs
-      Properties/AndroidManifest.xml    (no <activity>; all wiring via [Activity] attributes)
-      Resources/{layout,values,drawable,mipmap}
-    FabricationAssistant.Rendering.Gles/    (Silk.NET.OpenGLES renderer, FBOs, MSAA, picking)
-    FabricationAssistant.Input.Gestures.Android/ (pure-C# gesture recognizer + AndroidPointerSource)
-    FabricationAssistant.Platform.Android/  (IDispatcher, IPlatformPaths)
-    FabricationAssistant.Core.Android/      (shim referencing shared Core)
-    FabricationAssistant.Import.Gltf.Android/ (shim for Gltf importer)
-    FabricationAssistant.Draco.Android/     (Draco-decoding decorator + P/Invoke)
-    FabricationAssistant.App.Android.Tests/ (smoke + unit tests; not Android-instrumented)
-```
+Projects (.NET 8, `net8.0-android34.0`, minSdk 24, targetSdk 34, ABIs `android-arm64;android-x64`):
 
-The Android side is intentionally a thin platform layer over the shared `src/FabricationAssistant.Core` and `src/FabricationAssistant.Import.Gltf` desktop projects, with new GLES, gesture, and platform-paths libraries. `MainActivity` is monolithic by design.
+- `FabricationAssistant.App.Android` - Activity, panels, viewport, import wiring, settings UI. ~22 kLOC of C#. Single `MainActivity` is 10,771 lines.
+- `FabricationAssistant.Rendering.Gles` - Silk.NET.OpenGLES renderer (~8.4 kLOC). `GlesViewportRenderer` is 2,681 lines.
+- `FabricationAssistant.Input.Gestures.Android` - `AndroidPointerSource` + `ViewportTouchGestureRecognizer`.
+- `FabricationAssistant.Import.Gltf.Android`, `FabricationAssistant.Core.Android` - Android shims over desktop projects.
+- `FabricationAssistant.Draco.Android` - P/Invoke to `libdraco_native.so` (per-ABI prebuilt under `Android/deps/prebuilt/{arm64-v8a,x86_64}`).
+- `FabricationAssistant.Platform.Android` - `AndroidPlatformPaths`, `AndroidDispatcher`.
+- `FabricationAssistant.App.Android.Tests` - xUnit smoke + targeted tests for `AppSettingsValueGuards`, `MsaaSceneFramebuffer`, `AndroidPointerSource`, `ViewportTouchGestureRecognizer`, `AndroidSectionClipper`.
 
-## 2. Main Android workflows inspected
+Manifest: minimal (`CAMERA` runtime, GLES 3.1 required, `hardwareAccelerated=true`, `allowBackup=false`, no exported activities except launcher). `ConfigurationChanges` is broad; rotation is handled in-process by `MainActivity.OnConfigurationChanged`.
 
-- App startup -> DI build -> SharedPreferences hydration -> SurfaceView creation -> ApplySettingsToScene
-- SAF file open -> cache copy -> BOM strip (gltf) -> signature validation -> Draco-decode -> GltfImportService -> SceneAppearance apply
-- Touch input -> TouchProxy -> AndroidPointerSource -> ViewportTouchGestureRecognizer -> 3 GestureRecognized subscribers (toolbar tools, interaction adapter, selection)
-- GL render: GLSurfaceView (vsync-coalesced via Choreographer) -> GlesRendererBridge -> GlesViewportRenderer -> MSAA FBO -> SSAO / outline / section / edges passes -> resolve
-- Section cut, view cube, view preset, measurement, body-move, explode, render-mode toolbars: modal bottom-toolbar mode + AndroidModalTool state machine
-- Configuration changes, OnPause/OnResume, OnTrimMemory, OnSaveInstanceState/restore, OnDestroy cleanup
-- QR scan via ZXing.Net + legacy `android.hardware.Camera` (API 24 compat)
+DI: `Microsoft.Extensions.DependencyInjection`. Built once in `AppServices.Build(ApplicationContext)` with `ValidateScopes=true, ValidateOnBuild=true`. Singletons: `Context`, `IDispatcher`, `IPlatformPaths`, `ImportPipeline`, `CameraState`, `SectionService`, `PackageSessionState`, `FaPackageQueryService`. `BodyMoveService`, `UndoService`, `AndroidMeasureIntegration` are not in DI - they are `new`ed inline in `MainActivity.OnCreate` because they need delegates over private state (`() => _runtimeScene`).
+
+Build: `Android/tools/build.ps1` (only sanctioned entry point). `EmbedAssembliesIntoApk=true` for both Debug and Release per inline comment to avoid the SIGABRT on `adb install`.
+
+## 2. Workflows inspected
+
+- Activity startup: `AppSettings.Initialize -> AppServices.Build -> ViewportSurfaceView + GlesViewportRenderer -> SAF file picker -> ImportPipeline -> renderer command queue -> ApplySettingsToScene` (resume + after each preferences change).
+- Pause/resume: `_picker.CancelActivePick`, `CancelHoverPick`, `CancelZoomWindowTool`, in-flight load cancel, `_viewport.OnPause()`. On resume, `ApplySettingsToScene` + `ReloadRendererSceneAfterContextLossAsync` re-uploads the retained `DocumentDto` if EGL was lost.
+- Touch: `TouchProxy -> OnViewportRawTouch` (gizmo/section placement override) or `AndroidPointerSource.OnTouch -> recognizer -> three subscribers (toolbar tools, interaction adapter, selection).
+- Import: `SafFilePicker -> ImportPipeline.ImportAsync -> SAF copy to cache -> ImportFileSignatureValidator -> GltfImportService` decorated by `DracoDecodingGltfImportService` (or `FaImportService` for `.fa`).
+- Settings: `PreferencesBottomSheet` reads/writes `AppSettings` properties; `AppSettings.Apply(ref SceneAppearance)` snapshots all renderer-visible state; `MainActivity.ApplySettingsToScene` then calls `appearance.CreateRendererSnapshot()` and pushes via the GL command queue.
 
 ## 3. Confirmed bugs
 
-### B-1 (High, Confirmed) - SAF picker does not request persistable URI permission; recent files become inaccessible after the app process is killed
+### B-1 (Critical, Confirmed) AppSettings defaults diverge from `SceneAppearance.CreateDefault`
 
-- Files: `SafFilePicker.cs` (line 28-31, 54), `MainActivity.cs:7100`, `RecentFilesStore.cs:104-118`
-- Problem type: File I/O / Hardening
-- Description: `SafFilePicker` constructs `new ActivityResultContracts.OpenDocument()` and calls `_launcher.Launch(mimeTypes)`. `OpenDocument` returns content URIs that are granted transient read permission to the calling Activity. Immediately afterwards `RecentFilesStore.TryTakePersistableReadPermission(this, uri)` is invoked at `MainActivity.cs:7100`. Per the Android docs, `TakePersistableUriPermission` only succeeds if the originating `ACTION_OPEN_DOCUMENT` intent included `FLAG_GRANT_PERSISTABLE_URI_PERMISSION`. The default `OpenDocument` contract does NOT set that flag, so `TakePersistableUriPermission` raises `SecurityException` which is silently swallowed by the surrounding try/catch (only a `Log.Warn` is emitted). Result: recent-file URIs do not survive process death.
-- Why it matters: First-time use looks fine, because `_picker` keeps the runtime permission, so opening within the same launch works. After Android kills the process (which happens routinely on memory pressure or after a long pause), every URI in `fa_recent_files` / `entries_json` returns `SecurityException` from `ProbeReadableAccess`, the entry is removed, and the user sees "Recent file is no longer accessible." for every entry, with no path to re-grant short of reopening the same file via the picker.
-- Suggested fix: Either (a) subclass `ActivityResultContracts.OpenDocument` and override `CreateIntent` to add `Intent.FlagGrantPersistableUriPermission` (and optionally `FlagGrantReadUriPermission`); or (b) replace the `_launcher.Launch(...)` path with a hand-rolled `Intent(Intent.ActionOpenDocument)` carrying the flag, registered through `RegisterForActivityResult(new ActivityResultContracts.StartActivityForResult(), ...)`. Keep the silent-failure log behaviour as defence in depth.
-- Localised: Yes. Two files.
-- Regression risk: Low. New SAF intents pick up the flag; old recent entries are still valid for the current process lifetime.
-- Verification: Open a file, force-stop the app, relaunch, tap the recent entry, file should still load.
+- Files: `Android/src/FabricationAssistant.App.Android/AppSettings.cs:17-19,49,270,271` and `Android/src/FabricationAssistant.Rendering.Gles/SceneAppearance.cs:113,139,140,161,171`.
+- Divergences (renderer default vs AppSettings default):
+  - `AoSampleCount`: 32 vs 4
+  - `AoBlurRadius`: 6 vs 24
+  - `SurfaceOffsetFactor`: 1.0 vs 2.44
+  - `SurfaceOffsetUnits`: 1.0 vs 0.0
+- Why it matters: `AppSettings.Apply(ref appearance)` is always called from a `default` struct in `MainActivity.ApplySettingsToScene` (line 10358), so the AppSettings defaults always win. `SceneAppearance.CreateDefault()` is a different "source of truth" that nothing calls in the runtime path; its only effect is to mislead readers about what the renderer will see. Worse, after a settings reset the values that come back are the AppSettings ones, which - if `SceneAppearance.CreateDefault` was tuned more recently - regress visual quality without an obvious reason.
+- Fix: pick one set as canonical. Either delete `SceneAppearance.CreateDefault()` (or assert it equals the AppSettings-applied result in a unit test), or hydrate `appearance` from `CreateDefault()` before calling `Apply` and have `Apply` only overwrite explicitly persisted keys. The cheapest safe fix is to align the four constants and add a unit test that builds an appearance from defaults via both paths and `Assert.Equal`s field-by-field. If you change the AppSettings defaults to match the renderer (32 / 6 / 1.0 / 1.0), also add `("ao_sample_count", 4)`, `("ao_blur_radius", 24)`, `("surface_offset_f", 2.44f)`, `("surface_offset_u", 0.0f)` to the legacy-defaults arrays and bump `SettingsSchemaVersion` so users who installed a build with the old defaults migrate cleanly.
+- Safe/localized: Yes. Regression risk: Low. Verify: existing `SceneAppearanceTests`; add a comparison test.
 
-### B-2 (Medium-High, Confirmed) - Synchronous import-cache pruning on the UI thread in `OnCreate`
+### B-2 (High, Confirmed) `MsaaSamples` not in `IntRangeGuards`, only read-side clamp
 
-- File: `AppServices.cs:25`; `ImportPipeline.cs:80-86`, `312-345`
-- Problem type: Threading / ANR risk
-- Description: `AppServices.Build(applicationContext)` is called from `MainActivity.OnCreate` on the UI thread. The first thing it does after configuring paths is `ImportPipeline.PruneImportCache(platformPaths.AppDataRoot);` which calls `new DirectoryInfo(...).GetFiles()`, filters, sorts by `LastWriteTimeUtc`, and synchronously deletes stale `.part`, `.nobom`, and beyond-keep-count cache files.
-- Why it matters: On low-end devices with slow internal storage or many residual files (a previous failed import can leave many `.part` files), this blocks the UI thread before `SetContentView`, raising the risk of ANR and slow first paint.
-- Suggested fix: Move the prune to a background `Task.Run(() => ImportPipeline.PruneImportCache(root))` started after `SetContentView`. Pruning is best-effort and already swallows exceptions.
-- Localised: Yes. One call site in `AppServices.cs`.
-- Regression risk: Very low; the prune does not need to complete before any import.
+- File: `Android/src/FabricationAssistant.App.Android/AppSettings.cs:150-155,322`, plus `AppSettingsValueGuards.cs:8-18`.
+- `ClampAndroidMsaaSamples` is applied on read and write, but `RemoveOutOfRangeValues` (called from `MigrateDefaultsIfNeeded`) does not strip a forward-incompatible persisted value (e.g. `16`). The comment on line 321 explicitly calls this out as a band-aid.
+- Why it matters: the persisted value can be silently clamped on every read forever; toggling MSAA in the UI through the 0/2/4 picker will not "see" 16 and the user gets stuck at 8.
+- Fix: add `("msaa_samples", 0, 8)` to `IntRangeGuards` and bump `SettingsSchemaVersion`. Keep the read-side clamp as defence-in-depth.
+- Safe/localized: Yes. Regression risk: Low. Verify: unit test that seeds `msaa_samples=16` and asserts the key is removed after migration.
 
-### B-3 (Medium, Confirmed) - Stale `_density` in `AndroidPointerSource` after density configuration changes
+### B-3 (High, Confirmed) Hardcoded hex colours in code violate theme adherence
 
-- File: `AndroidPointerSource.cs:22, 28-33, 320, 361`
-- Problem type: Android UI Logic / Bug
-- Description: `MainActivity` is declared with `ConfigurationChanges = ... | ConfigChanges.Density | ...`, meaning the activity is NOT recreated when display density changes (foldable unfold, runtime font/dpi change, multi-window resize crossing density buckets). `AndroidPointerSource` captures `_density` in its constructor and uses it for every coordinate conversion in `Sample`/`SampleAt`. After a density change the cached value is wrong, so all gesture thresholds (8 dp drag, 6 dp long-press, 30 dp double-tap) and emitted positions are off by a factor of `oldDensity / newDensity`.
-- Why it matters: On foldable / DeX / split-screen workflows, orbit / pan feel will drift after a config event without an apparent cause.
-- Suggested fix: Add a `RefreshDensity(Context ctx)` method on `AndroidPointerSource` that re-reads `ctx.Resources.DisplayMetrics.Density`, and call it from `MainActivity.OnConfigurationChanged`.
-- Localised: Yes. One class.
-- Regression risk: Low. Density rarely changes per-touch, so the simplest fix is a tiny method called from `OnConfigurationChanged`.
+- File: `Android/src/FabricationAssistant.App.Android/MainActivity.cs:8351,8381,8456,9300,9303,9304,9305,9624,10556`.
+- Examples: `Color.ParseColor("#D9121418")` (popup background), `"#E51F2026"` (context menu), `"#F59E0B"` (preview), `"#FBBF24"`, `"#F97316"`, `"#2DD4BF"`, `"#B0000000"` (loading overlay).
+- Why it matters: user's recorded preference is no inline colours and no one-off styles; these break dark-mode/theme switching and scatter brand colour decisions across MainActivity.
+- Fix: add named `<color>` resources in `Resources/values/colors.xml` (and a `values-night/` companion if needed) and reference via `ContextCompat.GetColor(this, Resource.Color.fa_overlay_scrim)` etc. No drawable XML changes needed.
+- Safe/localized: Yes - mechanical refactor. Regression risk: Low. Verify: `Android/tools/build.ps1`; visually compare popup / context menu / loading overlay before and after; run in dark theme.
 
-### B-4 (Medium, Confirmed) - `ImportFileTypeResolver` has no `.fa` MIME fallback
+### B-4 (High, Confirmed) Activity-spawned `AlertDialog`s are never tracked for dismissal in `OnDestroy`
 
-- File: `ImportFileTypeResolver.cs:12-18`
-- Problem type: File I/O / Hardening
-- Description: Switch covers `model/gltf-binary`, `model/gltf+json`, `application/gltf-buffer` only. The picker is launched with `"application/zip"` in its MIME list (see `MainActivity.cs:7082`) and `.fa` files are ZIP archives. If a provider returns a display name without an extension and reports `application/zip` (or `application/x-zip-compressed`), the resolver falls through to `.bin`, and `ImportPipeline.ImportAsync` rejects it with `NotSupportedException("Unsupported file type: .bin ...")`.
-- Why it matters: Edge case where a `.fa` is selected from a content provider that strips extensions; the user sees an inscrutable error and the file looks broken.
-- Suggested fix: Add cases for `"application/zip"` and `"application/x-zip-compressed"` mapping to `.fa`. Keep the existing fallbacks.
-- Regression risk: Negligible; only takes effect when extension is missing.
+- File: `Android/src/FabricationAssistant.App.Android/MainActivity.cs` - QR permission rationale, QR matches dialog, QR manual-input dialog, bounding-box-selection-required dialog, etc. `OnDestroy` (line 10288) does not dismiss them.
+- Why it matters: rotating the device while a dialog is visible leaks the previous activity's window (`android.view.WindowLeaked`) and may crash on some OEM builds. The `_isDestroyed` flag is set but the dialog already has a strong reference to the old activity.
+- Fix: store each `AlertDialog` reference in a `List<AlertDialog>` field; in `OnDestroy` iterate, call `Dismiss()` inside a `try { } catch { }`, and clear the list. Or migrate to `DialogFragment`s that survive recreation correctly.
+- Safe/localized: Yes. Regression risk: Low. Verify: open each dialog, rotate, watch `logcat | grep WindowLeaked`.
 
-### B-5 (Medium, Likely) - Resize listener (`HorizontalResizeTouchListener`) does not track pointer ID
+### B-5 (High, Confirmed) `Color.ParseColor` is also used for runtime-decided tints
 
-- File: `HorizontalResizeTouchListener.cs:32-58`
-- Problem type: Android UI Logic / Multi-touch
-- Description: The listener uses `e.RawX` without filtering by pointer index / id. Side note: contrary to a sub-agent claim, the units are correct since `_startWidth` is in px and `e.RawX` is in px, so the math is dimensionally consistent. The real issue is multi-touch: if a second finger lands on the divider during a drag, then the first finger lifts, the system's `ACTION_POINTER_UP` / `ACTION_UP` flow does not re-anchor `_startRawX` / `_startWidth`, and `MotionEventActions.Move` continues with the second finger's position, producing a discontinuous jump.
-- Suggested fix: Capture `e.GetPointerId(e.ActionIndex)` on `ACTION_DOWN`, then in `Move` find that pointer's index via `FindPointerIndex(id)` and read `GetX(idx) + (e.RawX - e.GetX(0))` (or `GetRawX(idx)` on API 29+). Reset `_dragging` on any `ACTION_POINTER_UP` whose lifted pointer matches the tracked id.
-- Regression risk: Low; mostly defensive logic.
+- Same file as B-3, lines 9300-9305 are a `switch` in styled-overlay tinting. Beyond the theme issue (B-3), this couples the tint logic to a hardcoded palette: any future "preview" colour change requires editing C# and rebuilding instead of swapping a colour resource.
+- Fix: same approach as B-3 - one named colour per `PresentationStyle`.
 
-### B-6 (Medium, Confirmed) - `_pointerSource.GestureRecognized = null;` in `Dispose` clears the invocation list without notifying subscribers
+### B-6 (Medium, Confirmed) `MigrateDefaultsIfNeeded` uses `Commit()` on the UI thread at startup
 
-- File: `AndroidPointerSource.cs:395`
-- Problem type: Threading / Async
-- Description: `Dispose()` nulls the event field directly. For C# events, this is legal inside the declaring class but does not call any external removal logic. The subscribers (`OnGestureForToolbarTools`, `_interaction.OnGesture`, `OnGestureForSelection`) are owned by `MainActivity` which already explicitly removes them in `OnDestroy` before calling `_pointerSource.Dispose()` (lines 9573-9579), so this is currently safe. It is a fragile pattern though: any future subscriber that retains `_pointerSource` will fail to detect detach via standard `-=` semantics from outside the class.
-- Suggested fix: Keep the existing OnDestroy `-=` calls (already there) and document `Dispose()` as not unsubscribing automatically; or convert `GestureRecognized` to a backing field with explicit `add` / `remove` so the null-out is consistent.
-- Regression risk: Very low. Current usage works.
+- File: `Android/src/FabricationAssistant.App.Android/AppSettings.cs:524`.
+- `Edit()` everywhere else uses `Apply()` (async). `MigrateDefaultsIfNeeded` is invoked from `AppSettings.Initialize`, which is called from `MainActivity.OnCreate` (line 354), i.e. on the UI thread before the splash hands off.
+- Why it matters: synchronous SharedPreferences write can block tens to hundreds of ms on slow eMMC under load, contributing to first-frame latency or even ANRs on cold start.
+- Fix: change to `editor.Apply()` and remove the `Commit()` return-check; if you really need the migration to be visible before the next read, keep a single in-memory snapshot of the migration result.
+- Safe/localized: Yes. Regression risk: Low. Verify: `dumpsys gfxinfo` / Perfetto cold-start trace.
 
-### B-7 (Low, Confirmed) - `ViewportSurfaceView.OnDetachedFromWindow` queues renderer disposal via `QueueEvent`, but the GL thread may exit before the queued lambda runs
+### B-7 (Medium, Confirmed) `BodyMoveService` / `UndoService` / `AndroidMeasureIntegration` are not registered in DI
 
-- File: `ViewportSurfaceView.cs:73-77, 154-175`
-- Problem type: Lifecycle / Resource leak
-- Description: `OnDetachedFromWindow` calls `MarkDisposed` then `DisposeRendererOnGlThread`, which `QueueEvent`s the renderer `Dispose()` onto the GL thread. The GLSurfaceView's surface destruction signals the GL thread to exit; while Android typically drains pending queue events before exit, this is not contractually guaranteed. The renderer holds VBOs / FBOs / textures whose disposal is "fire and best-effort".
-- Why it matters: On rare occasions the OS may terminate the GL thread before the dispose lambda runs, leaking the EGL context-owned resources. The process exits soon after anyway so this is mostly cosmetic.
-- Suggested fix: Optional. Block briefly on a `ManualResetEventSlim` (with short timeout, e.g. 250 ms) signalled at the end of the dispose lambda; if it does not signal, log and proceed. Or accept the current behaviour and add a comment explaining the reliance on GLSurfaceView draining its queue.
+- File: `Android/src/FabricationAssistant.App.Android/AppServices.cs:27-37` vs `MainActivity.OnCreate:364-374,446`.
+- These services capture `() => _runtimeScene` closures, so they cannot trivially be singletons in the DI container. That is fine, but the inconsistency hides their lifetime contract: they are owned by `MainActivity` and disposed in `OnDestroy`. Currently nothing actually disposes `_undoService`, and `_bodyMove` is only event-unsubscribed.
+- Why it matters: if either ever takes a native resource or subscribes to a global event source, this scaffolding hides the leak.
+- Fix: leave them out of DI but null both fields in `OnDestroy` after unsubscribing events; or, easier, register them as scoped services with factory lambdas that take an `IRuntimeSceneProvider` (a small interface implemented by `MainActivity`). Either way, document the choice with a one-line comment in `AppServices.Build`.
+- Safe/localized: Yes. Regression risk: Low.
+
+### B-8 (Medium, Likely) `_navSpenPalmButton` always shown regardless of device stylus support
+
+- File: `Android/src/FabricationAssistant.App.Android/MainActivity.cs:1510-1518,1548`.
+- The Galaxy S-series stylus toggle is unconditionally visible on devices with no stylus (most phones / tablets without S-Pen). Tapping the toggle on such a device flips an internal flag that has no observable effect.
+- Why it matters: confusing UX; suggests the device has a feature it doesn't.
+- Fix: at startup, query stylus support via `InputManager.InputDeviceIds` filtered by `Sources & InputSourceType.Stylus`; hide the button if none. Optionally show on first observed stylus event during the session.
+- Safe/localized: Yes. Regression risk: Low. Verify: install on a Pixel/Tab S without S-Pen; confirm the toggle is gone.
+
+### B-9 (Medium, Likely) Zoom-window-hint Snackbar anchor on `_viewport` can leak when viewport is hidden
+
+- File: `Android/src/FabricationAssistant.App.Android/MainActivity.cs:~2516-2520`.
+- If the snackbar is shown and the user immediately rotates or backgrounds, the snackbar holds the previous viewport.
+- Fix: anchor to the activity's root content view (`Window.DecorView.FindViewById(Android.Resource.Id.Content)`), or dismiss any active snackbar in `OnPause`/`OnConfigurationChanged`.
+- Safe/localized: Yes. Regression risk: Low.
+
+### B-10 (Medium, Confirmed) `PruneImportCache` is fire-and-forget without exception logging at the call site
+
+- File: `Android/src/FabricationAssistant.App.Android/AppServices.cs:25`.
+- `_ = Task.Run(() => ImportPipeline.PruneImportCache(platformPaths.AppDataRoot));`
+- The implementation (`ImportPipeline.cs:312-341`) has `try { ... } catch { /* best-effort */ }`, so direct exceptions are swallowed, but the wrapping `Task.Run` will still surface an exception via `TaskScheduler.UnobservedTaskException` if anything outside the try (the `if (string.IsNullOrWhiteSpace(...)) return;` is safe, but the call resolution itself could throw `TypeInitializationException` on AOT). Currently nothing logs.
+- Fix: change to `Task.Run(...).ContinueWith(t => global::Android.Util.Log.Warn("FA.Cache", t.Exception?.ToString() ?? ""), TaskContinuationOptions.OnlyOnFaulted);`.
+- Safe/localized: Yes. Regression risk: Low.
+
+### B-11 (Medium, Likely) `RecentFilesStore` JSON persistence is not atomic
+
+- File: `Android/src/FabricationAssistant.App.Android/RecentFilesStore.cs` (write path).
+- A crash mid-write or an unusual SharedPreferences I/O error can leave the JSON value partially written. The next `Load` returns an empty list and the user silently loses history.
+- Fix: write to a temp preference key and swap in one editor transaction; or move recent files to a small file under `_paths.AppDataRoot` with the standard write-temp-then-rename pattern.
+- Safe/localized: Yes. Regression risk: Low. Verify: add a unit test that injects a malformed stored JSON and asserts the loader logs and returns empty (already true), then asserts the saver writes atomically by inspecting the keys around a `kill -9` simulation.
+
+### B-12 (Medium, Likely) Properties / model-explorer / BOM panels can become out of sync with the viewport selection
+
+- Files: `Android/src/FabricationAssistant.App.Android/PropertiesPanelBinder.cs`, `AndroidModelExplorerPanel.cs`, `AndroidBomPanel.cs`, and the `_selectedNodeIds` mutation sites in `MainActivity`.
+- `ShowSelection(null, _runtimeScene)` is called in some paths but not all (e.g. after `ClearSelectedMeasurement` and after some `_selectedNodeIds.Clear()` sites). Missing refresh leaves the side panel showing stale node metadata.
+- Fix: route every mutation of `_selectedNodeIds` through a single `private void SetSelectedNodeIds(...)` helper that ends with `RefreshSelectionDependentUi()` (calling `_propertiesPanelBinder?.ShowSelection`, `_modelExplorerPanel?.RefreshHighlight`, `_bomPanel?.RefreshHighlight`).
+- Safe/localized: Yes (one helper + replace call sites). Regression risk: Medium - need to be sure no path is double-refreshing in a way that fights an in-flight update.
+
+### B-13 (Medium, Likely) `_viewport?.Renderer.Scene is not null || _runtimeScene is not null` is the wrong gate for view-preset buttons
+
+- File: `MainActivity.cs:~2350` (`UpdateViewPresetButtonStates`).
+- The runtime scene is set before the GPU scene; clicking a view preset between those two events can either no-op or attempt to compute bounds on an incomplete GPU scene.
+- Fix: gate on `_viewport?.Renderer.Scene is not null` only.
+- Safe/localized: Yes. Regression risk: Low.
+
+### B-14 (Medium, Confirmed) `_toolZoomSelectedButton` can be enabled when every selected node is hidden
+
+- File: `MainActivity.cs:~2387`.
+- Predicate is `hasScene && hasSelection`, but it does not consider visibility. Pressing the button on a hidden selection silently no-ops or zooms to an empty bound.
+- Fix: tighten the predicate to `hasScene && _selectedNodeIds.Any(id => IsNodeEffectivelyVisible(id))`. The same review applies to `_toolHideButton` (`CanHideSelectedNodes()`) and `_toolIsolateButton`.
+- Safe/localized: Yes. Regression risk: Low.
+
+### B-15 (Medium, Likely) Measurement bounding-box button shows "selected" while disabled
+
+- File: `MainActivity.cs:~2343-2345` (`UpdateMeasureButtonStates`).
+- During an in-flight bounding-box measurement, `Enabled = false` and `Selected = true` at the same time. Material's tonal-button state is contradictory: greyed but highlighted.
+- Fix: keep the button enabled and show a spinner overlay, or set `Selected = _measureBoundingBoxAwaitingSelection && !_measureBoundingBoxBusy`.
+- Safe/localized: Yes. Regression risk: Low.
 
 ## 4. Android UI logic problems
 
-### U-1 (Medium, Likely) - `OnPause` cancels the active load but does not cancel pending picks or QR scans
+(B-3 / B-5 inline colours, B-8 stylus-toggle device gating, B-9 snackbar anchor, B-12 selection sync, B-13 / B-14 / B-15 button-state gates are above.)
 
-- `_picker` is left open if the user pressed Open and then backgrounded; the SAF picker dialog often disappears with the activity, but `_pending` TaskCompletionSource in `SafFilePicker` is only cancelled on `Dispose` or after the 5-minute internal timeout. While paused, `_pending.TrySetCanceled()` will not be invoked unless the user explicitly cancels.
-- Suggested fix: in `OnPause`, call `_picker?.CancelActivePicker()` if such a method is added (or `_picker?.Dispose()` is too heavy, exposing a `CancelActivePick` that resets `_pending` is preferable).
-
-### U-2 (Low, Confirmed) - `BindBottomToolbar` attaches click handlers regardless of scene presence
-
-Many bottom-toolbar buttons are then disabled via `UpdateMainToolButtonStates`. This is correct, but a few buttons (`_toolScanQrButton` for QR) require `HasScene()`; the disabled-button visual treatment is `Alpha = 0.55f` (`SetEnabled`'s side effect at `MainActivity.cs:9199-9201`) but `Click` is still attached, so a programmatic click could fire. Manual taps respect `Enabled` so this is theoretical.
-
-### U-3 (Medium, Confirmed) - `RecentFilesBottomSheet` probes every URI via `ContentResolver.OpenFileDescriptor` on the UI thread
-
-- File: `RecentFilesStore.cs:140-168` invoked from `RecentFilesBottomSheet.CreateEmbeddedView`.
-- `OpenFileDescriptor` is fast for local SAF URIs but can block on remote providers (Drive, Dropbox, network mounts).
-- Suggested fix: probe asynchronously; show entries optimistically, mark as "checking..." and remove unreachable rows when probes return.
-
-### U-4 (Low, Confirmed) - `UpdateBottomToolbarVisibility` toggles dozens of `Visibility` flags per call
-
-Some controls (the section fill / edges switches) update `Checked` inside `UpdateSectionButtonStates` with `_sectionSwitchUpdating = true;` guard. Good. Make sure each new toolbar control follows the same gated pattern.
-
-### U-5 (Confirmed correct) - `OnExplodeSliderProgressChanged` only writes when `e.FromUser`
-
-`_explodeSliderUpdating` flag prevents thrash when programmatic updates fire. Verified correct.
-
-### U-6 (Low, Confirmed) - `OpenPicker` for color swatches uses a single click handler attached to the row, swatch, hex text and pick button
-
-Four `Click` registrations. They all open the same dialog. Slight overhead, not a correctness bug.
-
-### U-7 (Low, Confirmed) - `AndroidManifest.xml` declares only the application + permissions; no `<intent-filter>` for `ACTION_VIEW` on `.glb` / `.fa`
-
-This is consistent with the in-app-picker-only UX; flag if you want "Open with" support, otherwise leave as-is.
+- **U-1 (Low, Confirmed)** `RecentFilesBottomSheet.CreateEmbeddedView` loads recent files at *create* time, not at *show* time. A second show after the list has been cleared elsewhere shows stale data until reopened. Fix: move the `RecentFilesStore.Load(ctx)` call to `OnStart` (or expose a `Refresh()` that the host calls when shown).
+- **U-2 (Low, Confirmed)** `PreferencesBottomSheet` also seeds controls at create time. If settings change between two shows (e.g. via a programmatic reset), the sheet will show stale toggle states the next time it opens. Same fix - reseed in `OnStart`.
+- **U-3 (Low, Likely)** `Snackbar` showing the zoom-window hint does not announce auto-dismiss to TalkBack. Append `snackbar.View.Announce(...)`. Accessibility only - low priority.
+- **U-4 (Low, Likely)** Several `AddSwitch(...)` callers in `PreferencesBottomSheet` set `ContentDescription = label`. State (`on`/`off`) is not appended, so TalkBack does not announce the current state cleanly. Append `", on"`/`", off"` (or use `accessibilityLiveRegion`).
 
 ## 5. Lifecycle and threading problems
 
-### L-1 (Confirmed correct) - `OnPause` / `OnResume`
+(B-6 startup migration uses synchronous `Commit()`, B-10 fire-and-forget cache prune lacks logging are above.)
 
-- Cancels active load on pause, dismisses styled tooltips, clears hover, hides render-busy. `_viewport?.OnPause()` triggers the surface view's pause path which clears pending callbacks and queued GL commands.
-- `OnResume` re-applies settings and dispatches `ReloadRendererSceneAfterContextLossAsync` which re-uploads the retained `DocumentDto` or falls back to URI reload (`MainActivity.cs:9336-9451`). This is excellent, covers the GLSurfaceView context-recreation path properly.
-
-### L-2 (Confirmed correct) - `OnSaveInstanceState`
-
-Persists URI, display name, camera, selected node IDs, selected occurrence IDs (FA packages), explode amount, section sub-mode, section planes + selected, hidden / isolated occurrence IDs. Comprehensive.
-
-### L-3 (Confirmed correct) - `OnTrimMemory` / `OnLowMemory`
-
-- At UiHidden / RunningLow / RunningCritical: clears raycast acceleration caches and prunes import cache.
-- At RunningCritical: clears `_lastLoadedDocument` and queues `TrimTransientGpuResources()` on the GL thread.
-
-### L-4 (Confirmed correct) - `OnDestroy`
-
-Sets `_isDestroyed = true`, increments load version, cancels active load, unsubscribes camera / sections / bodyMove / undo events, disposes pointer source, measure, model explorer, picker, viewport renderer (on GL thread), and disposes services. Excellent cleanup.
-
-### L-5 (Confirmed correct) - S-Pen palm rejection
-
-`ApplySpenPalmRejectionState` calls `_pointerSource?.CancelActiveGesture()` before flipping the flag; correctly avoids leaving the recognizer half-locked.
-
-### L-6 (Medium-Low) - `AppServices.Build` invokes `ImportPipeline.PruneImportCache` on the UI thread
-
-See B-2.
-
-### L-7 (Low, Likely) - `OnPause` does not call `RemoveOwnedOverlayViews` or detach the GestureRecognized subscribers
-
-These survive across pause / resume which is correct, but if `OnDestroy` is skipped (process death without `OnDestroy`), subscribers leak via static-equivalent references. Process death also disposes the heap, so this is academic.
+- **T-1 (Medium, Confirmed)** `ApplySpenPalmRejectionState(...)` is called once in `OnCreate` (line 424). I could not find a path that reapplies it when the user toggles `SpenPalmRejectionEnabled` in `PreferencesBottomSheet`. If absent, the toggle has no effect until app restart. Verify by searching for `SpenPalmRejectionEnabled` setter handlers; if missing, call `ApplySpenPalmRejectionState(showToast: true)` from `OnSettingsChanged`.
+- **T-2 (Low, Confirmed)** `ViewportSurfaceView.OnPause` clears the pending GL command queue. Callbacks already in flight on the GL thread (e.g. `PickAsync`) re-post their UI-thread continuation via `TryPostToMain`. The closure rechecks `CanScheduleRendering()` (line 272), so this is safe today. Worth a one-line `// intentional` comment to prevent future regressions.
+- **T-3 (Low, Confirmed)** `WaitForNextRenderedFrameAsync` (`ViewportSurfaceView.cs:199-244`) subscribes to `FrameRendered` before queuing the `armed=1` marker. This is intentional - `QueueRendererCommand` schedules a render (line 171) and the marker runs before the next `FrameRendered` fires, so completion always happens. One of the parallel reviewers flagged this as a race; on close inspection the code is correct and reordering would create a worse race. Do not "fix".
+- **T-4 (Medium, Likely)** `OnConfigurationChanged` calls `_viewport?.Post(() => _viewport?.RequestRender())`. This is racy in principle - the lambda captures `_viewport` indirectly via the closure on `this`. If a quick rotation arrives right before `OnDestroy`, the posted lambda still runs but sees a non-null `_viewport` because nulling happens after `DisposeRendererOnGlThread`. Today it is safe (the renderer's own `_disposed` guard catches it), but a `if (Volatile.Read(ref _isDestroyed) == 0) ...` guard inside the lambda would harden it.
+- **T-5 (Low, Confirmed)** `_lastLoadedDocument = null` on `TrimMemory.RunningCritical` (line 10043) drops the cached document used by `ReloadRendererSceneAfterContextLossAsync`. If EGL is then lost (the user backgrounds the app under memory pressure), the next foreground will show an empty scene without an error toast. Either also surface a "scene unloaded due to memory pressure" toast, or attempt to re-import from `_lastLoadedUriText` on resume after a `RunningCritical` trim.
 
 ## 6. Rendering / GLES problems
 
-> Most renderer findings come from sub-agent analysis. The full GLES library was not read line-by-line in this pass; the following are flagged for follow-up. I explicitly rejected the agent's "critical" `glReadPixels` finding: `GL_RED_INTEGER + GL_UNSIGNED_INT` is valid for `R32UI` textures in GLES 3.0+ (the device target). See `GlesPickRenderer.cs:199`.
+Most renderer files are large; below are the highest-signal items the per-area review identified. I verified the surrounding control flow in each case.
 
-### R-1 (Medium, Likely) - Overlay texture state leakage
+- **R-1 (High, Likely)** `GpuMesh.UploadEdges` deletes the prior edge VAO/VBO before allocating new resources; on a mid-upload exception the mesh ends up with `EdgeVao == 0` but a stale `EdgeVertexCount > 0`. The next `DrawEdges` will skip because of the count, but the invariant is fragile. Set `EdgeVertexCount = 0` immediately after `ClearEdgeResources()` and only restore it after a successful upload.
+- **R-2 (Medium, Likely)** `OnSurfaceCreated` on context recreation does not always dispose pre-existing programs/renderers before re-creating them. If the path is taken twice (e.g. resume after a brief context loss while a previous recreate is already in flight), shader handles can leak. Add an unconditional `DisposeResources(disposeScene: false)` at the top of `OnSurfaceCreated`.
+- **R-3 (Medium, Confirmed)** `GlesNormalDepthRenderer.Resize` and `GlesSsaoRenderer.Render` perform `glFinish` + `glReadPixels` when `collectDiagnostics` is true. This is fine for one-off captures but it is a CPU/GPU stall on Mali/Adreno every frame if the flag accidentally stays on. Confirm callers default to `false` and gate the readback behind a build/profile flag (not a runtime setting that can be left enabled).
+- **R-4 (Medium, Candidate)** Section-clipping uniforms (`uSectionPlanes`, `uSectionPlaneCount`) appear to be set per draw pass in `SetSectionUniforms`. Two checks I recommend: (1) edges respect clipping (the agent saw it bound for the edge pass - confirm); (2) the `Clay` outline path goes through the same `SetSectionUniforms`. Run a manual section-clip test in `ShadedWithEdges`, `Wireframe`, `Clay`, `Realistic` to confirm visual consistency.
+- **R-5 (Low, Likely)** `GlesPickRenderer.Pick` validates input coordinates twice. Harmless; consolidate when the file is being touched anyway.
+- **R-6 (Low, Confirmed)** `MsaaSceneFramebuffer.ClampSamples` returns the requested sample count clamped to `{0,2,4,8}`. The runtime additionally honours `GL_MAX_SAMPLES` (line 78 of `Ensure`). Devices that report higher than 8 will be silently downgraded - intentional per the file comment. Worth a `Log.Info("FA.Renderer", $"MSAA requested={requested}, effective={effective}, maxSamples={maxSamples}")` once per surface so the user / developer can see why MSAA "isn't 16x".
+- **R-7 (Low, Candidate)** I did not see explicit `glCheckFramebufferStatus` after every FBO attach/reattach in every overlay (`GlesFaceHighlightOverlay`, `GlesSectionOverlay`, `GlesMeasurementOverlay`). Confirm. If absent, add a one-line check after the last `FramebufferTexture2D`/`FramebufferRenderbuffer` and log on incomplete.
+- **R-8 (Low, Confirmed)** `GlesViewportRenderer` keeps a `_failedMsaa{w,h,samples}` cache that prevents retrying a configuration that has previously failed. Good. Make sure it is reset on context recreation - otherwise a transient failure during one EGL lifetime will keep MSAA off across the next, even though the new context might support it. Spot-check `OnSurfaceCreated`.
 
-The renderer binds the AO texture to unit 4, then returns to unit 0 without explicitly unbinding unit 4. If an overlay pass later samples without resetting, the AO sampler is implicitly bound. Mitigated by explicit `BindTexture` calls in each pass; tighten by extending `ResetMainFramebufferState()` to set `ActiveTexture(Texture0)` and unbind unit 4.
+## 7. File import / SAF problems
 
-### R-2 (Low, Candidate) - MSAA failure logging is gated by `_failedMsaaWidth`; transient FBO incompleteness after the first failure is silent
-
-Suggested: log every FBO failure once with a hash of the config, then back off retry.
-
-### R-3 (Confirmed correct, per agent) - Section clipping uniforms are broadcast to mesh, edge, stencil, pick, and outline programs
-
-Co-verified by reading the call sites the agent cited.
-
-### R-4 (Confirmed correct, per agent) - Pick FBO Y-flip is correct
-
-Android top-left to GL bottom-left conversion is applied.
-
-### R-5 (Confirmed correct, per agent) - `ShaderProgram` logs compile / link errors with program / shader names
-
-### R-6 (Confirmed correct, per agent) - MSAA samples are clamped twice
-
-At the read site in `AppSettings.MsaaSamples` via `ClampAndroidMsaaSamples` (snap to 0 / 2 / 4 / 8) and again against `GL_MAX_SAMPLES` in `MsaaSceneFramebuffer`.
-
-### R-7 (Low, Candidate) - Verify no non-ASCII byte exists in inline GLSL shader strings
-
-Per the user's `feedback_ascii_only_shaders.md` memory, this would be a build-blocker on NVIDIA's preprocessor. Recommended check:
-
-```
-Grep -P "[^\x00-\x7F]" --type cs Android/src/FabricationAssistant.Rendering.Gles
-```
-
-Not run as part of this review.
-
-## 7. File import and SAF problems
-
-- F-1 (High) - Persistable URI permission. See B-1.
-- F-2 (Medium) - Synchronous prune in OnCreate. See B-2.
-- F-3 (Medium) - `.fa` MIME mapping. See B-4.
-- F-4 (Confirmed correct) - Cancellation. `CopyToLocalAsync` uses a linked CTS with a 15-minute hard `CopyTimeout`; `CopyToAsyncWithLimit` respects the token per buffer read. On cancellation the catch block deletes `.part`. Stream disposal is via `await using`, so the file handle is closed before `TryDeleteFile`. Reliable.
-- F-5 (Confirmed correct) - `ValidateGlbAsync` is strict: header magic / version / length match, first chunk must be JSON of non-zero length, chunk alignment to 4 bytes, no chunk exceeds bounds. Truncated GLBs are caught at validation, not at parse time.
-- F-6 (Confirmed correct) - `ValidateGltfJsonAsync` requires `asset.version == "2.0"`.
-- F-7 (Confirmed correct) - `ValidateFaArchiveAsync` validates the `PK` magic, parses the manifest JSON, and requires the geometry / components entries. Strong.
-- F-8 (Low) - `StripUtf8BomInPlaceIfPresentAsync` does not handle the file-is-exactly-3-bytes-of-BOM case explicitly; the resulting empty file will then fail JSON parse. Not a crash, just a less specific error.
-- F-9 (Low) - File size cap is 2 GiB on copy; the GLB importer may load the entire file into memory. For low-end devices, consider lowering the practical cap or surfacing a "this file is too large for this device" message based on `ActivityManager.MemoryInfo`.
+- **F-1 (Medium, Confirmed)** `ImportFileTypeResolver` falls back to MIME-then-extension; on null MIME (some content providers) the type derives solely from the SAF display name. Files renamed before sharing will mis-detect. Fix: when both fail, sniff the first 4 bytes (`glTF` magic, `PK` zip, etc.) to determine the type before copying further.
+- **F-2 (Medium, Likely)** `DracoExtensionDetector.ContainsDraco` scans up to 32 MB looking for a `KHR_draco_mesh_compression` literal. If the file isn't a GLB (validation hasn't run yet), this wastes I/O and CPU. Short-circuit by reading the 4-byte GLB magic first; return `false` early if not a GLB.
+- **F-3 (Medium, Confirmed)** `DracoNativeDecoder` P/Invoke calls run on whatever thread invokes `ImportAsync`. Per `_loadSemaphore`, only one import runs at a time, but if a future change parallelises decode it will hit a non-thread-safe native library. Either add a `lock` around the P/Invoke surface or assert the semaphore is held when decode runs. Also add an explicit null-handle check after `DecodeBufferToMesh` with a meaningful `InvalidDataException` message instead of constructing a `DracoMesh` over a zero handle.
+- **F-4 (Low, Confirmed)** `ImportPipeline.PruneImportCache` runs only at startup (and on `TrimMemory.UiHidden+`). If a user does several imports within the same foreground session the cache can grow up to `ImportCacheKeepCount=10` files plus stale `.part` / `.nobom` items. Acceptable, but consider also pruning after each successful import.
+- **F-5 (Low, Candidate)** `RecentFilesStore.ProbeReadableAccess` opens a content-provider file descriptor with no timeout. A misbehaving provider can hang the load. Wrap in `Task.Run` with `Task.WaitAsync(TimeSpan.FromSeconds(5))` and treat the timeout as `Unknown`.
+- **F-6 (Low, Confirmed)** `CreateCacheFileName` truncates the stem to 80 chars after replacing invalid chars. That's fine, but it does not handle reserved Windows names (`CON`, `NUL`, etc.). Android FS doesn't care, but downstream desktop interop (e.g. if a user later opens the same `.fa` on Windows) would. Optional hardening.
+- **F-7 (Low, Confirmed)** `ValidateFaArchiveAsync` swallows any non-`InvalidDataException`/`OperationCanceledException` into "not a valid Fabrication Assistant archive." Useful as user-facing text, but the inner exception is preserved (good). Confirm logging chains write `ex.ToString()` somewhere, otherwise add a `Log.Warn("FA.Import", ex.ToString())` before rethrowing.
 
 ## 8. Settings / persistence problems
 
-- S-1 (Confirmed correct) - Schema migration. `MigrateDefaultsIfNeeded` runs on `Initialize`. Old `ao_*`, legacy float / int defaults, and `section_gizmo_size` to `section_gizmo_scale` conversions are handled. Versioned at `SettingsSchemaVersion = 14`.
-- S-2 (Confirmed correct) - Range clamping. Every setter clamps; getters use `GetFloatInRange` / `GetIntInRange` with defaults on out-of-range stored values. Resilient to corrupted prefs.
-- S-3 (Confirmed correct) - `AppSettings.Apply(ref SceneAppearance)` populates every field in one call. Verified field-by-field against the implementation.
-- S-4 (Confirmed correct) - `Edit(editor => ...)` always calls `Apply()` (async). Migration uses `Commit()` to make the migration durable on first run.
-- S-5 (Confirmed correct) - `SetEdgesEnabledFromUi(true)` defensively bumps `edge_width` up to `DefaultEdgeWidth` when the persisted value is below the visible-threshold. Good UX.
-- S-6 (Low) - `LegacyFloatDefaultsToRemove` has duplicate `("ao_radius", 0.009f)` and `("ao_bias", 0.0002f)` entries (`AppSettings.cs:87-89`), harmless, but suggests copy-paste cleanup.
-- S-7 (Low) - `PreferencesBottomSheet.AddFloatSlider` integer-quantises to 1000 buckets which is fine for most ranges but lossy for `ao_max_distance` (0.05..2.0, step ~0.00195). Acceptable.
+(B-1 / B-2 / B-6 above.)
+
+- **S-1 (Medium, Confirmed)** `LegacyFloatDefaultsToRemove` / `LegacyIntDefaultsToRemove` lists are correct (duplicates are intentional - they represent different historical defaults that need stripping; iteration is order-safe because `Prefs.Contains` is rechecked). They are however **undocumented** as such. Add a `// schema v9-v12 default; remove so the new default applies` comment next to each duplicate, otherwise a future maintainer will "clean up" the list and break legacy migrations. (One of the parallel reviewers flagged the duplicates as a bug - they are not, but the absence of comments is worth fixing.)
+- **S-2 (Low, Confirmed)** `ConvertSectionGizmoSizeToScale` (schema 14) is not idempotent under a partial commit. Since `MigrateDefaultsIfNeeded` uses synchronous `Commit()` today, the risk is small; if you switch to `Apply()` (per B-6) and a crash occurs between writing `section_gizmo_scale` and writing `settings_schema_version`, the next run will re-multiply by another `1/LegacySectionGizmoSizeFractionBase`. Either keep `Commit()` for the version stamp only, or guard the conversion with `if (Prefs.Contains("section_gizmo_size") && !Prefs.Contains("section_gizmo_scale"))`.
+- **S-3 (Low, Confirmed)** Renderer-irrelevant settings (measurement face colours, section visibility flags) are intentionally not copied into `SceneAppearance.Apply`. This is correct today, but undocumented. Add a one-line comment near the top of `Apply`: `// UI-only settings (measurement colours, section visibility) are read directly from AppSettings; they are intentionally not part of the renderer snapshot.`
 
 ## 9. Hardening recommendations
 
-- H-1 Replace the SAF picker contract with one that includes `FLAG_GRANT_PERSISTABLE_URI_PERMISSION` (root cause of B-1).
-- H-2 Move `PruneImportCache` off the UI thread (B-2).
-- H-3 Refresh `_density` after `OnConfigurationChanged` (B-3).
-- H-4 Add `.fa` / ZIP to MIME fallback (B-4).
-- H-5 Track pointer ID in `HorizontalResizeTouchListener` (B-5).
-- H-6 Verify no non-ASCII bytes in inline GLSL strings under `Rendering.Gles` (R-7), automated grep can be added to `build.ps1`.
-- H-7 Add a configurable backoff / log policy to the MSAA fallback path so transient FBO incompleteness is visible without spam (R-2).
-- H-8 In `RecentFilesBottomSheet`, probe access asynchronously and update the list as results return (U-3).
-- H-9 Consider exposing a `SafFilePicker.CancelActivePickAsync()` to call from `OnPause` (U-1).
-- H-10 When opening recent files surfaces "no longer accessible", include the original display name in the toast and provide a "Re-open" affordance that re-launches the picker.
+| ID | What | Tracked by |
+| --- | --- | --- |
+| H-1 | Centralise `ParseColor` into colour resources | B-3 / B-5 |
+| H-2 | Track all `AlertDialog`s in a list and dismiss in `OnDestroy` | B-4 |
+| H-3 | Apply S-Pen palm rejection setting changes live | T-1 |
+| H-4 | Hide the S-Pen toggle on non-stylus devices | B-8 |
+| H-5 | Route all selection mutations through a single helper that refreshes side panels | B-12 |
+| H-6 | Add `MsaaSamples` to `IntRangeGuards` | B-2 |
+| H-7 | Atomic JSON persistence for `RecentFilesStore` | B-11 |
+| H-8 | Sniff magic bytes when MIME and extension are both unhelpful | F-1 |
+| H-9 | Bound `DracoExtensionDetector` scan to confirmed-GLB files | F-2 |
+| H-10 | Add `ContinueWith(... OnlyOnFaulted)` to fire-and-forget `Task.Run`s | B-10 |
+| H-11 | Add timeout to `ContentResolver.OpenFileDescriptor` in `RecentFilesStore.ProbeReadableAccess` | F-5 |
+| H-12 | Add a one-shot info log after MSAA setup showing requested vs effective vs max | R-6 |
+| H-13 | Add `glCheckFramebufferStatus` audit pass across overlays | R-7 |
+| H-14 | Add a unit test asserting `AppSettings.Apply(ref default) == SceneAppearance.CreateDefault()` | B-1 |
+| H-15 | Disable diagnostic readback paths by default; gate behind a build flag | R-3 |
 
 ## 10. Dead code candidates
 
-- D-1 (Candidate) - `AppSettings.LegacyFloatDefaultsToRemove` (line 87-90, 105-106): repeated entries for `ao_radius`, `ao_bias`, `edge_width`. Removing duplicates is safe.
-- D-2 (Candidate) - `RecentFilesStore.Save` (private) at lines 120-124 is a duplicate of `SaveUnsafe` plus a lock; `Save` is never called from inside the class (callers use `SaveUnsafe` under the gate). Confirm via Grep before removing.
-- D-3 (Candidate) - `MainActivity._lastMeasurementOverlayLogKey` / `_lastMeasurementLabelLogKey` / `_lastProjectionLogKey` look like debug log de-duplication keys. If any never reads them, prune.
+I did not find a strong dead-code signal in this pass. Two candidates worth verifying before removal:
 
-No high-confidence dead-code removals identified.
+- **DC-1 (Candidate)** `SceneAppearance.CreateDefault()` - no runtime caller; only the tests reference it. Either keep it as the canonical default and consume it from `Apply` (preferred, see B-1), or delete it once `AppSettings.Apply` is the single source of truth.
+- **DC-2 (Candidate)** Any of the `LegacyFloatDefaultsToRemove` entries that predate schema 9 (the first migration that calls them). If your telemetry suggests no users below schema 9 remain, trim. Risky enough to leave alone for now.
 
-## 11. Simplification opportunities (low priority; do not pursue unless risk-reducing)
+## 11. Simplification opportunities
 
-- Si-1 Consolidate the 30+ `DetachClick(...)` calls in `ClearAndroidViewListeners` and the matching `Click +=` attachments in `BindBottomToolbar` into a small registry helper that records (button, handler) on attach and replays them on destroy. Reduces drift risk between attach / detach lists.
-- Si-2 `EnumerateRenderableNodeIds(scene, nodeIds)` and `EnumerateRenderableNodeIds(SceneNode)` could be merged with a single `IEnumerable<int>` variant. Minor.
+- B-3 / B-5 colour resourcing also simplifies future palette tweaks (one place to change).
+- B-12 single selection helper simplifies an otherwise duplicated update pattern.
+- S-1 inline schema-version comments simplify reasoning about the legacy-defaults arrays.
+- `OnTrimMemory` uses `(int)level >= (int)TrimMemory.UiHidden` (line 10032). `TrimMemory` is `[Flags]`-shaped in some Android versions, but on net8.0-android the enum values are ordinally meaningful, so the cast is intentional and correct - leave it.
+
+Nothing else worth restructuring under the "no architectural churn" constraint.
 
 ## 12. Prioritised fix plan
 
-1. B-1 SAF persistable URI permission (High; recent files unusable after process restart).
-2. B-2 Move PruneImportCache off the UI thread (Medium-High; first-paint regression risk).
-3. B-3 Refresh `_density` on `OnConfigurationChanged` (Medium; foldable / DeX correctness).
-4. B-4 `.fa` MIME fallback (Medium; user-visible "Unsupported file type" on edge case).
-5. R-7 Static check for non-ASCII bytes in inline GLSL strings (Medium; latent compile bomb on NVIDIA-derived drivers per saved memory).
-6. B-5 `HorizontalResizeTouchListener` pointer tracking (Medium; multi-touch drift).
-7. U-3 Async URI probing in recent files (Medium; ANR risk on remote providers).
-8. R-1 Tighten texture-unit reset in ResetMainFramebufferState (Medium-Low; overlay correctness).
-9. R-2 Log every FBO failure once + back off (Low; observability).
-10. U-1 `OnPause` cancels the SAF picker (Low; cleanliness).
-11. F-8 / F-9 Edge-case import errors (Low; polish).
-12. D-1 / D-2 Dead-code cleanups (Low; only if you accept the risk of breaking some unseen caller).
+1. **B-1** default drift between `AppSettings` and `SceneAppearance` (correctness, observable visual change). Smallest blast radius if a unit test ratchets it.
+2. **B-2** `MsaaSamples` migration gap.
+3. **B-4** dialog-leak in `OnDestroy`.
+4. **B-3 / B-5** inline colour resourcing (theme adherence).
+5. **T-1** S-Pen palm-rejection live update (if confirmed absent).
+6. **B-12** selection-sync helper.
+7. **B-13 / B-14 / B-15** button-state gates.
+8. **R-1** `GpuMesh.UploadEdges` invariant.
+9. **B-6** migration `Apply()` instead of `Commit()`.
+10. **B-11** atomic recent-files persistence.
+11. **F-1 / F-2** import type-detection hardening.
+12. **R-2** unconditional `DisposeResources` in `OnSurfaceCreated`.
+13. **B-8** stylus-toggle device gating.
+14. Everything else (logs, comments, accessibility).
 
 ## 13. Safe first-patch list
 
-Smallest patches that buy the most safety with no architectural churn. Each is local, roughly 25 lines or less, no public API changes:
+Each is small and reversible:
 
-- `SafFilePicker.cs`: wrap the contract or the launched Intent with `Intent.FlagGrantPersistableUriPermission`.
-- `AppServices.cs`: `Task.Run(() => ImportPipeline.PruneImportCache(...))` instead of synchronous.
-- `AndroidPointerSource.cs`: new `RefreshDensity(Context)` method; called from `MainActivity.OnConfigurationChanged`.
-- `ImportFileTypeResolver.cs`: extend switch with two ZIP MIME cases mapping to `.fa`.
-- `HorizontalResizeTouchListener.cs`: track pointer ID; ignore non-tracked pointers in Move.
+1. Align defaults `AoSampleCount` 32, `AoBlurRadius` 6, `SurfaceOffsetFactor` 1.0, `SurfaceOffsetUnits` 1.0 in `AppSettings.cs`; add the four old values to the legacy-defaults arrays; bump `SettingsSchemaVersion` to 15. (B-1)
+2. Add `("msaa_samples", 0, 8)` to `IntRangeGuards`. (B-2)
+3. Replace each `Color.ParseColor("#...")` call with a `Resource.Color.*` lookup; add the colour resources. (B-3 / B-5)
+4. Maintain a `List<AlertDialog?>` in `MainActivity`, store on `.Show()`, dismiss in `OnDestroy`. (B-4)
+5. In `PreferencesBottomSheet`, call `ApplySpenPalmRejectionState(showToast: false)` from the S-Pen toggle handler. (T-1)
+6. Replace `_navSpenPalmButton.Visibility = ViewStates.Visible` with a stylus-detection check. (B-8)
+7. In `MainActivity`, change every `_selectedNodeIds.Add/Remove/Clear` chain to call a new `SetSelectedNodeIds(...)` helper that refreshes Properties / Model Explorer / BOM. (B-12)
+8. Change `editor.Commit()` to `editor.Apply()` in `MigrateDefaultsIfNeeded`. (B-6)
+9. In `AppServices.Build`, change the fire-and-forget to `.ContinueWith(... TaskContinuationOptions.OnlyOnFaulted)`. (B-10)
+10. Add the schema-version comments to `LegacyFloatDefaultsToRemove` / `LegacyIntDefaultsToRemove`. (S-1)
 
 ## 14. Verification plan
 
-### Build
+**Build:**
+- `Android/tools/build.ps1` (the only sanctioned build entry point).
+- Inspect output for `EmbedAssembliesIntoApk` confirmation and no resource-designer warnings.
 
-- `pwsh Android/tools/build.ps1 -Configuration Debug` from a console that does not have `obj/` open in any IDE / explorer.
-- Note: build attempted during this review failed with `XARLP7024: System.IO.IOException: The process cannot access the file '...\obj\Debug\lp\83\jl\R.txt'`. This is a Windows file-lock race against parallel reads of `obj/`; the underlying C# compilation reported 5 warnings, 0 errors before that. Re-run the build from a clean shell (or `-Clean`) to confirm 0 errors. Build verification did not complete cleanly through me; please re-run standalone before merging any patch.
+**Unit tests:**
+- `Android/tools/test.ps1` (existing test runner).
+- After B-1 add to `SceneAppearanceTests`: build appearance via `AppSettings.Apply(ref default)` and assert each field equals the corresponding `SceneAppearance.CreateDefault` value.
+- After B-2 add to `AppSettingsValueGuardsTests`: persist `msaa_samples=16`, run `MigrateDefaultsIfNeeded`, assert key removed.
+- After B-11 add a test that simulates a malformed JSON in the recent-files store and asserts no exception and an empty list.
 
-### Unit tests
+**Emulator / device:**
+- arm64 Android 12-14 device. Cold-start the app, open a `.fa`, rotate twice, background/foreground, change render mode, change MSAA samples to 0 and back to 4, then to 8.
+- Trigger `TrimMemory.RunningCritical` via `adb shell am send-trim-memory <pkg> RUNNING_CRITICAL` and resume - confirm scene reloads from the retained document.
+- Plug in an S-Pen tablet: enable palm rejection in preferences, place stylus then a finger, lift stylus, place fingers - confirm gestures resume.
 
-- `dotnet test Android/src/FabricationAssistant.App.Android.Tests/FabricationAssistant.App.Android.Tests.csproj` covers `ViewportTouchGestureRecognizerTests`, `AndroidPointerSourceTests`, `AndroidSectionClipperTests`, `ImportFileTypeResolverTests`, `SmokeTests`. Extend `ImportFileTypeResolverTests` after B-4 with two new ZIP / no-extension cases.
+**Manual UI checks:**
+- Open the QR scanner from no-model state; ensure permission rationale dialog dismisses on rotation (B-4).
+- Open Recent Files, then clear a recent externally (delete via SAF in another app), reopen - confirm entry is gone (U-1).
+- Open Preferences, change render mode in code via debugger or test hook, close, reopen - confirm UI reflects the change (U-2).
+- Toggle `_navSpenPalmButton` on a non-stylus device - the button should not be visible (B-8).
 
-### Emulator / device smoke
+**Rendering checks:**
+- Section clipping in each render mode (Shaded, ShadedWithEdges, Wireframe, Clay): edges, fills, caps should be consistent.
+- MSAA at 0, 2, 4, 8 - confirm logcat reports clamped/max for the device (R-6).
+- After a context loss (rapid pause/resume), confirm the scene re-uploads without leaks (`adb shell dumpsys gfxinfo <pkg>` - watch surfaces / textures).
 
-- Cold-start with no scene -> Open flow -> recent file present -> kill app -> reopen -> tap recent -> must still load (B-1 fix).
-- Open a `.fa` from a provider that strips extensions (for example via `adb shell content insert` with explicit zip MIME) -> must import (B-4).
-- Rotate / multi-window resize on a foldable; verify drag thresholds remain consistent (B-3, B-5).
-- Open a large file (~1.5 GiB) on a 4 GB device; confirm OOM is caught and an error shown (existing behaviour; sanity).
-- Pause-resume during long import -> import completes or aborts cleanly without crash; `OnTrimMemory(RunningCritical)` injected via `adb shell am send-trim-memory <pid> RUNNING_CRITICAL` -> renderer still recovers.
-- QR scan: grant camera, deny, deny+"don't ask again" paths each navigate to the right dialog and recover (verified by code reading).
+## 15. Optional deeper refactors (only if justified)
 
-### Rendering checks
-
-- Toggle every render mode (Shaded, Wireframe, ShadedWithEdges, Clay) and each section axis with sectionFill / sectionEdges on / off. Confirm overlays do not show through clipped regions. Cycle several times to detect overlay state-leak (R-1).
-- Manually test on a low-end device (for example Pixel 4a) to expose ANR / density issues.
-
-## 15. Optional deeper refactors (not recommended now)
-
-- Splitting `MainActivity` into partials by feature area (recent panel, body-move, sections, measurement, explode, render-mode), would lower cognitive load, but the user has explicitly ruled out reorganisation. Skip.
-- Migrating the QR scanner from `android.hardware.Camera` to CameraX. Real benefit on API 28+, but adds a transitive dependency and replaces working code. Skip unless camera quality complaints surface.
+- **MainActivity decomposition**: 10,771 lines is a maintenance hazard. The user has explicitly forbidden splitting files in this review. Skip unless the team allocates a dedicated sprint and adds a test harness first; otherwise the surface area is too high to refactor safely.
+- **Hydrate `SceneAppearance` from a single source of truth**: instead of keeping two parallel default sets, generate `AppSettings` property defaults from `SceneAppearance.CreateDefault` (or vice versa) via source generation. Out of scope for a hardening pass.
+- **Replace SharedPreferences with a typed settings file**: ergonomic, but invasive. Defer.
 
 ---
 
-## Summary
+## Notes
 
-The Android port is in good shape. Lifecycle handling is thorough, `OnDestroy` is meticulous about subscription cleanup, GLES context loss is recovered via re-upload of retained `DocumentDto`, settings persistence has proper schema migration and range clamping. The one user-facing high-severity finding is the missing `FLAG_GRANT_PERSISTABLE_URI_PERMISSION` (B-1) which silently fails the recent-files flow after process death. Four medium-severity findings (UI-thread cache prune, stale density, ZIP MIME fallback, resize listener pointer tracking) are all small localised patches. Renderer-side findings need a second pass once non-ASCII GLSL scan and texture-state audit are run; nothing critical is confirmed there. Build verification did not complete cleanly under this review session; please re-run `Android/tools/build.ps1 -Clean -Configuration Debug` independently.
+**What worked:** the existing architecture (single `AppSettings` static, `Apply(ref SceneAppearance)` snapshot, GL command queue in `ViewportSurfaceView`, recognizer in a dedicated project) is solid and makes targeted hardening easy. The lifecycle teardown in `OnDestroy` is comprehensive. `AppSettings.Initialize` correctly precedes `AppServices.Build`. The Activity already handles `ConfigurationChanges` cleanly and re-clamps panel widths.
+
+**What is fragile:** dual-source defaults (B-1), inline colours (B-3), unbounded dialog ownership (B-4), and the 10k-line `MainActivity` that hides every sync gap behind layers of helper methods. Those four are where most of the long-tail bugs will keep coming from.
+
+**Confidence:** every "Confirmed" finding above was checked against the actual source. Items marked "Likely" depend on cross-file flows I read partially; "Candidate" items would need an emulator session or telemetry to settle. I dropped a handful of agent claims that did not survive verification (notably: the `WaitForNextRenderedFrameAsync` "race", the `AndroidPointerSource` `ACTION_UP` "GetPointerId(0) bug", the `LegacyFloatDefaultsToRemove` duplicate-keys "bug", and the `StripUtf8BomInPlaceIfPresentAsync` "tempPath leak").

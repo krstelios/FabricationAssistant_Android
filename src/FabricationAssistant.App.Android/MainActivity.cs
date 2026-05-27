@@ -120,6 +120,7 @@ public sealed class MainActivity : AppCompatActivity
     private IReadOnlyList<PresentationSnapshot> _measurementPresentation = Array.Empty<PresentationSnapshot>();
     private readonly List<MeasurementLabelBinding> _measurementLabels = new();
     private readonly List<SectionAnnotationBinding> _sectionAnnotations = new();
+    private readonly List<global::Android.App.Dialog> _ownedDialogs = new();
     private MeasurementLabelKey? _selectedMeasurementDeleteTarget;
     private AnnotationHitTarget? _pressedAnnotationTarget;
     private AnnotationHitTarget? _lastStylusButtonActivationTarget;
@@ -474,7 +475,12 @@ public sealed class MainActivity : AppCompatActivity
 
         _navSpenPalmButton = FindViewById<MaterialButton>(Resource.Id.navSpenPalmButton);
         if (_navSpenPalmButton is not null)
+        {
             _navSpenPalmButton.Click += OnSpenPalmClicked;
+            _navSpenPalmButton.Visibility = HasStylusInputDevice()
+                ? ViewStates.Visible
+                : ViewStates.Gone;
+        }
 
         _navSettingsButton = FindViewById<MaterialButton>(Resource.Id.navSettingsButton);
         if (_navSettingsButton is not null)
@@ -1517,6 +1523,33 @@ public sealed class MainActivity : AppCompatActivity
         SetSelected(_navSpenPalmButton, AppSettings.SpenPalmRejectionEnabled);
     }
 
+    private bool HasStylusInputDevice()
+    {
+        try
+        {
+            var inputManager = GetSystemService(InputService) as global::Android.Hardware.Input.InputManager;
+            int[]? deviceIds = inputManager?.GetInputDeviceIds();
+            if (deviceIds is null)
+                return false;
+
+            foreach (int deviceId in deviceIds)
+            {
+                InputDevice? device = InputDevice.GetDevice(deviceId);
+                if (device is null)
+                    continue;
+
+                if ((device.Sources & InputSourceType.Stylus) == InputSourceType.Stylus)
+                    return true;
+            }
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            global::Android.Util.Log.Warn("FA.Input", "Could not query stylus input devices: " + ex.Message);
+        }
+
+        return false;
+    }
+
     private void ToggleSpenPalmRejection()
     {
         AppSettings.SpenPalmRejectionEnabled = !AppSettings.SpenPalmRejectionEnabled;
@@ -2333,11 +2366,11 @@ public sealed class MainActivity : AppCompatActivity
 
     private void ShowBoundingBoxSelectionRequiredDialog()
     {
-        new AlertDialog.Builder(this)
-            .SetTitle(Resource.String.measure_bounding_box_title)!
-            .SetMessage(Resource.String.measure_bounding_box_select_body_message)!
-            .SetPositiveButton(global::Android.Resource.String.Ok, (_, _) => { })!
-            .Show();
+        ShowOwnedDialog(
+            new AlertDialog.Builder(this)
+                .SetTitle(Resource.String.measure_bounding_box_title)!
+                .SetMessage(Resource.String.measure_bounding_box_select_body_message)!
+                .SetPositiveButton(global::Android.Resource.String.Ok, (_, _) => { })!);
     }
 
     private void UpdateMeasureButtonStates()
@@ -2347,14 +2380,14 @@ public sealed class MainActivity : AppCompatActivity
         SetSelected(_measurePointToPointButton, activeMode == MeasureToolMode.PointToPoint);
         SetSelected(_measureFaceToPointButton, activeMode == MeasureToolMode.FaceToPoint);
         SetSelected(_measureFaceToFaceButton, activeMode == MeasureToolMode.FaceToFace);
-        SetSelected(_measureBoundingBoxButton, _measureBoundingBoxBusy || _measureBoundingBoxAwaitingSelection);
+        SetSelected(_measureBoundingBoxButton, _measureBoundingBoxAwaitingSelection && !_measureBoundingBoxBusy);
         if (_measureBoundingBoxButton is not null)
             _measureBoundingBoxButton.Enabled = !_measureBoundingBoxBusy;
     }
 
     private void UpdateViewPresetButtonStates()
     {
-        bool hasScene = _viewport?.Renderer.Scene is not null || _runtimeScene is not null;
+        bool hasScene = _viewport?.Renderer.Scene is not null;
 
         SetSelected(_toolViewPresetsButton, _bottomToolbarMode == BottomToolbarMode.ViewPreset);
         SetSelected(_viewIsoButton, !_isInFixedView);
@@ -2380,6 +2413,7 @@ public sealed class MainActivity : AppCompatActivity
     {
         bool hasScene = HasScene();
         bool hasSelection = _selectedNodeIds.Count > 0;
+        bool hasVisibleSelection = hasSelection && _selectedNodeIds.Any(IsNodeEffectivelyVisible);
         bool canExplode = CanUseExplodeView();
 
         SetSelected(_toolSelectButton, _activeModalTool == AndroidModalTool.Select);
@@ -2391,7 +2425,7 @@ public sealed class MainActivity : AppCompatActivity
 
         SetEnabled(_toolMoveButton, hasScene);
         SetEnabled(_toolZoomWindowButton, hasScene);
-        SetEnabled(_toolZoomSelectedButton, hasScene && hasSelection);
+        SetEnabled(_toolZoomSelectedButton, hasScene && hasVisibleSelection);
         SetEnabled(_toolScanQrButton, hasScene);
         SetEnabled(_toolFitViewButton, hasScene);
         SetEnabled(_toolViewPresetsButton, hasScene);
@@ -2400,8 +2434,8 @@ public sealed class MainActivity : AppCompatActivity
         SetEnabled(_toolExplodeButton, canExplode);
         SetEnabled(_toolHideButton, hasSelection && CanHideSelectedNodes());
         SetEnabled(_toolShowAllButton, hasScene && CanShowAllNodes());
-        SetEnabled(_toolIsolateButton, hasScene && hasSelection);
-        SetEnabled(_toolIsolateXrayButton, hasScene && hasSelection);
+        SetEnabled(_toolIsolateButton, hasScene && hasVisibleSelection);
+        SetEnabled(_toolIsolateXrayButton, hasScene && hasVisibleSelection);
         SetEnabled(_toolRenderModesButton, hasScene && !_renderModeChangeInFlight);
     }
 
@@ -2522,7 +2556,8 @@ public sealed class MainActivity : AppCompatActivity
         EnterToolbarMode(BottomToolbarMode.Main, AndroidModalTool.ZoomWindow);
         if (_viewport is not null)
         {
-            Snackbar.Make(_viewport, Resource.String.zoom_window_hint, Snackbar.LengthShort)?.Show();
+            View anchor = FindViewById<View>(global::Android.Resource.Id.Content) ?? _viewport;
+            Snackbar.Make(anchor, Resource.String.zoom_window_hint, Snackbar.LengthShort)?.Show();
         }
         global::Android.Util.Log.Info("FA.ZoomWindow", "Zoom Window active.");
     }
@@ -2964,15 +2999,34 @@ public sealed class MainActivity : AppCompatActivity
             return false;
 
         if (AndroidScenePackageState.IsFa(scene.PackageInfo))
-            return GetSelectedVisibilityOccurrenceIds(scene).Length > 0;
+            return GetSelectedVisibilityOccurrenceIds(scene).Length > 0
+                && _selectedNodeIds.Any(IsNodeEffectivelyVisible);
 
         foreach (int nodeId in GetSelectedVisibilityNodeIds(scene))
         {
-            if (scene.GetNode(nodeId) is { Visible: true })
+            if (IsNodeEffectivelyVisible(nodeId))
                 return true;
         }
 
         return false;
+    }
+
+    private bool IsNodeEffectivelyVisible(int nodeId)
+    {
+        Scene? scene = _runtimeScene;
+        SceneNode? node = scene?.GetNode(nodeId);
+        if (node is null)
+            return false;
+
+        while (node is not null)
+        {
+            if (!node.Visible)
+                return false;
+
+            node = node.Parent;
+        }
+
+        return true;
     }
 
     private bool CanShowAllNodes()
@@ -3421,12 +3475,12 @@ public sealed class MainActivity : AppCompatActivity
 
     private void ShowQrCameraPermissionRationale()
     {
-        new AlertDialog.Builder(this)
-            .SetTitle(Resource.String.qr_camera_permission_title)!
-            .SetMessage(Resource.String.qr_camera_permission_rationale)!
-            .SetNegativeButton(Resource.String.qr_camera_permission_manual, (_, _) => ShowQrManualInputDialog())!
-            .SetPositiveButton(Resource.String.qr_camera_permission_allow, (_, _) => RequestCameraPermissionForQr())!
-            .Show();
+        ShowOwnedDialog(
+            new AlertDialog.Builder(this)
+                .SetTitle(Resource.String.qr_camera_permission_title)!
+                .SetMessage(Resource.String.qr_camera_permission_rationale)!
+                .SetNegativeButton(Resource.String.qr_camera_permission_manual, (_, _) => ShowQrManualInputDialog())!
+                .SetPositiveButton(Resource.String.qr_camera_permission_allow, (_, _) => RequestCameraPermissionForQr())!);
     }
 
     public override void OnRequestPermissionsResult(int requestCode, string[] permissions, Permission[] grantResults)
@@ -3458,22 +3512,22 @@ public sealed class MainActivity : AppCompatActivity
 
     private void ShowQrCameraPermissionDeniedDialog()
     {
-        new AlertDialog.Builder(this)
-            .SetTitle(Resource.String.qr_camera_permission_denied_title)!
-            .SetMessage(Resource.String.qr_camera_permission_denied_message)!
-            .SetNegativeButton(Resource.String.qr_camera_permission_manual, (_, _) => ShowQrManualInputDialog())!
-            .SetPositiveButton(Resource.String.qr_camera_permission_allow, (_, _) => RequestCameraPermissionForQr())!
-            .Show();
+        ShowOwnedDialog(
+            new AlertDialog.Builder(this)
+                .SetTitle(Resource.String.qr_camera_permission_denied_title)!
+                .SetMessage(Resource.String.qr_camera_permission_denied_message)!
+                .SetNegativeButton(Resource.String.qr_camera_permission_manual, (_, _) => ShowQrManualInputDialog())!
+                .SetPositiveButton(Resource.String.qr_camera_permission_allow, (_, _) => RequestCameraPermissionForQr())!);
     }
 
     private void ShowQrCameraPermissionSettingsDialog()
     {
-        new AlertDialog.Builder(this)
-            .SetTitle(Resource.String.qr_camera_permission_denied_title)!
-            .SetMessage(Resource.String.qr_camera_permission_settings_message)!
-            .SetNegativeButton(Resource.String.qr_camera_permission_manual, (_, _) => ShowQrManualInputDialog())!
-            .SetPositiveButton(Resource.String.qr_camera_permission_settings, (_, _) => OpenAppPermissionSettings())!
-            .Show();
+        ShowOwnedDialog(
+            new AlertDialog.Builder(this)
+                .SetTitle(Resource.String.qr_camera_permission_denied_title)!
+                .SetMessage(Resource.String.qr_camera_permission_settings_message)!
+                .SetNegativeButton(Resource.String.qr_camera_permission_manual, (_, _) => ShowQrManualInputDialog())!
+                .SetPositiveButton(Resource.String.qr_camera_permission_settings, (_, _) => OpenAppPermissionSettings())!);
     }
 
     private void OpenAppPermissionSettings()
@@ -3498,12 +3552,12 @@ public sealed class MainActivity : AppCompatActivity
 
         try
         {
-            new AndroidQrScannerDialog(
+            ShowOwnedDialog(new AndroidQrScannerDialog(
                 this,
                 ResolveQrPayloadForDialog,
                 SelectQrMatch,
                 IsolateQrMatch,
-                IsolateXrayQrMatch).Show();
+                IsolateXrayQrMatch));
         }
         catch (Exception ex)
         {
@@ -3527,12 +3581,12 @@ public sealed class MainActivity : AppCompatActivity
             ViewGroup.LayoutParams.MatchParent,
             ViewGroup.LayoutParams.WrapContent));
 
-        new AlertDialog.Builder(this)
-            .SetTitle(Resource.String.cd_tool_scan_qr)!
-            .SetView(container)!
-            .SetNegativeButton(global::Android.Resource.String.Cancel, (_, _) => { })!
-            .SetPositiveButton(global::Android.Resource.String.Ok, (_, _) => ResolveQrPayload(input.Text))!
-            .Show();
+        ShowOwnedDialog(
+            new AlertDialog.Builder(this)
+                .SetTitle(Resource.String.cd_tool_scan_qr)!
+                .SetView(container)!
+                .SetNegativeButton(global::Android.Resource.String.Cancel, (_, _) => { })!
+                .SetPositiveButton(global::Android.Resource.String.Ok, (_, _) => ResolveQrPayload(input.Text))!);
     }
 
     private void ResolveQrPayload(string? rawPayload)
@@ -3595,19 +3649,19 @@ public sealed class MainActivity : AppCompatActivity
             .Select(match => $"{match.DisplayName}  #{match.NodeId}")
             .ToArray();
 
-        new AlertDialog.Builder(this)
-            .SetTitle($"Matches for {partNumber}")!
-            .SetItems(labels, (_, args) =>
-            {
-                int index = args.Which;
-                if (index < 0 || index >= matches.Count)
-                    return;
+        ShowOwnedDialog(
+            new AlertDialog.Builder(this)
+                .SetTitle($"Matches for {partNumber}")!
+                .SetItems(labels, (_, args) =>
+                {
+                    int index = args.Which;
+                    if (index < 0 || index >= matches.Count)
+                        return;
 
-                AndroidQrScanMatch match = matches[index];
-                SelectQrMatch(match.NodeId);
-            })!
-            .SetNegativeButton(global::Android.Resource.String.Cancel, (_, _) => { })!
-            .Show();
+                    AndroidQrScanMatch match = matches[index];
+                    SelectQrMatch(match.NodeId);
+                })!
+                .SetNegativeButton(global::Android.Resource.String.Cancel, (_, _) => { })!);
     }
 
     private void SelectQrMatch(int nodeId)
@@ -8366,7 +8420,7 @@ public sealed class MainActivity : AppCompatActivity
 
         var background = new GradientDrawable();
         background.SetShape(ShapeType.Rectangle);
-        background.SetColor(Color.ParseColor("#D9121418"));
+        background.SetColor(GetColor(Resource.Color.fa_measure_label_background));
         background.SetCornerRadius(Dp(5f * textScale));
         background.SetStroke(selected ? System.Math.Max(Dp(2), 2) : Dp(1), ColorStateList.ValueOf(new Color(accentColor)));
         textView.Background = background;
@@ -8396,7 +8450,7 @@ public sealed class MainActivity : AppCompatActivity
     {
         var background = new GradientDrawable();
         background.SetShape(ShapeType.Rectangle);
-        background.SetColor(Color.ParseColor("#E51F2026"));
+        background.SetColor(GetColor(Resource.Color.fa_measure_control_background));
         background.SetCornerRadius(Dp(MeasurementDeleteButtonSizeDp) * 0.5f);
         background.SetStroke(Dp(1), new Color(DimensionHighlightColor()));
         return background;
@@ -8471,7 +8525,7 @@ public sealed class MainActivity : AppCompatActivity
     {
         var background = new GradientDrawable();
         background.SetShape(ShapeType.Rectangle);
-        background.SetColor(Color.ParseColor("#E51F2026"));
+        background.SetColor(GetColor(Resource.Color.fa_measure_control_background));
         background.SetCornerRadius(Dp(SectionCornerButtonSizeDp) * 0.5f);
         background.SetStroke(Dp(1), new Color(DimensionHighlightColor()));
         return background;
@@ -9313,14 +9367,14 @@ public sealed class MainActivity : AppCompatActivity
         }
     }
 
-    private static int LabelColor(PresentationStyle style) => style switch
+    private int LabelColor(PresentationStyle style) => style switch
     {
-        PresentationStyle.Preview => Color.ParseColor("#F59E0B"),
+        PresentationStyle.Preview => GetColor(Resource.Color.fa_measure_label_preview),
         PresentationStyle.Selected => DimensionHighlightColor(),
         PresentationStyle.Hovered => DimensionHighlightColor(0.75f),
-        PresentationStyle.Warning => Color.ParseColor("#FBBF24"),
-        PresentationStyle.SnapHint => Color.ParseColor("#F97316"),
-        _ => Color.ParseColor("#2DD4BF"),
+        PresentationStyle.Warning => GetColor(Resource.Color.fa_measure_label_warning),
+        PresentationStyle.SnapHint => GetColor(Resource.Color.fa_measure_label_snap_hint),
+        _ => GetColor(Resource.Color.fa_measure_label_default),
     };
 
     private static int DimensionHighlightColor(float scale = 1.0f)
@@ -9527,11 +9581,11 @@ public sealed class MainActivity : AppCompatActivity
 
     private void ShowError(string title, string message)
     {
-        new AlertDialog.Builder(this)
-            .SetTitle(title)!
-            .SetMessage(message)!
-            .SetPositiveButton("OK", (_, _) => { })!
-            .Show();
+        ShowOwnedDialog(
+            new AlertDialog.Builder(this)
+                .SetTitle(title)!
+                .SetMessage(message)!
+                .SetPositiveButton("OK", (_, _) => { })!);
     }
 
     private void CreateRenderBusyOverlay(FrameLayout container)
@@ -9639,7 +9693,7 @@ public sealed class MainActivity : AppCompatActivity
             Focusable = true,
             Alpha = 0f,
         };
-        _loadingOverlay.SetBackgroundColor(Color.ParseColor("#B0000000"));
+        _loadingOverlay.SetBackgroundColor(GetColorCompat(Resource.Color.fa_overlay_scrim));
         content.AddView(_loadingOverlay, new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MatchParent,
             ViewGroup.LayoutParams.MatchParent));
@@ -9961,7 +10015,11 @@ public sealed class MainActivity : AppCompatActivity
         RebindStyledTooltips();
         RefreshMeasurementOverlays();
         _viewport?.RequestLayout();
-        _viewport?.Post(() => _viewport?.RequestRender());
+        _viewport?.Post(() =>
+        {
+            if (!_isDestroyed)
+                _viewport?.RequestRender();
+        });
     }
 
     protected override void OnPause()
@@ -10297,6 +10355,38 @@ public sealed class MainActivity : AppCompatActivity
         RemoveFromParent(_renderBusyOverlay);
     }
 
+    private AlertDialog ShowOwnedDialog(AlertDialog.Builder builder)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        AlertDialog dialog = builder.Create();
+        return ShowOwnedDialog(dialog);
+    }
+
+    private T ShowOwnedDialog<T>(T dialog) where T : global::Android.App.Dialog
+    {
+        _ownedDialogs.Add(dialog);
+        dialog.Show();
+        return dialog;
+    }
+
+    private void DismissOwnedDialogs()
+    {
+        foreach (global::Android.App.Dialog dialog in _ownedDialogs.ToArray())
+        {
+            try
+            {
+                if (dialog.IsShowing)
+                    dialog.Dismiss();
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+            {
+                global::Android.Util.Log.Warn("FA.Dialog", "Failed to dismiss owned dialog: " + ex.Message);
+            }
+        }
+
+        _ownedDialogs.Clear();
+    }
+
     private static void RemoveFromParent(View? view)
     {
         if (view?.Parent is ViewGroup parent)
@@ -10310,6 +10400,7 @@ public sealed class MainActivity : AppCompatActivity
         var loadCts = TakeActiveLoad();
         loadCts?.Cancel();
         loadCts?.Dispose();
+        DismissOwnedDialogs();
 
         if (_camera is not null)
             _camera.PropertyChanged -= OnCameraChanged;
@@ -10319,6 +10410,8 @@ public sealed class MainActivity : AppCompatActivity
             _bodyMove.MovesCommitted -= OnBodyMovesCommitted;
         if (_undoService is not null)
             _undoService.UndoFailed -= OnUndoFailed;
+        _bodyMove = null;
+        _undoService = null;
 
         DisposeLeftToolPanelContent();
         ClearAndroidViewListeners();
@@ -10577,7 +10670,6 @@ public sealed class MainActivity : AppCompatActivity
 
         private readonly Paint _stroke = new()
         {
-            Color = Color.ParseColor("#2DD4BF"),
             StrokeWidth = 2f,
             AntiAlias = true,
         };
@@ -10586,6 +10678,7 @@ public sealed class MainActivity : AppCompatActivity
 
         public ZoomWindowOverlayView(Context context) : base(context)
         {
+            _stroke.Color = new Color(context.GetColor(Resource.Color.fa_accent_500));
             _stroke.SetStyle(Paint.Style.Stroke);
             _fill.SetStyle(Paint.Style.Fill);
         }

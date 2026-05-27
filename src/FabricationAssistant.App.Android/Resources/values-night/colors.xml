@@ -19,6 +19,13 @@
     <color name="fa_error">#EF4444</color>
     <color name="fa_success">#34D399</color>
     <color name="fa_warning">#FBBF24</color>
+    <color name="fa_overlay_scrim">#B0000000</color>
+    <color name="fa_measure_label_background">#D9121418</color>
+    <color name="fa_measure_control_background">#E51F2026</color>
+    <color name="fa_measure_label_preview">#F59E0B</color>
+    <color name="fa_measure_label_warning">#FBBF24</color>
+    <color name="fa_measure_label_snap_hint">#F97316</color>
+    <color name="fa_measure_label_default">#2DD4BF</color>
 
     <!-- Backwards-compatible aliases used by earlier Android layouts. -->
     <color name="fa_surface_900">#1A1B1E</color>

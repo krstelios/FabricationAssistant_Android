@@ -9,6 +9,7 @@ namespace FabricationAssistant.Draco.Android;
 internal static class DracoNativeDecoder
 {
     private const string LibName = "libdraco_native";
+    public static readonly object NativeGate = new();
 
     public enum AttributeType
     {
@@ -56,17 +57,28 @@ public sealed class DracoMesh : IDisposable
     private DracoMesh(nint handle)
     {
         _handle = handle;
-        NumPoints = DracoNativeDecoder.GetNumPoints(handle);
-        NumFaces = DracoNativeDecoder.GetNumFaces(handle);
+        lock (DracoNativeDecoder.NativeGate)
+        {
+            NumPoints = DracoNativeDecoder.GetNumPoints(handle);
+            NumFaces = DracoNativeDecoder.GetNumFaces(handle);
+        }
     }
 
-    public static unsafe DracoMesh? Decode(ReadOnlySpan<byte> encoded)
+    public static unsafe DracoMesh Decode(ReadOnlySpan<byte> encoded)
     {
-        if (encoded.IsEmpty) return null;
+        if (encoded.IsEmpty)
+            throw new InvalidDataException("Draco decode failed: encoded buffer is empty.");
+
         fixed (byte* p = encoded)
         {
-            nint handle = DracoNativeDecoder.DecodeBufferToMesh((nint)p, encoded.Length);
-            return handle == nint.Zero ? null : new DracoMesh(handle);
+            lock (DracoNativeDecoder.NativeGate)
+            {
+                nint handle = DracoNativeDecoder.DecodeBufferToMesh((nint)p, encoded.Length);
+                if (handle == nint.Zero)
+                    throw new InvalidDataException("Draco decode failed: native decoder returned a null mesh handle.");
+
+                return new DracoMesh(handle);
+            }
         }
     }
 
@@ -81,8 +93,11 @@ public sealed class DracoMesh : IDisposable
         var buffer = new float[total];
         fixed (float* p = buffer)
         {
-            if (DracoNativeDecoder.CopyAttributeFloat(_handle, type, components, (nint)p, total) == 0)
-                return null;
+            lock (DracoNativeDecoder.NativeGate)
+            {
+                if (DracoNativeDecoder.CopyAttributeFloat(_handle, type, components, (nint)p, total) == 0)
+                    return null;
+            }
         }
         return buffer;
     }
@@ -94,8 +109,11 @@ public sealed class DracoMesh : IDisposable
         var buffer = new uint[total];
         fixed (uint* p = buffer)
         {
-            if (DracoNativeDecoder.CopyIndicesUint32(_handle, (nint)p, total) == 0)
-                return null;
+            lock (DracoNativeDecoder.NativeGate)
+            {
+                if (DracoNativeDecoder.CopyIndicesUint32(_handle, (nint)p, total) == 0)
+                    return null;
+            }
         }
         return buffer;
     }
@@ -104,8 +122,14 @@ public sealed class DracoMesh : IDisposable
     {
         if (_handle != nint.Zero)
         {
-            DracoNativeDecoder.DestroyMesh(_handle);
-            _handle = nint.Zero;
+            lock (DracoNativeDecoder.NativeGate)
+            {
+                if (_handle != nint.Zero)
+                {
+                    DracoNativeDecoder.DestroyMesh(_handle);
+                    _handle = nint.Zero;
+                }
+            }
         }
         GC.SuppressFinalize(this);
     }

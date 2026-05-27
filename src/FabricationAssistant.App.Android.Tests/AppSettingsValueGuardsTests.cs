@@ -25,4 +25,11 @@ public sealed class AppSettingsValueGuardsTests
     [InlineData(16, 8)]
     public void ClampAndroidMsaaSamples_maps_to_supported_android_values(int value, int expected)
         => Assert.Equal(expected, AppSettingsValueGuards.ClampAndroidMsaaSamples(value));
+
+    [Fact]
+    public void AndroidMsaaPersistenceRange_matches_supported_values()
+    {
+        Assert.Equal(0, AppSettingsValueGuards.MinAndroidMsaaSamples);
+        Assert.Equal(8, AppSettingsValueGuards.MaxAndroidMsaaSamples);
+    }
 }

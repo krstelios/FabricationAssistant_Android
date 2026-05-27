@@ -19,6 +19,13 @@
     <color name="fa_error">#EF4444</color>
     <color name="fa_success">#34D399</color>
     <color name="fa_warning">#FBBF24</color>
+    <color name="fa_overlay_scrim">#B0000000</color>
+    <color name="fa_measure_label_background">#D9121418</color>
+    <color name="fa_measure_control_background">#E51F2026</color>
+    <color name="fa_measure_label_preview">#F59E0B</color>
+    <color name="fa_measure_label_warning">#FBBF24</color>
+    <color name="fa_measure_label_snap_hint">#F97316</color>
+    <color name="fa_measure_label_default">#2DD4BF</color>
     <color name="fa_context_menu_background">#DA1F2024</color>
     <color name="fa_context_menu_border">#8452545E</color>
     <color name="fa_context_menu_row_fill">#362DD4BF</color>

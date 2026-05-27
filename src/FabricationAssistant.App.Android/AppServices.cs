@@ -22,7 +22,10 @@ public static class AppServices
             cacheDirectory: platformPaths.CacheDir,
             tempDirectory: platformPaths.TempDir,
             logsDirectory: platformPaths.LogsDir);
-        _ = Task.Run(() => ImportPipeline.PruneImportCache(platformPaths.AppDataRoot));
+        _ = Task.Run(() => ImportPipeline.PruneImportCache(platformPaths.AppDataRoot))
+            .ContinueWith(
+                task => global::Android.Util.Log.Warn("FA.Cache", task.Exception?.ToString() ?? "Import cache prune failed."),
+                TaskContinuationOptions.OnlyOnFaulted);
 
         var services = new ServiceCollection();
 
@@ -34,6 +37,7 @@ public static class AppServices
         services.AddSingleton<SectionService>();
         services.AddSingleton<PackageSessionState>();
         services.AddSingleton<FaPackageQueryService>();
+        // BodyMoveService, UndoService, and AndroidMeasureIntegration are Activity-owned because they capture the current runtime scene.
 
         var provider = services.BuildServiceProvider(new ServiceProviderOptions
         {

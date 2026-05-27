@@ -88,8 +88,7 @@ public static class DracoGltfTranscoder
                         offset,
                         length);
 
-                    using var dm = DracoMesh.Decode(encoded)
-                        ?? throw new InvalidDataException("Draco decode failed for primitive");
+                    using var dm = DracoMesh.Decode(encoded);
 
                     var positions = dm.GetPositions();
                     var normals = dm.GetNormals();

@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Buffers.Binary;
 using System.Text;
 
 namespace FabricationAssistant.Draco.Android;
@@ -12,6 +13,7 @@ namespace FabricationAssistant.Draco.Android;
 public static class DracoExtensionDetector
 {
     private const int ScanLimitBytes = 32 * 1024 * 1024;
+    private const uint GlbMagic = 0x46546C67; // "glTF"
     private static readonly byte[] Needle = Encoding.ASCII.GetBytes("KHR_draco_mesh_compression");
 
     public static bool ContainsDraco(string filePath)
@@ -20,6 +22,15 @@ public static class DracoExtensionDetector
         if (!File.Exists(filePath)) return false;
 
         using var fs = File.OpenRead(filePath);
+        if (fs.Length < 4)
+            return false;
+
+        Span<byte> header = stackalloc byte[4];
+        fs.ReadExactly(header);
+        if (BinaryPrimitives.ReadUInt32LittleEndian(header) != GlbMagic)
+            return false;
+
+        fs.Position = 0;
         long readable = Math.Min(fs.Length, ScanLimitBytes);
 
         byte[] buffer = ArrayPool<byte>.Shared.Rent((int)Math.Min(readable, 64 * 1024));

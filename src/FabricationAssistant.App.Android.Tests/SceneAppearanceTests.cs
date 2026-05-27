@@ -6,6 +6,28 @@ namespace FabricationAssistant.App.Android.Tests;
 public sealed class SceneAppearanceTests
 {
     [Fact]
+    public void CreateDefault_uses_runtime_app_defaults()
+    {
+        SceneAppearance appearance = SceneAppearance.CreateDefault();
+
+        Assert.Equal(SceneAppearanceDefaults.LightweightNavigationEnabled, appearance.LightweightNavigationEnabled);
+        Assert.Equal(SceneAppearanceDefaults.SurfaceOffsetFactor, appearance.SurfaceOffsetFactor);
+        Assert.Equal(SceneAppearanceDefaults.SurfaceOffsetUnits, appearance.SurfaceOffsetUnits);
+        Assert.Equal(SceneAppearanceDefaults.AoSampleCount, appearance.AoSampleCount);
+        Assert.Equal(SceneAppearanceDefaults.AoRadius, appearance.AoRadius);
+        Assert.Equal(SceneAppearanceDefaults.AoBias, appearance.AoBias);
+        Assert.Equal(SceneAppearanceDefaults.AoIntensity, appearance.AoIntensity);
+        Assert.Equal(SceneAppearanceDefaults.AoMaxDistance, appearance.AoMaxDistance);
+        Assert.Equal(SceneAppearanceDefaults.AoFadeStart, appearance.AoFadeStart);
+        Assert.Equal(SceneAppearanceDefaults.AoFadeEnd, appearance.AoFadeEnd);
+        Assert.Equal(SceneAppearanceDefaults.AoBlurRadius, appearance.AoBlurRadius);
+        Assert.Equal(SceneAppearanceDefaults.AoBlurSharpness, appearance.AoBlurSharpness);
+        Assert.Equal(SceneAppearanceDefaults.AoNoiseScale, appearance.AoNoiseScale);
+        Assert.Equal(SceneAppearanceDefaults.ContourStrength, appearance.ContourStrength);
+        Assert.Equal(SceneAppearanceDefaults.MsaaSamples, appearance.MsaaSamples);
+    }
+
+    [Fact]
     public void CreateRendererSnapshot_clones_array_fields()
     {
         SceneAppearance appearance = SceneAppearance.CreateDefault();

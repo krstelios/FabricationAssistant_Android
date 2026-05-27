@@ -48,6 +48,15 @@ public sealed class ImportPipeline
         string fileName = ResolveFileNameWithMimeFallback(contentUri, ResolveFileName(contentUri));
         string localPath = await CopyToLocalAsync(contentUri, fileName, progress, ct).ConfigureAwait(false);
         string ext = Path.GetExtension(localPath).ToLowerInvariant();
+        if (ShouldSniffFileType(ext)
+            && await TryResolveExtensionFromSignatureAsync(localPath, ct).ConfigureAwait(false) is { } sniffedExtension)
+        {
+            string renamedPath = Path.ChangeExtension(localPath, sniffedExtension);
+            File.Move(localPath, renamedPath, overwrite: true);
+            localPath = renamedPath;
+            ext = sniffedExtension;
+        }
+
         if (ext == ".gltf")
         {
             progress?.Report("Normalizing glTF text...");
@@ -207,6 +216,9 @@ public sealed class ImportPipeline
             string.IsNullOrWhiteSpace(displayName) ? uri.LastPathSegment : displayName,
             _context.ContentResolver?.GetType(uri));
 
+    private static bool ShouldSniffFileType(string extension)
+        => extension is not (".gltf" or ".glb" or ".fa");
+
     private long? TryResolveContentSize(AndroidUri uri)
     {
         try
@@ -286,6 +298,35 @@ public sealed class ImportPipeline
                 await ValidateFaArchiveAsync(localPath, ct).ConfigureAwait(false);
                 break;
         }
+    }
+
+    private static async Task<string?> TryResolveExtensionFromSignatureAsync(string localPath, CancellationToken ct)
+    {
+        byte[] buffer = new byte[64];
+        int read;
+        await using (var input = File.OpenRead(localPath))
+            read = await input.ReadAsync(buffer.AsMemory(0, buffer.Length), ct).ConfigureAwait(false);
+
+        if (read >= 4
+            && buffer[0] == (byte)'g'
+            && buffer[1] == (byte)'l'
+            && buffer[2] == (byte)'T'
+            && buffer[3] == (byte)'F')
+        {
+            return ".glb";
+        }
+
+        if (read >= 2 && buffer[0] == (byte)'P' && buffer[1] == (byte)'K')
+            return ".fa";
+
+        int offset = 0;
+        if (read >= 3 && buffer[0] == 0xEF && buffer[1] == 0xBB && buffer[2] == 0xBF)
+            offset = 3;
+
+        while (offset < read && char.IsWhiteSpace((char)buffer[offset]))
+            offset++;
+
+        return offset < read && buffer[offset] == (byte)'{' ? ".gltf" : null;
     }
 
     private static async Task ValidateFaArchiveAsync(string localPath, CancellationToken ct)
