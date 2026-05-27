@@ -19,7 +19,7 @@ public sealed class AndroidPointerSource : IDisposable
 
     private readonly ViewportTouchGestureRecognizer _recognizer = new();
     private readonly Handler _handler = new(Looper.MainLooper!);
-    private readonly float _density;
+    private float _density;
     private bool _tickScheduled;
     private bool _secondaryPressActive;
     private bool _disposed;
@@ -28,8 +28,7 @@ public sealed class AndroidPointerSource : IDisposable
     public AndroidPointerSource(Context context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        _density = context.Resources?.DisplayMetrics?.Density ?? 1.0f;
-        if (_density <= 0f) _density = 1.0f;
+        _density = ResolveDensity(context);
     }
 
     /// <summary>Subscribe to receive gesture events on the UI thread.</summary>
@@ -41,6 +40,12 @@ public sealed class AndroidPointerSource : IDisposable
     /// S Pen is away from the screen.
     /// </summary>
     public bool SpenPalmRejectionEnabled { get; set; }
+
+    public void RefreshDensity(Context context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        _density = ResolveDensity(context);
+    }
 
     /// <summary>
     /// Forwards a MotionEvent to the recognizer. Call from
@@ -311,6 +316,12 @@ public sealed class AndroidPointerSource : IDisposable
         }
 
         return 0;
+    }
+
+    private static float ResolveDensity(Context context)
+    {
+        float density = context.Resources?.DisplayMetrics?.Density ?? 1.0f;
+        return density > 0f ? density : 1.0f;
     }
 
     private Point2D Sample(MotionEvent ev, int pointerIndex)

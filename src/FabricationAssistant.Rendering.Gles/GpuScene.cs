@@ -1,6 +1,7 @@
 using FabricationAssistant.Core.Math;
 using FabricationAssistant.Core.Measurement.Domain;
 using FabricationAssistant.Core.SceneGraph;
+using System.Threading;
 using Silk.NET.OpenGLES;
 
 namespace FabricationAssistant.Rendering.Gles;
@@ -18,6 +19,7 @@ public sealed class GpuScene : IDisposable
     private Scene? _lastTransformSyncScene;
     private long _lastTransientTransformVersion = -1;
     private long _lastMoveTransformVersion = -1;
+    private long _sectionCapGeometryVersion;
 
     public GpuScene(GL gl)
     {
@@ -29,6 +31,10 @@ public sealed class GpuScene : IDisposable
     public double MillimetersPerSceneUnit { get; private set; } = 1000.0;
 
     public IReadOnlyList<GpuMesh> Meshes => _meshes;
+
+    internal DocumentDto? Document => _document;
+
+    internal long SectionCapGeometryVersion => Volatile.Read(ref _sectionCapGeometryVersion);
 
     public bool TryGetSourceNodeIdForMeshIndex(int meshIndex, out int nodeId)
     {
@@ -75,6 +81,7 @@ public sealed class GpuScene : IDisposable
         MillimetersPerSceneUnit = millimetersPerSceneUnit;
         Bounds = bounds;
         _meshes = meshes;
+        IncrementSectionCapGeometryVersion();
         InvalidateTransformSyncTracking();
         DisposeMeshes(oldMeshes);
     }
@@ -149,6 +156,8 @@ public sealed class GpuScene : IDisposable
         if (bounds.IsValid)
             Bounds = bounds;
 
+        IncrementSectionCapGeometryVersion();
+
         long finalTransientTransformVersion = scene.TransientTransformVersion;
         long finalMoveTransformVersion = scene.MoveTransformVersion;
         if (finalTransientTransformVersion == transientTransformVersion
@@ -174,7 +183,14 @@ public sealed class GpuScene : IDisposable
 
         IReadOnlyList<GpuMesh> meshes = _meshes;
         foreach (GpuMesh mesh in meshes)
-            mesh.Visible = mesh.SourceNodeId < 0 || visibleNodeIds.Contains(mesh.SourceNodeId);
+        {
+            bool visible = mesh.SourceNodeId < 0 || visibleNodeIds.Contains(mesh.SourceNodeId);
+            if (mesh.Visible != visible)
+            {
+                mesh.Visible = visible;
+                IncrementSectionCapGeometryVersion();
+            }
+        }
     }
 
     private static BoundingBox ComputeBoundsFromMeshes(DocumentDto document)
@@ -316,4 +332,7 @@ public sealed class GpuScene : IDisposable
         _lastTransientTransformVersion = -1;
         _lastMoveTransformVersion = -1;
     }
+
+    private void IncrementSectionCapGeometryVersion()
+        => Interlocked.Increment(ref _sectionCapGeometryVersion);
 }

@@ -1227,6 +1227,7 @@ internal sealed class AndroidBomPanel : IDisposable
         private float _downX;
         private float _downY;
         private int _startScrollX;
+        private int _activePointerId = -1;
         private bool _dragging;
 
         public HorizontalTableScrollTouchListener(Context ctx, HorizontalScrollView scrollView)
@@ -1243,16 +1244,41 @@ internal sealed class AndroidBomPanel : IDisposable
             switch (e.ActionMasked)
             {
                 case MotionEventActions.Down:
-                    _downX = e.RawX;
-                    _downY = e.RawY;
+                {
+                    int pointerIndex = AndroidMotionEvents.PreferredPointerIndex(e);
+                    if (pointerIndex < 0)
+                        return false;
+
+                    _activePointerId = e.GetPointerId(pointerIndex);
+                    _downX = AndroidMotionEvents.RawX(e, pointerIndex);
+                    _downY = AndroidMotionEvents.RawY(e, pointerIndex);
                     _startScrollX = _scrollView.ScrollX;
                     _dragging = false;
                     return false;
+                }
+
+                case MotionEventActions.PointerDown:
+                {
+                    int pointerIndex = e.ActionIndex;
+                    if (!AndroidMotionEvents.IsPointerStylusOrEraser(e, pointerIndex))
+                        return _dragging;
+
+                    _activePointerId = e.GetPointerId(pointerIndex);
+                    _downX = AndroidMotionEvents.RawX(e, pointerIndex);
+                    _downY = AndroidMotionEvents.RawY(e, pointerIndex);
+                    _startScrollX = _scrollView.ScrollX;
+                    return _dragging;
+                }
 
                 case MotionEventActions.Move:
                 {
-                    float dx = e.RawX - _downX;
-                    float dy = e.RawY - _downY;
+                    if (!AndroidMotionEvents.TryFindPointerIndex(e, _activePointerId, out int pointerIndex))
+                        return _dragging;
+
+                    float rawX = AndroidMotionEvents.RawX(e, pointerIndex);
+                    float rawY = AndroidMotionEvents.RawY(e, pointerIndex);
+                    float dx = rawX - _downX;
+                    float dy = rawY - _downY;
                     if (!_dragging
                         && Math.Abs(dx) > _slopPx
                         && Math.Abs(dx) > Math.Abs(dy) * 1.15f)
@@ -1270,14 +1296,33 @@ internal sealed class AndroidBomPanel : IDisposable
                     return true;
                 }
 
+                case MotionEventActions.PointerUp:
+                {
+                    int actionIndex = e.ActionIndex;
+                    if (actionIndex >= 0
+                        && actionIndex < e.PointerCount
+                        && e.GetPointerId(actionIndex) == _activePointerId)
+                    {
+                        bool wasDragging = _dragging;
+                        _activePointerId = -1;
+                        _dragging = false;
+                        v?.Parent?.RequestDisallowInterceptTouchEvent(false);
+                        return wasDragging;
+                    }
+
+                    return _dragging;
+                }
+
                 case MotionEventActions.Up:
                 case MotionEventActions.Cancel:
                     if (_dragging)
                     {
                         _dragging = false;
+                        _activePointerId = -1;
                         v?.Parent?.RequestDisallowInterceptTouchEvent(false);
                         return true;
                     }
+                    _activePointerId = -1;
                     return false;
 
                 default:

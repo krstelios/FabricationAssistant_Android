@@ -30,7 +30,11 @@
              LinkBase="Linked\Camera" />
     <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Camera\StandardView.cs"
              LinkBase="Linked\Camera" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\SceneGraph\MeshDto.cs"
+             LinkBase="Linked\SceneGraph" />
     <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Sections\SectionPlane.cs"
+             LinkBase="Linked\Sections" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Sections\SectionCapGeometry.cs"
              LinkBase="Linked\Sections" />
   </ItemGroup>
 

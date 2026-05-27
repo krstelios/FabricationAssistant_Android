@@ -28,6 +28,7 @@ public sealed class ViewportSurfaceView : GLSurfaceView
     private readonly VsyncRenderCallback _vsyncRenderCallback;
     private int _renderRequestPending;
     private int _renderRequestScheduled;
+    private int _delayedRenderRequestScheduled;
     private int _rendererDisposeQueued;
     private int _queueSoftCapWarningArmed;
     private int _paused;
@@ -42,6 +43,7 @@ public sealed class ViewportSurfaceView : GLSurfaceView
     public ViewportSurfaceView(Context context) : base(context)
     {
         _renderer = new GlesViewportRenderer { CommandQueue = _pending };
+        _renderer.DelayedRenderRequested += OnRendererDelayedRenderRequested;
         _bridge = new GlesRendererBridge(_renderer, OnRendererSurfaceCreated);
         _vsyncRenderCallback = new VsyncRenderCallback(this);
         ConfigureContext();
@@ -50,6 +52,7 @@ public sealed class ViewportSurfaceView : GLSurfaceView
     public ViewportSurfaceView(Context context, IAttributeSet attrs) : base(context, attrs)
     {
         _renderer = new GlesViewportRenderer { CommandQueue = _pending };
+        _renderer.DelayedRenderRequested += OnRendererDelayedRenderRequested;
         _bridge = new GlesRendererBridge(_renderer, OnRendererSurfaceCreated);
         _vsyncRenderCallback = new VsyncRenderCallback(this);
         ConfigureContext();
@@ -68,6 +71,25 @@ public sealed class ViewportSurfaceView : GLSurfaceView
             PostVsyncRenderCallback();
         else if (!TryPostToMain(PostVsyncRenderCallback, "schedule-vsync-render"))
             ClearPendingRenderCallbacks();
+    }
+
+    private void OnRendererDelayedRenderRequested(int delayMilliseconds)
+    {
+        if (!CanScheduleRendering())
+            return;
+
+        int clampedDelay = Math.Clamp(delayMilliseconds, 1, 1_000);
+        if (Interlocked.Exchange(ref _delayedRenderRequestScheduled, 1) != 0)
+            return;
+
+        _mainHandler.PostDelayed(
+            () =>
+            {
+                Interlocked.Exchange(ref _delayedRenderRequestScheduled, 0);
+                if (CanScheduleRendering())
+                    RequestRender();
+            },
+            clampedDelay);
     }
 
     protected override void OnDetachedFromWindow()
@@ -320,6 +342,7 @@ public sealed class ViewportSurfaceView : GLSurfaceView
     {
         Interlocked.Exchange(ref _renderRequestPending, 0);
         Interlocked.Exchange(ref _renderRequestScheduled, 0);
+        Interlocked.Exchange(ref _delayedRenderRequestScheduled, 0);
     }
 
     private void ClearPendingRendererCommands(string reason)
@@ -348,6 +371,7 @@ public sealed class ViewportSurfaceView : GLSurfaceView
             return;
 
         RendererSurfaceCreated = null;
+        _renderer.DelayedRenderRequested -= OnRendererDelayedRenderRequested;
         ClearPendingRenderCallbacks();
         ClearPendingRendererCommands(reason);
         RemoveVsyncRenderCallback(reason);

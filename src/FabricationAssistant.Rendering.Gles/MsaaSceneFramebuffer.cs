@@ -12,8 +12,8 @@ namespace FabricationAssistant.Rendering.Gles;
 /// When the requested sample count is &lt;= 1, single-sample storage is used
 /// (still through this wrapper) so the render path stays uniform: scene
 /// always renders into the FBO, then blits to default. The stencil
-/// attachment is included regardless of sample count because Plan 3A's
-/// section-cap algorithm depends on it.
+/// attachment is included regardless of sample count because section caps
+/// use the stencil buffer for their projected contour mask.
 /// </summary>
 public sealed partial class MsaaSceneFramebuffer : IDisposable
 {

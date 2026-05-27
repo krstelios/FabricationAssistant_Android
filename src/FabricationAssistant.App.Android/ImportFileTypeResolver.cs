@@ -9,11 +9,17 @@ internal static class ImportFileTypeResolver
         if (!string.IsNullOrWhiteSpace(extension) && !extension.Equals(".bin", StringComparison.OrdinalIgnoreCase))
             return fileName;
 
-        string fallbackExtension = mimeType switch
+        string? normalizedMimeType = string.IsNullOrWhiteSpace(mimeType)
+            ? null
+            : mimeType.Split(';', 2)[0].Trim().ToLowerInvariant();
+
+        string fallbackExtension = normalizedMimeType switch
         {
             "model/gltf-binary" => ".glb",
             "model/gltf+json" => ".gltf",
             "application/gltf-buffer" => ".bin",
+            "application/zip" => ".fa",
+            "application/x-zip-compressed" => ".fa",
             _ => extension,
         };
 

@@ -10,6 +10,7 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster
 {
     private readonly Func<Scene?> _sceneAccessor;
     private readonly Func<IReadOnlyList<SectionPlane>>? _sectionPlanesAccessor;
+    private readonly SectionMeasureGeometryProvider _sectionGeometry = new();
     private readonly Dictionary<int, AccelerationEntry> _accelerations = new();
     private Scene? _cachedScene;
     private long _cachedVisibilityVersion = -1;
@@ -38,12 +39,24 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster
         }
     }
 
-    public MeshDto? GetMesh(int meshId) => _sceneAccessor()?.GetMesh(meshId);
+    public MeshDto? GetMesh(int meshId)
+    {
+        Scene? scene = _sceneAccessor();
+        if (SectionMeasureGeometryProvider.IsSectionMesh(meshId))
+            return _sectionGeometry.GetMesh(scene, GetActiveSectionPlanes());
 
-    public SceneNode? GetNode(int nodeId) => _sceneAccessor()?.GetNode(nodeId);
+        return scene?.GetMesh(meshId);
+    }
+
+    public SceneNode? GetNode(int nodeId)
+        => SectionMeasureGeometryProvider.IsSectionNode(nodeId)
+            ? null
+            : _sceneAccessor()?.GetNode(nodeId);
 
     public Matrix4d GetWorldTransform(int nodeId)
-        => _sceneAccessor()?.GetNode(nodeId)?.EffectiveWorldTransform ?? Matrix4d.Identity;
+        => SectionMeasureGeometryProvider.IsSectionNode(nodeId)
+            ? Matrix4d.Identity
+            : _sceneAccessor()?.GetNode(nodeId)?.EffectiveWorldTransform ?? Matrix4d.Identity;
 
     public void ResetDiagnostics()
     {
@@ -55,6 +68,7 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster
     {
         int count = _accelerations.Count;
         _accelerations.Clear();
+        _sectionGeometry.Clear();
         _cachedScene = null;
         _cachedVisibilityVersion = -1;
         _cachedTransientTransformVersion = -1;
@@ -94,6 +108,11 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster
 
         List<RaycastCandidate> candidates = CollectCandidates(scene, origin, rayDir);
         IReadOnlyList<SectionPlane> sectionPlanes = GetActiveSectionPlanes();
+        SectionMeasureRaycastResult? sectionHit = _sectionGeometry.Raycast(
+            scene,
+            sectionPlanes,
+            origin,
+            rayDir);
         if (_preferredNodeId is int preferredNodeId)
         {
             foreach (RaycastCandidate candidate in candidates)
@@ -103,6 +122,13 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster
 
                 if (TryRaycastCandidate(candidate, origin, rayDir, sectionPlanes, out RaycastResult preferredHit))
                 {
+                    if (sectionHit is { } section && section.Distance <= preferredHit.Distance)
+                    {
+                        if (collectDiagnostics)
+                            LogRaycast("hit", $"section-cap over preferredNode={preferredNodeId}, mesh={section.Hit.MeshId}, triOffset={section.Hit.TriangleIndexOffset}, dist={section.Distance:0.###}, point={Format(section.Hit.WorldPoint)}", candidates.Count, origin, rayDir, section.Hit.NodeId);
+                        return section.Hit;
+                    }
+
                     if (collectDiagnostics)
                         LogRaycast("hit", $"preferredNode={preferredNodeId}, mesh={preferredHit.MeshId}, triOffset={preferredHit.TriangleIndexOffset}, dist={preferredHit.Distance:0.###}, point={Format(preferredHit.WorldPoint)}", candidates.Count, origin, rayDir, preferredHit.NodeId);
                     return new MeasureRaycastHit(preferredHit.NodeId, preferredHit.MeshId, preferredHit.TriangleIndexOffset, preferredHit.WorldPoint);
@@ -134,9 +160,23 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster
 
         if (closest is { } hit)
         {
+            if (sectionHit is { } section && section.Distance <= hit.Distance)
+            {
+                if (collectDiagnostics)
+                    LogRaycast("hit", $"section-cap mesh={section.Hit.MeshId}, triOffset={section.Hit.TriangleIndexOffset}, dist={section.Distance:0.###}, point={Format(section.Hit.WorldPoint)}", candidates.Count, origin, rayDir, section.Hit.NodeId);
+                return section.Hit;
+            }
+
             if (collectDiagnostics)
                 LogRaycast("hit", $"node={hit.NodeId}, mesh={hit.MeshId}, triOffset={hit.TriangleIndexOffset}, dist={hit.Distance:0.###}, point={Format(hit.WorldPoint)}", candidates.Count, origin, rayDir, hit.NodeId);
             return new MeasureRaycastHit(hit.NodeId, hit.MeshId, hit.TriangleIndexOffset, hit.WorldPoint);
+        }
+
+        if (sectionHit is { } sectionOnly)
+        {
+            if (collectDiagnostics)
+                LogRaycast("hit", $"section-cap mesh={sectionOnly.Hit.MeshId}, triOffset={sectionOnly.Hit.TriangleIndexOffset}, dist={sectionOnly.Distance:0.###}, point={Format(sectionOnly.Hit.WorldPoint)}", candidates.Count, origin, rayDir, sectionOnly.Hit.NodeId);
+            return sectionOnly.Hit;
         }
 
         if (collectDiagnostics)

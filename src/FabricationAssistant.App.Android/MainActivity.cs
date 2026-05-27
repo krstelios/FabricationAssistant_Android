@@ -11,6 +11,7 @@ using Android.Util;
 using Android.Views;
 using Android.Views.InputMethods;
 using Android.Widget;
+using System.Diagnostics;
 using System.Globalization;
 using System.Text.RegularExpressions;
 using FabricationAssistant.App.Android.Measurement;
@@ -89,7 +90,7 @@ public sealed class MainActivity : AppCompatActivity
     private const int MeasurementDeleteButtonSizeDp = 28;
     private const int MeasurementDeleteButtonGapDp = 6;
     private const float MeasurementTouchHitSlopDp = 12f;
-    private const int SectionDeleteButtonSizeDp = 28;
+    private const int SectionCornerButtonSizeDp = 28;
     private const long BodyMovePromptToastDebounceMs = 1500;
     private const long SpenPalmToggleToastDebounceMs = 750;
     private const int AndroidStateFocused = 16842908;
@@ -121,6 +122,8 @@ public sealed class MainActivity : AppCompatActivity
     private readonly List<SectionAnnotationBinding> _sectionAnnotations = new();
     private MeasurementLabelKey? _selectedMeasurementDeleteTarget;
     private AnnotationHitTarget? _pressedAnnotationTarget;
+    private AnnotationHitTarget? _lastStylusButtonActivationTarget;
+    private long _lastStylusButtonActivationEventTime = -1;
     private readonly Dictionary<View, StyledTooltipController> _styledTooltips = new();
     private readonly HashSet<int> _selectedNodeIds = new();
     private readonly HashSet<int> _xrayOpaqueNodeIds = new();
@@ -128,6 +131,7 @@ public sealed class MainActivity : AppCompatActivity
     private float _xrayIsolationOpacity = DefaultXrayIsolationOpacity;
     private const float DefaultXrayIsolationOpacity = 0.18f;
     private string _lastProjectionLogKey = "";
+    private string _lastSectionGizmoHiddenLogKey = "";
     private bool _hoverPickInFlight;
     private int _pendingHoverPickX = -1;
     private int _pendingHoverPickY = -1;
@@ -192,6 +196,8 @@ public sealed class MainActivity : AppCompatActivity
     private MaterialButton? _sectionClearButton;
     private SwitchMaterial? _sectionFillSwitch;
     private SwitchMaterial? _sectionEdgesSwitch;
+    private SwitchMaterial? _sectionCurvesSwitch;
+    private SwitchMaterial? _sectionCapsSwitch;
     private MaterialButton? _explodeBackButton;
     private SeekBar? _explodeSlider;
     private TextView? _explodeValueLabel;
@@ -428,7 +434,8 @@ public sealed class MainActivity : AppCompatActivity
             viewportWidthDipAccessor: GetViewportWidthDip,
             isFixedViewLockedAccessor: () => _isInFixedView,
             isNavigationSuppressedAccessor: ShouldSuppressNavigationGestures,
-            clipBoundsAccessor: () => GetCameraClipBounds());
+            clipBoundsAccessor: () => GetCameraClipBounds(),
+            isDoubleTapFitEnabledAccessor: () => AppSettings.DoubleTapFitScreenEnabled);
         _pointerSource.GestureRecognized += OnGestureForToolbarTools;
         _pointerSource.GestureRecognized += _interaction.OnGesture;
         _pointerSource.GestureRecognized += OnGestureForSelection;
@@ -1624,6 +1631,8 @@ public sealed class MainActivity : AppCompatActivity
         _sectionClearButton = FindViewById<MaterialButton>(Resource.Id.sectionClear);
         _sectionFillSwitch = FindViewById<SwitchMaterial>(Resource.Id.sectionFill);
         _sectionEdgesSwitch = FindViewById<SwitchMaterial>(Resource.Id.sectionEdges);
+        _sectionCurvesSwitch = FindViewById<SwitchMaterial>(Resource.Id.sectionCurves);
+        _sectionCapsSwitch = FindViewById<SwitchMaterial>(Resource.Id.sectionCaps);
         _explodeBackButton = FindViewById<MaterialButton>(Resource.Id.explodeBack);
         _explodeSlider = FindViewById<SeekBar>(Resource.Id.explodeSlider);
         _explodeValueLabel = FindViewById<TextView>(Resource.Id.explodeValueLabel);
@@ -1717,6 +1726,10 @@ public sealed class MainActivity : AppCompatActivity
             _sectionFillSwitch.CheckedChange += OnSectionFillCheckedChanged;
         if (_sectionEdgesSwitch is not null)
             _sectionEdgesSwitch.CheckedChange += OnSectionEdgesCheckedChanged;
+        if (_sectionCurvesSwitch is not null)
+            _sectionCurvesSwitch.CheckedChange += OnSectionCurvesCheckedChanged;
+        if (_sectionCapsSwitch is not null)
+            _sectionCapsSwitch.CheckedChange += OnSectionCapsCheckedChanged;
         if (_explodeBackButton is not null)
             _explodeBackButton.Click += OnExplodeBackClicked;
         if (_explodeSlider is not null)
@@ -1832,6 +1845,31 @@ public sealed class MainActivity : AppCompatActivity
 
         AppSettings.SectionEdgesVisible = e.IsChecked;
         _sections.EdgesVisible = e.IsChecked;
+        if (!e.IsChecked)
+        {
+            ClearSelectedSectionPlane("section edges hidden");
+            RefreshMeasurementOverlays();
+        }
+
+        UpdateSectionButtonStates();
+        UpdateSectionRendererState();
+    }
+
+    private void OnSectionCurvesCheckedChanged(object? sender, CompoundButton.CheckedChangeEventArgs e)
+    {
+        if (_sectionSwitchUpdating)
+            return;
+
+        AppSettings.SectionCurvesVisible = e.IsChecked;
+        UpdateSectionRendererState();
+    }
+
+    private void OnSectionCapsCheckedChanged(object? sender, CompoundButton.CheckedChangeEventArgs e)
+    {
+        if (_sectionSwitchUpdating)
+            return;
+
+        AppSettings.SectionCapsVisible = e.IsChecked;
         UpdateSectionRendererState();
     }
 
@@ -1943,8 +1981,13 @@ public sealed class MainActivity : AppCompatActivity
             ClearBodyMoveHover();
 
         UpdateBottomToolbarVisibility();
-        if (modalTool == AndroidModalTool.Section || previousTool == AndroidModalTool.Section)
+        if (modalTool == AndroidModalTool.Select
+            || previousTool == AndroidModalTool.Select
+            || modalTool == AndroidModalTool.Section
+            || previousTool == AndroidModalTool.Section)
+        {
             UpdateSectionRendererState();
+        }
         if (modalTool == AndroidModalTool.BodyMove || previousTool == AndroidModalTool.BodyMove)
             UpdateBodyMoveGizmoRendererState();
         _viewport?.RequestRender();
@@ -1982,10 +2025,15 @@ public sealed class MainActivity : AppCompatActivity
 
         if (tool == AndroidModalTool.Section)
         {
+            _sectionGizmoHovered = GlesTransformGizmoHandle.None;
+            ClearSectionPlacementDraft();
+        }
+
+        if (tool == AndroidModalTool.Select)
+        {
             if (_sectionGizmoActive != GlesTransformGizmoHandle.None)
                 CancelSectionGizmoDrag();
             _sectionGizmoHovered = GlesTransformGizmoHandle.None;
-            ClearSectionPlacementDraft();
         }
 
         if (tool == AndroidModalTool.BodyMove)
@@ -2047,6 +2095,8 @@ public sealed class MainActivity : AppCompatActivity
         SetVisibility(_sectionClearButton, sectionVisibility);
         SetVisibility(_sectionFillSwitch, sectionVisibility);
         SetVisibility(_sectionEdgesSwitch, sectionVisibility);
+        SetVisibility(_sectionCurvesSwitch, sectionVisibility);
+        SetVisibility(_sectionCapsSwitch, sectionVisibility);
 
         SetVisibility(_explodeBackButton, explodeVisibility);
         SetVisibility(_explodeSlider, explodeVisibility);
@@ -2380,6 +2430,20 @@ public sealed class MainActivity : AppCompatActivity
             _sectionEdgesSwitch.Checked = _sections?.EdgesVisible ?? true;
             _sectionSwitchUpdating = false;
             SetEnabled(_sectionEdgesSwitch, hasScene);
+        }
+        if (_sectionCurvesSwitch is not null)
+        {
+            _sectionSwitchUpdating = true;
+            _sectionCurvesSwitch.Checked = AppSettings.SectionCurvesVisible;
+            _sectionSwitchUpdating = false;
+            SetEnabled(_sectionCurvesSwitch, hasScene);
+        }
+        if (_sectionCapsSwitch is not null)
+        {
+            _sectionSwitchUpdating = true;
+            _sectionCapsSwitch.Checked = AppSettings.SectionCapsVisible;
+            _sectionSwitchUpdating = false;
+            SetEnabled(_sectionCapsSwitch, hasScene);
         }
     }
 
@@ -3729,6 +3793,7 @@ public sealed class MainActivity : AppCompatActivity
         if (!HasScene())
             return;
 
+        ClearSelectedSectionPlane("section placement started");
         _sectionCustomPoints.Clear();
         _sectionHoverPoint = null;
         _hoveredSectionPlaneId = null;
@@ -3744,6 +3809,7 @@ public sealed class MainActivity : AppCompatActivity
         if (!HasScene())
             return;
 
+        ClearSelectedSectionPlane("custom section placement started");
         _sectionCustomPoints.Clear();
         _sectionHoverPoint = null;
         _hoveredSectionPlaneId = null;
@@ -3756,13 +3822,23 @@ public sealed class MainActivity : AppCompatActivity
 
     private bool TryHandleSectionTap(Point2D dipPosition)
     {
-        if (_activeModalTool != AndroidModalTool.Section || _sections is null)
-        {
+        if (_sections is null)
             return false;
+
+        bool canPlaceSection = _activeModalTool == AndroidModalTool.Section
+            && _activeSectionSubMode != SectionSubMode.None;
+        bool clearSelectionOnMiss = _activeModalTool == AndroidModalTool.Select
+            || (_activeModalTool == AndroidModalTool.Section && _activeSectionSubMode == SectionSubMode.None);
+        if (CanSelectSectionPlanes()
+            && TrySelectSectionPlaneEdge(dipPosition, clearSelectionOnMiss))
+        {
+            return true;
         }
 
-        if (_activeSectionSubMode == SectionSubMode.None)
-            return TrySelectSectionPlaneEdge(dipPosition);
+        if (!canPlaceSection)
+            return false;
+
+        ClearSelectableOverlaySelection("section placement tap");
 
         if (_sectionRaycaster is null)
             return false;
@@ -3785,19 +3861,20 @@ public sealed class MainActivity : AppCompatActivity
         return true;
     }
 
-    private bool TrySelectSectionPlaneEdge(Point2D dipPosition)
+    private bool TrySelectSectionPlaneEdge(Point2D dipPosition, bool clearSelectionOnMiss = true)
     {
         double touchTolerancePx = Math.Max(SectionPlaneHoverHitTolerancePx, Dp(SectionPlaneTouchHitToleranceDp));
         if (PickSectionPlaneEdge(dipPosition, touchTolerancePx) is not { } id)
         {
-            _sections?.ClearSelection();
-            SetHoveredSectionPlane(null);
-            UpdateSectionRendererState();
-            UpdateSectionButtonStates();
+            if (clearSelectionOnMiss)
+                ClearSelectedSectionPlane("section edge miss");
+
             return false;
         }
 
         _sections!.Select(new[] { id }, additive: false);
+        ClearSectionPlacementDraft();
+        _sectionGizmoHovered = GlesTransformGizmoHandle.None;
         SetHoveredSectionPlane(null);
         UpdateSectionRendererState();
         UpdateSectionButtonStates();
@@ -3806,6 +3883,12 @@ public sealed class MainActivity : AppCompatActivity
     }
 
     private Guid? PickSectionPlaneEdge(Point2D dipPosition, double hitTolerancePx = SectionPlaneHoverHitTolerancePx)
+        => PickSectionPlaneEdgeHit(dipPosition, hitTolerancePx, SnapshotCamera())?.Id;
+
+    private SectionPlaneEdgeHit? PickSectionPlaneEdgeHit(
+        Point2D dipPosition,
+        double hitTolerancePx = SectionPlaneHoverHitTolerancePx,
+        CameraState? camera = null)
     {
         if (_sections is null || _sections.Planes.Count == 0)
             return null;
@@ -3814,8 +3897,10 @@ public sealed class MainActivity : AppCompatActivity
         if (density <= 0f) density = 1.0f;
         double cursorX = dipPosition.X * density;
         double cursorY = dipPosition.Y * density;
-        double bestDistance = hitTolerancePx;
-        Guid? bestId = null;
+        bool hasBest = false;
+        Guid bestId = Guid.Empty;
+        double bestDistance = double.PositiveInfinity;
+        double bestDepth = double.PositiveInfinity;
         BoundingBox sceneBounds = GetFullSceneBounds();
         double sceneDiagonal = sceneBounds.IsValid ? sceneBounds.Diagonal : 100.0;
         double halfSide = Math.Clamp(sceneDiagonal * AppSettings.SectionPlaneSizeFraction, 1.0, 10_000.0);
@@ -3829,38 +3914,70 @@ public sealed class MainActivity : AppCompatActivity
             Vector3d c2 = anchor + axisX * halfSide + axisY * halfSide;
             Vector3d c3 = anchor - axisX * halfSide + axisY * halfSide;
 
-            double minEdge = Math.Min(
-                Math.Min(ProjectedSegmentDistance(c0, c1, cursorX, cursorY), ProjectedSegmentDistance(c1, c2, cursorX, cursorY)),
-                Math.Min(ProjectedSegmentDistance(c2, c3, cursorX, cursorY), ProjectedSegmentDistance(c3, c0, cursorX, cursorY)));
-
-            if (minEdge < bestDistance)
-            {
-                bestDistance = minEdge;
-                bestId = plane.Id;
-            }
+            ConsiderSegment(plane.Id, c0, c1);
+            ConsiderSegment(plane.Id, c1, c2);
+            ConsiderSegment(plane.Id, c2, c3);
+            ConsiderSegment(plane.Id, c3, c0);
         }
 
-        return bestId;
+        return hasBest ? new SectionPlaneEdgeHit(bestId, bestDistance, bestDepth) : null;
+
+        void ConsiderSegment(Guid planeId, Vector3d a, Vector3d b)
+        {
+            if (!TryProjectedSegmentHit(a, b, cursorX, cursorY, out ProjectedSegmentHit hit)
+                || hit.Distance > hitTolerancePx)
+            {
+                return;
+            }
+
+            double depth = CameraDepth(hit.WorldPoint, camera);
+            if (!IsBetterDepthHit(depth, hit.Distance, bestDepth, bestDistance, hasBest))
+                return;
+
+            hasBest = true;
+            bestId = planeId;
+            bestDistance = hit.Distance;
+            bestDepth = depth;
+        }
     }
 
     private double ProjectedSegmentDistance(Vector3d a, Vector3d b, double cursorX, double cursorY)
+        => TryProjectedSegmentHit(a, b, cursorX, cursorY, out ProjectedSegmentHit hit)
+            ? hit.Distance
+            : double.MaxValue;
+
+    private bool TryProjectedSegmentHit(
+        Vector3d a,
+        Vector3d b,
+        double cursorX,
+        double cursorY,
+        out ProjectedSegmentHit hit)
     {
+        hit = default;
         if (!TryProjectWorldToViewport(a, out double ax, out double ay)
             || !TryProjectWorldToViewport(b, out double bx, out double by))
         {
-            return double.MaxValue;
+            return false;
         }
 
         double abX = bx - ax;
         double abY = by - ay;
         double ab2 = abX * abX + abY * abY;
         if (ab2 < 1e-6)
-            return Math.Sqrt((cursorX - ax) * (cursorX - ax) + (cursorY - ay) * (cursorY - ay));
+        {
+            double collapsedDistance = Math.Sqrt((cursorX - ax) * (cursorX - ax) + (cursorY - ay) * (cursorY - ay));
+            Vector3d collapsedWorld = (a + b) * 0.5;
+            hit = new ProjectedSegmentHit(collapsedDistance, collapsedWorld);
+            return double.IsFinite(collapsedDistance) && IsFinite(collapsedWorld);
+        }
 
         double t = Math.Clamp(((cursorX - ax) * abX + (cursorY - ay) * abY) / ab2, 0.0, 1.0);
         double px = ax + abX * t;
         double py = ay + abY * t;
-        return Math.Sqrt((cursorX - px) * (cursorX - px) + (cursorY - py) * (cursorY - py));
+        double distance = Math.Sqrt((cursorX - px) * (cursorX - px) + (cursorY - py) * (cursorY - py));
+        Vector3d worldPoint = a + (b - a) * t;
+        hit = new ProjectedSegmentHit(distance, worldPoint);
+        return double.IsFinite(distance) && IsFinite(worldPoint);
     }
 
     private Vector3d? PickSectionPoint(Vector3d rayOrigin, Vector3d rayDirection, bool snapped)
@@ -4025,8 +4142,11 @@ public sealed class MainActivity : AppCompatActivity
             .ToArray()
             ?? Array.Empty<GlesSectionPlane>();
 
-        HashSet<Guid> selectedIds = _sections?.SelectedPlaneIds.ToHashSet() ?? new HashSet<Guid>();
-        Guid? hoveredPlaneId = _hoveredSectionPlaneId;
+        bool sectionSelectionVisible = CanSelectSectionPlanes();
+        HashSet<Guid> selectedIds = sectionSelectionVisible
+            ? _sections?.SelectedPlaneIds.ToHashSet() ?? new HashSet<Guid>()
+            : new HashSet<Guid>();
+        Guid? hoveredPlaneId = sectionSelectionVisible ? _hoveredSectionPlaneId : null;
         var visualPlanes = _sections?.Planes
             .Take(8)
             .Select(p => new GlesSectionVisualPlane(
@@ -4042,6 +4162,8 @@ public sealed class MainActivity : AppCompatActivity
         _viewport.Renderer.SectionVisualPlanes = visualPlanes;
         _viewport.Renderer.SectionFillVisible = _sections?.FillVisible ?? true;
         _viewport.Renderer.SectionEdgesVisible = _sections?.EdgesVisible ?? true;
+        _viewport.Renderer.SectionCurvesVisible = AppSettings.SectionCurvesVisible;
+        _viewport.Renderer.SectionCapsVisible = AppSettings.SectionCapsVisible;
         _viewport.Renderer.SectionPlaneSizeFraction = AppSettings.SectionPlaneSizeFraction;
         _viewport.Renderer.SectionFillColor = new Vector4(
             AppSettings.SectionPlaneR,
@@ -4054,9 +4176,9 @@ public sealed class MainActivity : AppCompatActivity
             AppSettings.SectionEdgeB,
             0.80f);
         _viewport.Renderer.SectionEdgeHighlightColor = new Vector4(
-            AppSettings.SectionEdgeHighlightR,
-            AppSettings.SectionEdgeHighlightG,
-            AppSettings.SectionEdgeHighlightB,
+            AppSettings.DimensionHighlightR,
+            AppSettings.DimensionHighlightG,
+            AppSettings.DimensionHighlightB,
             1.0f);
         _viewport.Renderer.SectionCapColor = new Vector4(
             AppSettings.SectionCapR,
@@ -4080,11 +4202,13 @@ public sealed class MainActivity : AppCompatActivity
                 out Vector3d axisX,
                 out Vector3d axisY,
                 out Vector3d axisZ,
-                out double scale))
+                out double scale,
+                out string failureReason))
         {
             _viewport.Renderer.SectionGizmoScale = 0f;
             _viewport.Renderer.SectionGizmoHovered = GlesTransformGizmoHandle.None;
             _viewport.Renderer.SectionGizmoActive = GlesTransformGizmoHandle.None;
+            LogSectionGizmoHidden(failureReason);
             return false;
         }
 
@@ -4104,20 +4228,50 @@ public sealed class MainActivity : AppCompatActivity
         out Vector3d axisY,
         out Vector3d axisZ,
         out double scale)
+        => TryComputeSectionGizmoState(out anchor, out axisX, out axisY, out axisZ, out scale, out _);
+
+    private bool TryComputeSectionGizmoState(
+        out Vector3d anchor,
+        out Vector3d axisX,
+        out Vector3d axisY,
+        out Vector3d axisZ,
+        out double scale,
+        out string failureReason)
     {
         anchor = default;
         axisX = default;
         axisY = default;
         axisZ = default;
         scale = 0.0;
+        failureReason = "unknown";
 
-        if (_viewport is null
-            || _camera is null
-            || _sections is null
-            || _activeModalTool != AndroidModalTool.Section
-            || _activeSectionSubMode != SectionSubMode.None
-            || _sections.SelectedPlaneIds.Count == 0)
+        if (_viewport is null)
         {
+            failureReason = "viewport-null";
+            return false;
+        }
+
+        if (_camera is null)
+        {
+            failureReason = "camera-null";
+            return false;
+        }
+
+        if (_sections is null)
+        {
+            failureReason = "sections-null";
+            return false;
+        }
+
+        if (!CanSelectSectionPlanes())
+        {
+            failureReason = $"selection-disabled tool={_activeModalTool} subMode={_activeSectionSubMode}";
+            return false;
+        }
+
+        if (_sections.SelectedPlaneIds.Count == 0)
+        {
+            failureReason = "no-selected-section";
             return false;
         }
 
@@ -4125,12 +4279,20 @@ public sealed class MainActivity : AppCompatActivity
             .Where(p => _sections.SelectedPlaneIds.Contains(p.Id))
             .ToArray();
         if (selected.Length == 0)
+        {
+            failureReason = $"selected-id-missing count={_sections.SelectedPlaneIds.Count}";
             return false;
+        }
 
         Vector3d sum = Vector3d.Zero;
         foreach (SectionPlane plane in selected)
             sum += ToVector3d(plane.Anchor);
         anchor = sum / selected.Length;
+        if (!IsFinite(anchor))
+        {
+            failureReason = "invalid-anchor";
+            return false;
+        }
 
         SectionPlane first = selected[0];
         axisX = ToVector3d(first.AxisX);
@@ -4140,16 +4302,86 @@ public sealed class MainActivity : AppCompatActivity
             || !TryNormalize(axisY, out axisY)
             || !TryNormalize(axisZ, out axisZ))
         {
+            failureReason = "invalid-axis";
             return false;
         }
 
         CameraState? camera = SnapshotCamera();
-        if (camera is null || _viewport.Width <= 0 || _viewport.Height <= 0)
+        if (camera is null)
+        {
+            failureReason = "camera-snapshot-null";
             return false;
+        }
+
+        if (_viewport.Width <= 0 || _viewport.Height <= 0)
+        {
+            failureReason = $"invalid-viewport {_viewport.Width}x{_viewport.Height}";
+            return false;
+        }
 
         double aspect = (double)_viewport.Width / _viewport.Height;
-        scale = camera.WorldSizeForScreenHeightFraction(anchor, AppSettings.SectionGizmoSizeFraction, aspect);
-        return double.IsFinite(scale) && scale > 1e-9;
+        scale = ResolveSectionGizmoScale(camera, anchor, AppSettings.SectionGizmoSizeFraction, aspect);
+        if (!double.IsFinite(scale) || scale <= 1e-9)
+        {
+            failureReason = $"invalid-scale scale={scale:G9}";
+            return false;
+        }
+
+        failureReason = string.Empty;
+        return true;
+    }
+
+    private double ResolveSectionGizmoScale(CameraState camera, Vector3d anchor, double fraction, double aspect)
+    {
+        double scale = camera.WorldSizeForScreenHeightFraction(anchor, fraction, aspect);
+        if (double.IsFinite(scale) && scale > 1e-9)
+            return scale;
+
+        BoundingBox bounds = GetFullSceneBounds();
+        double sceneDiagonal = bounds.IsValid && double.IsFinite(bounds.Diagonal) && bounds.Diagonal > 1e-9
+            ? bounds.Diagonal
+            : 100.0;
+
+        double fallback = 0.0;
+        if (camera.IsPerspective)
+        {
+            Vector3d forward = camera.Forward;
+            if (TryNormalize(forward, out forward)
+                && double.IsFinite(camera.FieldOfView)
+                && camera.FieldOfView > 1e-6
+                && camera.FieldOfView < Math.PI - 1e-6)
+            {
+                double depth = Vector3d.Dot(anchor - camera.Position, forward);
+                if (double.IsFinite(depth) && depth > 1e-6)
+                    fallback = 2.0 * depth * Math.Tan(camera.FieldOfView * 0.5) * fraction;
+            }
+        }
+        else if (double.IsFinite(camera.OrthoWidth) && camera.OrthoWidth > 1e-9)
+        {
+            double safeAspect = double.IsFinite(aspect) && aspect > 1e-9 ? aspect : 1.0;
+            fallback = camera.OrthoWidth / safeAspect * fraction;
+        }
+
+        if (!double.IsFinite(fallback) || fallback <= 1e-9)
+            fallback = sceneDiagonal * fraction;
+
+        return Math.Clamp(fallback, sceneDiagonal * 0.001, sceneDiagonal * 0.5);
+    }
+
+    private void LogSectionGizmoHidden(string reason)
+    {
+        SectionService? sections = _sections;
+        if (sections is null || sections.SelectedPlaneIds.Count <= 0)
+            return;
+
+        string key = $"{reason}|{_activeModalTool}|{_activeSectionSubMode}|{sections.SelectedPlaneIds.Count}|{_viewport?.Width}x{_viewport?.Height}";
+        if (key == _lastSectionGizmoHiddenLogKey)
+            return;
+
+        _lastSectionGizmoHiddenLogKey = key;
+        global::Android.Util.Log.Warn(
+            "FA.Section",
+            $"Section gizmo hidden: reason={reason}, selected={sections.SelectedPlaneIds.Count}, tool={_activeModalTool}, subMode={_activeSectionSubMode}, viewport={_viewport?.Width ?? 0}x{_viewport?.Height ?? 0}.");
     }
 
     private bool UpdateBodyMoveGizmoRendererState()
@@ -4258,8 +4490,7 @@ public sealed class MainActivity : AppCompatActivity
         }
 
         if (action != MotionEventActions.Down
-            || _activeModalTool != AndroidModalTool.Section
-            || _activeSectionSubMode != SectionSubMode.None
+            || !CanSelectSectionPlanes()
             || _sections?.SelectedPlaneIds.Count <= 0)
         {
             return false;
@@ -4282,7 +4513,10 @@ public sealed class MainActivity : AppCompatActivity
 
     private bool ShouldConsumeViewportTouchViaGestureSource()
         => _activeModalTool == AndroidModalTool.ZoomWindow
-           || (_activeModalTool == AndroidModalTool.Section && _activeSectionSubMode == SectionSubMode.Custom);
+           || (_activeModalTool == AndroidModalTool.Section
+               && _activeSectionSubMode == SectionSubMode.Custom
+               && _sectionGizmoActive == GlesTransformGizmoHandle.None
+               && (_sections?.SelectedPlaneIds.Count ?? 0) == 0);
 
     private bool HandleActiveSectionGizmoTouch(MotionEvent motionEvent, MotionEventActions action)
     {
@@ -4374,25 +4608,15 @@ public sealed class MainActivity : AppCompatActivity
 
     private int PreferredPointerIndex(MotionEvent motionEvent)
     {
-        if (AppSettings.SpenPalmRejectionEnabled)
-        {
-            int count = motionEvent.PointerCount;
-            for (int i = 0; i < count; i++)
-            {
-                if (IsStylusOrEraser(motionEvent.GetToolType(i)))
-                    return i;
-            }
-        }
-
-        int actionIndex = motionEvent.ActionIndex;
-        if (actionIndex >= 0 && actionIndex < motionEvent.PointerCount)
-            return actionIndex;
+        int pointerIndex = AndroidMotionEvents.PreferredPointerIndex(motionEvent);
+        if (pointerIndex >= 0)
+            return pointerIndex;
 
         if (Interlocked.Exchange(ref _preferredPointerFallbackLogged, 1) == 0)
         {
             global::Android.Util.Log.Warn(
                 "FA.Input",
-                $"MotionEvent action pointer index out of range; falling back to pointer 0. actionIndex={actionIndex}, pointerCount={motionEvent.PointerCount}.");
+                $"MotionEvent pointer index unavailable; falling back to pointer 0. actionIndex={motionEvent.ActionIndex}, pointerCount={motionEvent.PointerCount}.");
         }
 
         return 0;
@@ -4813,11 +5037,23 @@ public sealed class MainActivity : AppCompatActivity
         if (_sections is null || _sectionGizmoSnapshot is null)
             return;
 
+        ApplySectionPlaneSnapshotRotation(_sectionGizmoSnapshot, rotation, pivot);
+        UpdateSectionRendererState();
+    }
+
+    private void ApplySectionPlaneSnapshotRotation(
+        IReadOnlyList<SectionPlaneSnapshot> snapshots,
+        Quaterniond rotation,
+        Vector3d pivot)
+    {
+        if (_sections is null || snapshots.Count == 0)
+            return;
+
         Matrix4d rot = rotation.ToMatrix4d();
         _sectionGizmoApplyingTransform = true;
         try
         {
-            foreach (SectionPlaneSnapshot snap in _sectionGizmoSnapshot)
+            foreach (SectionPlaneSnapshot snap in snapshots)
             {
                 Vector3 newAxisX = ToVector3(rot.TransformDirection(ToVector3d(snap.AxisX)));
                 Vector3 newAxisY = ToVector3(rot.TransformDirection(ToVector3d(snap.AxisY)));
@@ -4831,8 +5067,6 @@ public sealed class MainActivity : AppCompatActivity
         {
             _sectionGizmoApplyingTransform = false;
         }
-
-        UpdateSectionRendererState();
     }
 
     private delegate bool TryComputeGizmoPopupPositionDelegate(
@@ -5584,6 +5818,50 @@ public sealed class MainActivity : AppCompatActivity
         return double.IsFinite(normalized.X) && double.IsFinite(normalized.Y) && double.IsFinite(normalized.Z);
     }
 
+    private static double CameraDepth(Vector3d worldPoint, CameraState? camera)
+    {
+        if (camera is null || !IsFinite(worldPoint))
+            return double.PositiveInfinity;
+
+        Vector3d forward = camera.Forward;
+        if (!TryNormalize(forward, out forward))
+            return double.PositiveInfinity;
+
+        double depth = Vector3d.Dot(worldPoint - camera.Position, forward);
+        return double.IsFinite(depth) && depth >= 0.0
+            ? depth
+            : double.PositiveInfinity;
+    }
+
+    private static bool IsCloserDepth(double candidateDepth, double bestDepth)
+    {
+        bool candidateFinite = double.IsFinite(candidateDepth);
+        bool bestFinite = double.IsFinite(bestDepth);
+        if (candidateFinite != bestFinite)
+            return candidateFinite;
+
+        return candidateFinite && candidateDepth < bestDepth - 1e-9;
+    }
+
+    private static bool IsBetterDepthHit(
+        double candidateDepth,
+        double candidateDistance,
+        double bestDepth,
+        double bestDistance,
+        bool hasBest)
+    {
+        if (!hasBest)
+            return true;
+
+        if (IsCloserDepth(candidateDepth, bestDepth))
+            return true;
+
+        if (IsCloserDepth(bestDepth, candidateDepth))
+            return false;
+
+        return candidateDistance < bestDistance;
+    }
+
     private void ClearSectionPlacementDraft()
     {
         bool changed = _activeSectionSubMode != SectionSubMode.None
@@ -6016,6 +6294,8 @@ public sealed class MainActivity : AppCompatActivity
         SetTooltip(_sectionClearButton, Resource.String.cd_section_clear);
         SetTooltip(_sectionFillSwitch, Resource.String.cd_section_fill);
         SetTooltip(_sectionEdgesSwitch, Resource.String.cd_section_edges);
+        SetTooltip(_sectionCurvesSwitch, Resource.String.cd_section_curves);
+        SetTooltip(_sectionCapsSwitch, Resource.String.cd_section_caps);
     }
 
     private void ApplyExplodeTooltips()
@@ -6263,6 +6543,12 @@ public sealed class MainActivity : AppCompatActivity
         if (TryHandleSectionTap(ev.Position))
             return;
 
+        if (_activeModalTool == AndroidModalTool.Measure
+            || _activeModalTool == AndroidModalTool.Section)
+        {
+            ClearSelectableOverlaySelection("viewport tap");
+        }
+
         if (_measureBoundingBoxAwaitingSelection)
         {
             HandleBoundingBoxSelectionTap(ev);
@@ -6281,7 +6567,7 @@ public sealed class MainActivity : AppCompatActivity
             return;
         }
 
-        if (_activeModalTool != AndroidModalTool.Select)
+        if (!CanPickViewportModelBodies())
             return;
 
         ClearSelectedMeasurement("viewport tap");
@@ -6295,8 +6581,13 @@ public sealed class MainActivity : AppCompatActivity
         int px = (int)(ev.Position.X * density);
         int py = (int)(ev.Position.Y * density);
 
-        _viewport.PickAsync(px, py, "tap", hit => OnPickResult(hit));
+        string pickReason = _activeModalTool == AndroidModalTool.Explode ? "explode-tap" : "tap";
+        _viewport.PickAsync(px, py, pickReason, hit => OnPickResult(hit));
     }
+
+    private bool CanPickViewportModelBodies()
+        => _activeModalTool == AndroidModalTool.Select
+           || _activeModalTool == AndroidModalTool.Explode;
 
     private void HandleViewportContextRequest(TouchGestureEvent ev)
     {
@@ -6590,20 +6881,19 @@ public sealed class MainActivity : AppCompatActivity
     }
 
     /// <summary>
-    /// Tap-time pivot pick. Casts a ray from the camera through the tap
-    /// position and uses the same exact triangle raycast path as the
-    /// measurement/section tools, falling back to visible bounds only if the
-    /// exact raycast misses. Synchronous so OrbitBegin / PanZoomBegin can
-    /// capture the pivot before the first delta event fires.
+    /// Navigation pivot pick. Keep this path bounded because OrbitBegin /
+    /// PanZoomBegin run on the input path; exact mesh raycasts can lazily build
+    /// acceleration structures after a model opens and cause the first orbit to
+    /// hitch. Measurement and section tools still use exact raycasting.
     /// </summary>
     private Vector3d? PickPivotAt(Point2D dipPos)
     {
+        long startTicks = Stopwatch.GetTimestamp();
+        string resultKind = "miss";
+        try
+        {
         if (!TryCreateWorldRay(dipPos, out Vector3d rayOrigin, out Vector3d rayDir))
             return null;
-
-        MeasureRaycastHit? exactHit = _sectionRaycaster?.Raycast(rayOrigin, rayDir, collectDiagnostics: false);
-        if (exactHit is { } hit)
-            return hit.WorldPoint;
 
         if (_runtimeScene is null)
             return null;
@@ -6620,6 +6910,7 @@ public sealed class MainActivity : AppCompatActivity
                 out Vector3d boundsHit,
                 point => AndroidSectionClipper.IsPointVisible(point, sectionPlanes, sectionToleranceScale)))
         {
+            resultKind = "runtime-bounds";
             return boundsHit;
         }
 
@@ -6644,7 +6935,20 @@ public sealed class MainActivity : AppCompatActivity
                 fallbackHitPoint = candidateHit;
             }
         }
+        if (fallbackHitPoint is not null)
+            resultKind = "gpu-bounds";
         return fallbackHitPoint;
+        }
+        finally
+        {
+            double elapsedMs = (Stopwatch.GetTimestamp() - startTicks) * 1000.0 / Stopwatch.Frequency;
+            if (elapsedMs >= 8.0)
+            {
+                global::Android.Util.Log.Warn(
+                    "FA.Navigation",
+                    $"Pivot pick took {elapsedMs:0.0}ms via {resultKind}; exact mesh raycast skipped for navigation.");
+            }
+        }
     }
 
     private bool TryCreateWorldRay(Point2D dipPos, out Vector3d rayOrigin, out Vector3d rayDir)
@@ -6884,8 +7188,7 @@ public sealed class MainActivity : AppCompatActivity
             return true;
         }
 
-        if (_activeModalTool == AndroidModalTool.Section
-            && _activeSectionSubMode == SectionSubMode.None
+        if (CanSelectSectionPlanes()
             && _sectionGizmoActive == GlesTransformGizmoHandle.None
             && !_sectionGizmoInputOpen)
         {
@@ -6894,10 +7197,19 @@ public sealed class MainActivity : AppCompatActivity
             var dip = MotionEventToDip(motionEvent);
             GlesTransformGizmoHandle hoveredHandle = PickSectionGizmoHandle(dip);
             SetSectionGizmoHovered(hoveredHandle);
-            SetHoveredSectionPlane(hoveredHandle == GlesTransformGizmoHandle.None
-                ? PickSectionPlaneEdge(dip)
-                : null);
-            return true;
+            if (hoveredHandle != GlesTransformGizmoHandle.None)
+            {
+                SetHoveredSectionPlane(null);
+                return true;
+            }
+
+            if (PickSectionPlaneEdge(dip) is { } hoveredSection)
+            {
+                SetHoveredSectionPlane(hoveredSection);
+                return true;
+            }
+
+            SetHoveredSectionPlane(null);
         }
 
         if (_activeModalTool == AndroidModalTool.Section && _activeSectionSubMode != SectionSubMode.None)
@@ -6931,7 +7243,7 @@ public sealed class MainActivity : AppCompatActivity
             return true;
         }
 
-        if (_activeModalTool != AndroidModalTool.Select)
+        if (!CanPickViewportModelBodies())
         {
             CancelHoverPick();
             SetHoveredMesh(0);
@@ -7017,6 +7329,12 @@ public sealed class MainActivity : AppCompatActivity
             return;
 
         _hoverPickInFlight = false;
+        if (!CanPickViewportModelBodies())
+        {
+            SetHoveredMesh(0);
+            return;
+        }
+
         if (pickVersion == _pendingHoverPickVersion)
             SetHoveredMesh(meshIndex ?? 0);
         if (_pendingHoverPickX >= 0 && _pendingHoverPickY >= 0)
@@ -7080,6 +7398,11 @@ public sealed class MainActivity : AppCompatActivity
         try
         {
             uri = await _picker.PickAsync(new[] { "model/gltf-binary", "model/gltf+json", "application/zip", "application/octet-stream", "*/*" });
+        }
+        catch (System.OperationCanceledException)
+        {
+            SetImportNavigationEnabled(true);
+            return;
         }
         catch (Exception ex)
         {
@@ -7686,7 +8009,7 @@ public sealed class MainActivity : AppCompatActivity
     {
         bool requestRender = false;
         if (_sections?.SelectedPlaneIds.Count > 0
-            && _activeModalTool == AndroidModalTool.Section
+            && CanSelectSectionPlanes()
             && UpdateSectionGizmoRendererState())
         {
             requestRender = true;
@@ -7797,6 +8120,7 @@ public sealed class MainActivity : AppCompatActivity
                 {
                     textView.Click += (_, _) => SelectMeasurementLabel(selectableKey);
                     textView.SetOnTouchListener(new MeasurementLabelTouchProxy(this, selectableKey, isDeleteButton: false));
+                    textView.SetOnGenericMotionListener(new MeasurementLabelGenericMotionProxy(this, selectableKey, isDeleteButton: false));
                     textView.SetOnHoverListener(new MeasurementLabelHoverProxy(this, selectableKey));
                 }
 
@@ -7816,6 +8140,7 @@ public sealed class MainActivity : AppCompatActivity
                 {
                     deleteButton = CreateMeasurementDeleteButton(deleteKey);
                     deleteButton.SetOnTouchListener(new MeasurementLabelTouchProxy(this, deleteKey, isDeleteButton: true));
+                    deleteButton.SetOnGenericMotionListener(new MeasurementLabelGenericMotionProxy(this, deleteKey, isDeleteButton: true));
                     deleteButton.SetOnHoverListener(new MeasurementLabelHoverProxy(this, deleteKey));
                     int buttonSize = Dp(MeasurementDeleteButtonSizeDp);
                     _measurementLabelLayer.AddView(deleteButton, new FrameLayout.LayoutParams(buttonSize, buttonSize));
@@ -7932,7 +8257,6 @@ public sealed class MainActivity : AppCompatActivity
         double halfSide = Math.Clamp(sceneDiagonal * AppSettings.SectionPlaneSizeFraction, 1.0, 10_000.0);
         foreach (SectionAnnotationBinding binding in _sectionAnnotations)
         {
-            TextView button = binding.DeleteButton;
             SectionPlane plane = binding.Plane;
             Vector3d anchor = ToVector3d(plane.Anchor);
             Vector3d axisX = ToVector3d(plane.AxisX);
@@ -7945,50 +8269,77 @@ public sealed class MainActivity : AppCompatActivity
                 anchor - axisX * halfSide + axisY * halfSide,
             };
 
-            bool hasCorner = false;
-            double cornerX = 0.0;
-            double cornerY = 0.0;
-            double bestScore = double.NegativeInfinity;
+            var projectedCorners = new List<SectionCornerProjection>(corners.Length);
             foreach (Vector3d corner in corners)
             {
                 if (!TryProjectWorldToViewport(corner, out double screenX, out double screenY))
                     continue;
 
-                // Attach to a real projected plane corner, preferring the
-                // screen-space upper-right corner so the control is stable and
-                // does not float on the plane's bounding rectangle.
-                double score = screenX - screenY;
-                if (!hasCorner || score > bestScore)
-                {
-                    hasCorner = true;
-                    bestScore = score;
-                    cornerX = screenX;
-                    cornerY = screenY;
-                }
+                projectedCorners.Add(new SectionCornerProjection(corner, new Point2D(screenX, screenY)));
             }
 
-            if (!hasCorner)
+            if (projectedCorners.Count == 0)
             {
-                button.Visibility = ViewStates.Invisible;
+                binding.DeleteButton.Visibility = ViewStates.Invisible;
+                binding.FlipButton.Visibility = ViewStates.Invisible;
                 continue;
             }
 
-            if (button.Visibility != ViewStates.Visible)
-                button.Visibility = ViewStates.Visible;
-
-            int buttonSize = Dp(SectionDeleteButtonSizeDp);
-            double minLeft = Dp(4);
-            double maxLeft = Math.Max(minLeft, _viewport.Width - buttonSize - Dp(4));
-            double left = Math.Clamp(cornerX - buttonSize * 0.5, minLeft, maxLeft);
-
-            double top = Math.Clamp(
-                cornerY - buttonSize * 0.5,
-                Dp(4),
-                Math.Max(Dp(4), _viewport.Height - buttonSize - Dp(4)));
-
-            button.TranslationX = (float)left;
-            button.TranslationY = (float)top;
+            // Attach controls to real projected plane corners: delete at the
+            // screen-space upper-right corner, flip at the other upper corner.
+            SectionCornerProjection deleteCorner = PickProjectedSectionCorner(projectedCorners, static corner => corner.Screen.X - corner.Screen.Y);
+            SectionCornerProjection flipCorner = PickProjectedSectionCorner(projectedCorners, static corner => -corner.Screen.X - corner.Screen.Y, deleteCorner.Screen);
+            binding.DeleteAnchor = deleteCorner.World;
+            binding.FlipAnchor = flipCorner.World;
+            int buttonSize = Dp(SectionCornerButtonSizeDp);
+            PlaceSectionCornerButton(binding.DeleteButton, deleteCorner.Screen, buttonSize);
+            PlaceSectionCornerButton(binding.FlipButton, flipCorner.Screen, buttonSize);
         }
+    }
+
+    private static SectionCornerProjection PickProjectedSectionCorner(
+        IReadOnlyList<SectionCornerProjection> corners,
+        Func<SectionCornerProjection, double> scoreSelector,
+        Point2D? excluded = null)
+    {
+        SectionCornerProjection best = default;
+        double bestScore = double.NegativeInfinity;
+        bool hasBest = false;
+        foreach (SectionCornerProjection corner in corners)
+        {
+            if (corners.Count > 1 && excluded.HasValue && corner.Screen.Equals(excluded.Value))
+                continue;
+
+            double score = scoreSelector(corner);
+            if (!hasBest || score > bestScore)
+            {
+                best = corner;
+                bestScore = score;
+                hasBest = true;
+            }
+        }
+
+        return hasBest ? best : corners[0];
+    }
+
+    private void PlaceSectionCornerButton(TextView button, Point2D corner, int buttonSize)
+    {
+        if (_viewport is null)
+            return;
+
+        if (button.Visibility != ViewStates.Visible)
+            button.Visibility = ViewStates.Visible;
+
+        double minLeft = Dp(4);
+        double maxLeft = Math.Max(minLeft, _viewport.Width - buttonSize - Dp(4));
+        double left = Math.Clamp(corner.X - buttonSize * 0.5, minLeft, maxLeft);
+        double top = Math.Clamp(
+            corner.Y - buttonSize * 0.5,
+            Dp(4),
+            Math.Max(Dp(4), _viewport.Height - buttonSize - Dp(4)));
+
+        button.TranslationX = (float)left;
+        button.TranslationY = (float)top;
     }
 
     private TextView CreateMeasurementLabel(string text, PresentationStyle style, bool selectable)
@@ -8064,9 +8415,11 @@ public sealed class MainActivity : AppCompatActivity
                 continue;
 
             TextView deleteButton = CreateSectionDeleteButton(plane.Id);
-            int buttonSize = Dp(SectionDeleteButtonSizeDp);
+            TextView flipButton = CreateSectionFlipButton(plane.Id);
+            int buttonSize = Dp(SectionCornerButtonSizeDp);
             _measurementLabelLayer.AddView(deleteButton, new FrameLayout.LayoutParams(buttonSize, buttonSize));
-            _sectionAnnotations.Add(new SectionAnnotationBinding(plane.Id, plane, deleteButton));
+            _measurementLabelLayer.AddView(flipButton, new FrameLayout.LayoutParams(buttonSize, buttonSize));
+            _sectionAnnotations.Add(new SectionAnnotationBinding(plane.Id, plane, deleteButton, flipButton));
         }
     }
 
@@ -8084,22 +8437,43 @@ public sealed class MainActivity : AppCompatActivity
         button.SetTextColor(Color.White);
         button.SetTextSize(ComplexUnitType.Sp, 13);
         button.SetTypeface(button.Typeface, TypefaceStyle.Bold);
-        button.Background = CreateSectionDeleteButtonBackground();
+        button.Background = CreateSectionCornerButtonBackground();
+        button.SetOnTouchListener(new SectionAnnotationButtonTouchProxy(this, id, isFlipButton: false));
+        button.SetOnGenericMotionListener(new SectionAnnotationButtonGenericMotionProxy(this, id, isFlipButton: false));
+        button.SetOnHoverListener(new SectionAnnotationButtonHoverProxy(this, id));
         button.Click += (_, _) => DeleteSectionPlane(id);
         return button;
     }
 
-    private Drawable CreateSectionDeleteButtonBackground()
+    private TextView CreateSectionFlipButton(Guid id)
+    {
+        var button = new TextView(this)
+        {
+            Text = "180",
+            Gravity = GravityFlags.Center,
+            Clickable = true,
+            Focusable = true,
+            ContentDescription = GetString(Resource.String.cd_section_flip_selected),
+        };
+        button.SetIncludeFontPadding(false);
+        button.SetTextColor(Color.White);
+        button.SetTextSize(ComplexUnitType.Sp, 10);
+        button.SetTypeface(button.Typeface, TypefaceStyle.Bold);
+        button.Background = CreateSectionCornerButtonBackground();
+        button.SetOnTouchListener(new SectionAnnotationButtonTouchProxy(this, id, isFlipButton: true));
+        button.SetOnGenericMotionListener(new SectionAnnotationButtonGenericMotionProxy(this, id, isFlipButton: true));
+        button.SetOnHoverListener(new SectionAnnotationButtonHoverProxy(this, id));
+        button.Click += (_, _) => FlipSectionPlane(id);
+        return button;
+    }
+
+    private Drawable CreateSectionCornerButtonBackground()
     {
         var background = new GradientDrawable();
         background.SetShape(ShapeType.Rectangle);
         background.SetColor(Color.ParseColor("#E51F2026"));
-        background.SetCornerRadius(Dp(SectionDeleteButtonSizeDp) * 0.5f);
-        background.SetStroke(Dp(1), new Color(Color.Argb(
-            255,
-            UnitColorByte(AppSettings.SectionEdgeHighlightR, 1.0f),
-            UnitColorByte(AppSettings.SectionEdgeHighlightG, 1.0f),
-            UnitColorByte(AppSettings.SectionEdgeHighlightB, 1.0f))));
+        background.SetCornerRadius(Dp(SectionCornerButtonSizeDp) * 0.5f);
+        background.SetStroke(Dp(1), new Color(DimensionHighlightColor()));
         return background;
     }
 
@@ -8128,6 +8502,28 @@ public sealed class MainActivity : AppCompatActivity
 
         switch (action)
         {
+            case MotionEventActions.ButtonPress:
+            {
+                if (!IsStylusOrMousePointer(motionEvent))
+                    return _pressedAnnotationTarget is not null;
+
+                AnnotationHitTarget? hit = HitAnnotationTarget(
+                    motionEvent.GetX(),
+                    motionEvent.GetY(),
+                    hitSlopPx);
+                if (hit is not { } target)
+                    return false;
+
+                return ActivateAnnotationTargetFromStylusButton(target, motionEvent);
+            }
+
+            case MotionEventActions.ButtonRelease:
+                if (!IsStylusOrMousePointer(motionEvent))
+                    return _pressedAnnotationTarget is not null;
+
+                _pressedAnnotationTarget = null;
+                return true;
+
             case MotionEventActions.Down:
             {
                 AnnotationHitTarget? hit = HitAnnotationTarget(
@@ -8177,6 +8573,28 @@ public sealed class MainActivity : AppCompatActivity
         }
     }
 
+    private bool HandleMeasurementLabelViewGenericMotion(MeasurementLabelKey key, bool isDeleteButton, MotionEvent? motionEvent)
+    {
+        if (motionEvent is null || !CanSelectMeasurementLabels() || !IsStylusOrMousePointer(motionEvent))
+            return false;
+
+        MotionEventActions action = motionEvent.ActionMasked;
+        if (action == MotionEventActions.ButtonRelease)
+        {
+            _pressedAnnotationTarget = null;
+            return true;
+        }
+
+        if (action != MotionEventActions.ButtonPress)
+            return false;
+
+        return ActivateAnnotationTargetFromStylusButton(
+            isDeleteButton
+                ? AnnotationHitTarget.MeasurementDelete(key)
+                : AnnotationHitTarget.MeasurementLabel(key),
+            motionEvent);
+    }
+
     private bool HandleMeasurementLabelViewTouch(MeasurementLabelKey key, bool isDeleteButton, MotionEvent? motionEvent)
     {
         if (motionEvent is null || !CanSelectMeasurementLabels())
@@ -8190,6 +8608,19 @@ public sealed class MainActivity : AppCompatActivity
             : AnnotationHitTarget.MeasurementLabel(key);
         switch (action)
         {
+            case MotionEventActions.ButtonPress:
+                if (!IsStylusOrMousePointer(motionEvent))
+                    return _pressedAnnotationTarget is not null;
+
+                return ActivateAnnotationTargetFromStylusButton(target, motionEvent);
+
+            case MotionEventActions.ButtonRelease:
+                if (!IsStylusOrMousePointer(motionEvent))
+                    return _pressedAnnotationTarget is not null;
+
+                _pressedAnnotationTarget = null;
+                return true;
+
             case MotionEventActions.Down:
                 _pressedAnnotationTarget = target;
                 CancelHoverPick();
@@ -8221,6 +8652,105 @@ public sealed class MainActivity : AppCompatActivity
         }
     }
 
+    private bool HandleSectionAnnotationButtonTouch(Guid id, bool isFlipButton, MotionEvent? motionEvent)
+    {
+        if (motionEvent is null || !CanInteractWithSectionAnnotations())
+            return false;
+        if (ShouldRejectFingerTouchForSpenPalmRejection(motionEvent))
+            return true;
+
+        AnnotationHitTarget target = isFlipButton
+            ? AnnotationHitTarget.SectionFlip(id)
+            : AnnotationHitTarget.SectionDelete(id);
+        switch (motionEvent.ActionMasked)
+        {
+            case MotionEventActions.ButtonPress:
+                if (!IsStylusOrMousePointer(motionEvent))
+                    return _pressedAnnotationTarget is not null;
+
+                return ActivateAnnotationTargetFromStylusButton(target, motionEvent);
+
+            case MotionEventActions.ButtonRelease:
+                if (!IsStylusOrMousePointer(motionEvent))
+                    return _pressedAnnotationTarget is not null;
+
+                _pressedAnnotationTarget = null;
+                return true;
+
+            case MotionEventActions.Down:
+                _pressedAnnotationTarget = target;
+                CancelHoverPick();
+                SetHoveredMesh(0);
+                ApplyAnnotationHover(target);
+                return true;
+
+            case MotionEventActions.Move:
+                return _pressedAnnotationTarget is not null;
+
+            case MotionEventActions.Up:
+            case MotionEventActions.PointerUp:
+                if (_pressedAnnotationTarget is not { } pressed || !pressed.Equals(target))
+                {
+                    _pressedAnnotationTarget = null;
+                    return false;
+                }
+
+                _pressedAnnotationTarget = null;
+                ActivateAnnotationTarget(target);
+                return true;
+
+            case MotionEventActions.Cancel:
+                _pressedAnnotationTarget = null;
+                return true;
+
+            default:
+                return _pressedAnnotationTarget is not null;
+        }
+    }
+
+    private bool HandleSectionAnnotationButtonGenericMotion(Guid id, bool isFlipButton, MotionEvent? motionEvent)
+    {
+        if (motionEvent is null || !CanInteractWithSectionAnnotations() || !IsStylusHoverEvent(motionEvent))
+            return false;
+
+        MotionEventActions action = motionEvent.ActionMasked;
+        if (action != MotionEventActions.ButtonPress && action != MotionEventActions.ButtonRelease)
+            return false;
+
+        if (action == MotionEventActions.ButtonRelease)
+        {
+            _pressedAnnotationTarget = null;
+            return true;
+        }
+
+        return ActivateAnnotationTargetFromStylusButton(
+            isFlipButton
+                ? AnnotationHitTarget.SectionFlip(id)
+                : AnnotationHitTarget.SectionDelete(id),
+            motionEvent);
+    }
+
+    private bool HandleSectionAnnotationButtonHover(Guid id, MotionEvent? motionEvent)
+    {
+        if (motionEvent is null || !CanInteractWithSectionAnnotations() || !IsStylusHoverEvent(motionEvent))
+            return false;
+
+        MotionEventActions action = motionEvent.ActionMasked;
+        if (action == MotionEventActions.HoverExit)
+        {
+            SetHoveredSectionPlane(null);
+            return true;
+        }
+
+        if (action != MotionEventActions.HoverEnter && action != MotionEventActions.HoverMove)
+            return false;
+
+        CancelHoverPick();
+        SetHoveredMesh(0);
+        SetHoveredSectionPlane(id);
+        return true;
+    }
+
     private bool HandleMeasurementLabelLayerGenericMotion(MotionEvent? motionEvent)
     {
         if (motionEvent is null || !IsStylusHoverEvent(motionEvent))
@@ -8231,7 +8761,10 @@ public sealed class MainActivity : AppCompatActivity
             return false;
 
         if (action == MotionEventActions.ButtonRelease)
+        {
+            _pressedAnnotationTarget = null;
             return true;
+        }
 
         AnnotationHitTarget? hit = HitAnnotationTarget(
             motionEvent.GetX(),
@@ -8240,6 +8773,25 @@ public sealed class MainActivity : AppCompatActivity
         if (hit is not { } target)
             return false;
 
+        return ActivateAnnotationTargetFromStylusButton(target, motionEvent);
+    }
+
+    private bool ActivateAnnotationTargetFromStylusButton(AnnotationHitTarget target, MotionEvent motionEvent)
+    {
+        long eventTime = motionEvent.EventTime;
+        if (_lastStylusButtonActivationEventTime == eventTime
+            && _lastStylusButtonActivationTarget is { } lastTarget
+            && lastTarget.Equals(target))
+        {
+            return true;
+        }
+
+        _lastStylusButtonActivationEventTime = eventTime;
+        _lastStylusButtonActivationTarget = target;
+        _pressedAnnotationTarget = target;
+        CancelHoverPick();
+        SetHoveredMesh(0);
+        ApplyAnnotationHover(target);
         ActivateAnnotationTarget(target);
         return true;
     }
@@ -8274,25 +8826,49 @@ public sealed class MainActivity : AppCompatActivity
 
     private AnnotationHitTarget? HitAnnotationTarget(float x, float y, float hitSlopPx)
     {
+        CameraState? camera = SnapshotCamera();
+        AnnotationHitTarget? bestTarget = null;
+        double bestDepth = double.PositiveInfinity;
+
         if (HitSectionDeleteButton(x, y, hitSlopPx) is { } sectionDelete)
-            return AnnotationHitTarget.SectionDelete(sectionDelete);
+            Consider(
+                AnnotationHitTarget.SectionDelete(sectionDelete.Id),
+                CameraDepth(sectionDelete.Anchor, camera));
+
+        if (HitSectionFlipButton(x, y, hitSlopPx) is { } sectionFlip)
+            Consider(
+                AnnotationHitTarget.SectionFlip(sectionFlip.Id),
+                CameraDepth(sectionFlip.Anchor, camera));
 
         if (CanSelectMeasurementLabels()
-            && HitMeasurementLabelTarget(x, y, hitSlopPx) is { } measurementTarget)
-            return measurementTarget.IsDeleteButton
-                ? AnnotationHitTarget.MeasurementDelete(measurementTarget.Key)
-                : AnnotationHitTarget.MeasurementLabel(measurementTarget.Key);
+            && HitMeasurementLabelTarget(x, y, hitSlopPx, camera) is { } measurementTarget)
+        {
+            Consider(
+                measurementTarget.IsDeleteButton
+                    ? AnnotationHitTarget.MeasurementDelete(measurementTarget.Key)
+                    : AnnotationHitTarget.MeasurementLabel(measurementTarget.Key),
+                CameraDepth(measurementTarget.Anchor, camera));
+        }
 
         double sectionHitTolerance = hitSlopPx > 0f
             ? Math.Max(SectionPlaneHoverHitTolerancePx, Dp(SectionPlaneTouchHitToleranceDp))
             : SectionPlaneHoverHitTolerancePx;
         if (CanInteractWithSectionAnnotations()
-            && PickSectionPlaneEdge(PixelToDip(x, y), sectionHitTolerance) is { } hoveredSectionId)
+            && PickSectionPlaneEdgeHit(PixelToDip(x, y), sectionHitTolerance, camera) is { } hoveredSection)
         {
-            return AnnotationHitTarget.SectionPlane(hoveredSectionId);
+            Consider(AnnotationHitTarget.SectionPlane(hoveredSection.Id), hoveredSection.Depth);
         }
 
-        return null;
+        return bestTarget;
+
+        void Consider(AnnotationHitTarget target, double depth)
+        {
+            if (bestTarget is not null && !IsCloserDepth(depth, bestDepth))
+                return;
+
+            bestTarget = target;
+            bestDepth = depth;
+        }
     }
 
     private void ApplyAnnotationHover(AnnotationHitTarget target)
@@ -8308,6 +8884,7 @@ public sealed class MainActivity : AppCompatActivity
 
             case AnnotationTargetKind.SectionPlane:
             case AnnotationTargetKind.SectionDelete:
+            case AnnotationTargetKind.SectionFlip:
                 SetHoveredMeasurementLabel(null);
                 if (target.SectionPlaneId is { } id)
                     SetHoveredSectionPlane(id);
@@ -8337,6 +8914,11 @@ public sealed class MainActivity : AppCompatActivity
             case AnnotationTargetKind.SectionDelete:
                 if (target.SectionPlaneId is { } sectionDeleteId)
                     DeleteSectionPlane(sectionDeleteId);
+                break;
+
+            case AnnotationTargetKind.SectionFlip:
+                if (target.SectionPlaneId is { } sectionFlipId)
+                    FlipSectionPlane(sectionFlipId);
                 break;
         }
     }
@@ -8395,8 +8977,15 @@ public sealed class MainActivity : AppCompatActivity
     private MeasurementLabelKey? HitMeasurementLabel(float x, float y)
         => HitMeasurementLabelTarget(x, y, hitSlopPx: 0f)?.Key;
 
-    private MeasurementLabelHitTarget? HitMeasurementLabelTarget(float x, float y, float hitSlopPx)
+    private MeasurementLabelHitTarget? HitMeasurementLabelTarget(
+        float x,
+        float y,
+        float hitSlopPx,
+        CameraState? camera = null)
     {
+        camera ??= SnapshotCamera();
+        MeasurementLabelHitTarget? best = null;
+        double bestDepth = double.PositiveInfinity;
         for (int i = _measurementLabels.Count - 1; i >= 0; i--)
         {
             MeasurementLabelBinding binding = _measurementLabels[i];
@@ -8404,13 +8993,23 @@ public sealed class MainActivity : AppCompatActivity
                 continue;
 
             if (ViewContainsPoint(binding.DeleteButton, x, y, hitSlopPx))
-                return new MeasurementLabelHitTarget(key, IsDeleteButton: true);
+                Consider(new MeasurementLabelHitTarget(key, binding.Anchor, IsDeleteButton: true));
 
             if (ViewContainsPoint(binding.View, x, y, hitSlopPx))
-                return new MeasurementLabelHitTarget(key, IsDeleteButton: false);
+                Consider(new MeasurementLabelHitTarget(key, binding.Anchor, IsDeleteButton: false));
         }
 
-        return null;
+        return best;
+
+        void Consider(MeasurementLabelHitTarget candidate)
+        {
+            double depth = CameraDepth(candidate.Anchor, camera);
+            if (best is not null && !IsCloserDepth(depth, bestDepth))
+                return;
+
+            best = candidate;
+            bestDepth = depth;
+        }
     }
 
     private static bool ViewContainsPoint(View? view, float x, float y, float hitSlopPx = 0f)
@@ -8441,9 +9040,13 @@ public sealed class MainActivity : AppCompatActivity
     }
 
     private bool CanInteractWithSectionAnnotations()
-        => _activeModalTool == AndroidModalTool.Section
-           && _activeSectionSubMode == SectionSubMode.None
-           && _sections is { Planes.Count: > 0 };
+        => CanSelectSectionPlanes();
+
+    private bool CanSelectSectionPlanes()
+        => (_activeModalTool == AndroidModalTool.Select
+            || _activeModalTool == AndroidModalTool.Measure
+            || _activeModalTool == AndroidModalTool.Section)
+           && _sections is { Planes.Count: > 0, EdgesVisible: true };
 
     private void SelectSectionPlaneAnnotation(Guid id)
     {
@@ -8453,6 +9056,8 @@ public sealed class MainActivity : AppCompatActivity
         bool alreadySelected = _sections.SelectedPlaneIds.Count == 1
             && _sections.SelectedPlaneIds.Contains(id);
         _sections.Select(new[] { id }, additive: false);
+        ClearSectionPlacementDraft();
+        _sectionGizmoHovered = GlesTransformGizmoHandle.None;
         SetHoveredSectionPlane(id);
         UpdateSectionRendererState();
         UpdateSectionButtonStates();
@@ -8474,19 +9079,111 @@ public sealed class MainActivity : AppCompatActivity
         global::Android.Util.Log.Info("FA.Section", $"Deleted section plane {id} by annotation button.");
     }
 
-    private Guid? HitSectionDeleteButton(float x, float y, float hitSlopPx)
+    private void FlipSectionPlane(Guid id)
+    {
+        if (_sections is null)
+            return;
+
+        bool found = false;
+        SectionPlane plane = default;
+        foreach (SectionPlane candidate in _sections.Planes)
+        {
+            if (candidate.Id != id)
+                continue;
+
+            plane = candidate;
+            found = true;
+            break;
+        }
+
+        if (!found)
+            return;
+
+        Vector3d axisX = ToVector3d(plane.AxisX);
+        if (!TryNormalize(axisX, out axisX))
+        {
+            global::Android.Util.Log.Warn("FA.Section", $"Skipped section plane flip for {id}: invalid AxisX.");
+            return;
+        }
+
+        if (_sectionGizmoActive != GlesTransformGizmoHandle.None)
+            CommitSectionGizmoDrag();
+
+        Vector3d anchor = ToVector3d(plane.Anchor);
+        var snapshots = new[] { SectionPlaneSnapshot.FromPlane(plane) };
+        ApplySectionPlaneSnapshotRotation(
+            snapshots,
+            Quaterniond.FromAxisAngle(axisX, Math.PI),
+            anchor);
+
+        _sections.Select(new[] { id }, additive: false);
+        ClearSectionPlacementDraft();
+        _sectionGizmoHovered = GlesTransformGizmoHandle.None;
+        SetHoveredSectionPlane(id);
+        UpdateSectionRendererState();
+        UpdateSectionButtonStates();
+        _viewport?.PerformHapticFeedback(FeedbackConstants.ContextClick);
+        global::Android.Util.Log.Info("FA.Section", $"Flipped section plane {id} by 180 degrees around gizmo X axis.");
+    }
+
+    private SectionAnnotationButtonHit? HitSectionDeleteButton(float x, float y, float hitSlopPx)
     {
         if (!CanInteractWithSectionAnnotations())
             return null;
 
+        SectionAnnotationButtonHit? best = null;
+        double bestDepth = double.PositiveInfinity;
+        CameraState? camera = SnapshotCamera();
         for (int i = _sectionAnnotations.Count - 1; i >= 0; i--)
         {
             SectionAnnotationBinding binding = _sectionAnnotations[i];
             if (ViewContainsPoint(binding.DeleteButton, x, y, hitSlopPx))
-                return binding.Id;
+                Consider(new SectionAnnotationButtonHit(
+                    binding.Id,
+                    binding.DeleteAnchor ?? ToVector3d(binding.Plane.Anchor)));
         }
 
-        return null;
+        return best;
+
+        void Consider(SectionAnnotationButtonHit candidate)
+        {
+            double depth = CameraDepth(candidate.Anchor, camera);
+            if (best is not null && !IsCloserDepth(depth, bestDepth))
+                return;
+
+            best = candidate;
+            bestDepth = depth;
+        }
+    }
+
+    private SectionAnnotationButtonHit? HitSectionFlipButton(float x, float y, float hitSlopPx)
+    {
+        if (!CanInteractWithSectionAnnotations())
+            return null;
+
+        SectionAnnotationButtonHit? best = null;
+        double bestDepth = double.PositiveInfinity;
+        CameraState? camera = SnapshotCamera();
+        for (int i = _sectionAnnotations.Count - 1; i >= 0; i--)
+        {
+            SectionAnnotationBinding binding = _sectionAnnotations[i];
+            if (ViewContainsPoint(binding.FlipButton, x, y, hitSlopPx))
+                Consider(new SectionAnnotationButtonHit(
+                    binding.Id,
+                    binding.FlipAnchor ?? ToVector3d(binding.Plane.Anchor)));
+        }
+
+        return best;
+
+        void Consider(SectionAnnotationButtonHit candidate)
+        {
+            double depth = CameraDepth(candidate.Anchor, camera);
+            if (best is not null && !IsCloserDepth(depth, bestDepth))
+                return;
+
+            best = candidate;
+            bestDepth = depth;
+        }
     }
 
     private Point2D PixelToDip(float x, float y)
@@ -8507,8 +9204,34 @@ public sealed class MainActivity : AppCompatActivity
         RefreshMeasurementOverlays();
     }
 
+    private void ClearSelectedSectionPlane(string reason)
+    {
+        if (_sections is null)
+            return;
+
+        bool hadSelection = _sections.SelectedPlaneIds.Count > 0;
+        bool hadHover = _hoveredSectionPlaneId.HasValue;
+        if (!hadSelection && !hadHover)
+            return;
+
+        _sections.ClearSelection();
+        _hoveredSectionPlaneId = null;
+        _sectionGizmoHovered = GlesTransformGizmoHandle.None;
+        global::Android.Util.Log.Info("FA.Section", $"Section selection cleared: reason={reason}.");
+        UpdateSectionRendererState();
+        UpdateSectionButtonStates();
+    }
+
+    private void ClearSelectableOverlaySelection(string reason)
+    {
+        ClearSelectedMeasurement(reason);
+        ClearSelectedSectionPlane(reason);
+    }
+
     private bool CanSelectMeasurementLabels()
-        => _activeModalTool == AndroidModalTool.Select && _measure is not { IsActive: true };
+        => _activeModalTool == AndroidModalTool.Select
+           || _activeModalTool == AndroidModalTool.Measure
+           || _activeModalTool == AndroidModalTool.Section;
 
     private MeasurementLabelKey? ResolveMeasurementDeleteTarget(IReadOnlyList<PresentationSnapshot> presentation)
     {
@@ -8682,7 +9405,15 @@ public sealed class MainActivity : AppCompatActivity
 
     private readonly record struct MeasurementLabelKey(MeasurementId Id, int LabelIndex);
 
-    private readonly record struct MeasurementLabelHitTarget(MeasurementLabelKey Key, bool IsDeleteButton);
+    private readonly record struct MeasurementLabelHitTarget(MeasurementLabelKey Key, Vector3d Anchor, bool IsDeleteButton);
+
+    private readonly record struct ProjectedSegmentHit(double Distance, Vector3d WorldPoint);
+
+    private readonly record struct SectionPlaneEdgeHit(Guid Id, double Distance, double Depth);
+
+    private readonly record struct SectionAnnotationButtonHit(Guid Id, Vector3d Anchor);
+
+    private readonly record struct SectionCornerProjection(Vector3d World, Point2D Screen);
 
     private enum AnnotationTargetKind
     {
@@ -8690,6 +9421,7 @@ public sealed class MainActivity : AppCompatActivity
         MeasurementDelete,
         SectionPlane,
         SectionDelete,
+        SectionFlip,
     }
 
     private readonly record struct AnnotationHitTarget(
@@ -8708,6 +9440,9 @@ public sealed class MainActivity : AppCompatActivity
 
         public static AnnotationHitTarget SectionDelete(Guid id)
             => new(AnnotationTargetKind.SectionDelete, null, id);
+
+        public static AnnotationHitTarget SectionFlip(Guid id)
+            => new(AnnotationTargetKind.SectionFlip, null, id);
     }
 
     private sealed record MeasurementLabelBinding(
@@ -8719,7 +9454,12 @@ public sealed class MainActivity : AppCompatActivity
     private sealed record SectionAnnotationBinding(
         Guid Id,
         SectionPlane Plane,
-        TextView DeleteButton);
+        TextView DeleteButton,
+        TextView FlipButton)
+    {
+        public Vector3d? DeleteAnchor { get; set; }
+        public Vector3d? FlipAnchor { get; set; }
+    }
 
     private static void FrameCameraToBounds(CameraState camera, BoundingBox bounds, double aspect, Vector3d preferredUp)
     {
@@ -9204,6 +9944,7 @@ public sealed class MainActivity : AppCompatActivity
     {
         base.OnConfigurationChanged(newConfig);
 
+        _pointerSource?.RefreshDensity(this);
         _recentPanelWidthPx = ClampLeftToolPanelWidth(LeftToolPanelKind.Recent, _recentPanelWidthPx);
         _modelExplorerPanelWidthPx = ClampLeftToolPanelWidth(LeftToolPanelKind.ModelExplorer, _modelExplorerPanelWidthPx);
         _bomPanelWidthPx = ClampLeftToolPanelWidth(LeftToolPanelKind.Bom, _bomPanelWidthPx);
@@ -9226,6 +9967,7 @@ public sealed class MainActivity : AppCompatActivity
     protected override void OnPause()
     {
         DismissStyledTooltips();
+        _picker?.CancelActivePick("activity paused");
         CancelHoverPick();
         SetHoveredMesh(0);
         CancelZoomWindowTool("app paused");
@@ -9528,6 +10270,16 @@ public sealed class MainActivity : AppCompatActivity
             _sectionEdgesSwitch.CheckedChange -= OnSectionEdgesCheckedChanged;
             _sectionEdgesSwitch.SetOnCheckedChangeListener(null);
         }
+        if (_sectionCurvesSwitch is not null)
+        {
+            _sectionCurvesSwitch.CheckedChange -= OnSectionCurvesCheckedChanged;
+            _sectionCurvesSwitch.SetOnCheckedChangeListener(null);
+        }
+        if (_sectionCapsSwitch is not null)
+        {
+            _sectionCapsSwitch.CheckedChange -= OnSectionCapsCheckedChanged;
+            _sectionCapsSwitch.SetOnCheckedChangeListener(null);
+        }
         if (_explodeSlider is not null)
         {
             _explodeSlider.ProgressChanged -= OnExplodeSliderProgressChanged;
@@ -9647,11 +10399,23 @@ public sealed class MainActivity : AppCompatActivity
                 AppSettings.DimensionHighlightR,
                 AppSettings.DimensionHighlightG,
                 AppSettings.DimensionHighlightB);
+            Vector4 measurementFaceSelectionColor = new(
+                AppSettings.MeasurementFaceSelectionR,
+                AppSettings.MeasurementFaceSelectionG,
+                AppSettings.MeasurementFaceSelectionB,
+                0.38f);
+            Vector4 measurementFaceHoverColor = new(
+                AppSettings.MeasurementFaceHoverR,
+                AppSettings.MeasurementFaceHoverG,
+                AppSettings.MeasurementFaceHoverB,
+                0.30f);
             viewport.QueueRendererCommand("apply-settings", _ =>
             {
                 viewport.Renderer.Appearance = appearance;
                 viewport.Renderer.HighlightSelection = highlightSelection;
                 viewport.Renderer.DimensionHighlightColor = dimensionHighlightColor;
+                viewport.Renderer.MeasurementFaceSelectionColor = measurementFaceSelectionColor;
+                viewport.Renderer.MeasurementFaceHoverColor = measurementFaceHoverColor;
             });
             viewport.RequestRender();
         }
@@ -9672,23 +10436,20 @@ public sealed class MainActivity : AppCompatActivity
     {
         if (_sections is not null)
         {
-            bool changed = false;
             if (_sections.FillVisible != AppSettings.SectionFillVisible)
-            {
                 _sections.FillVisible = AppSettings.SectionFillVisible;
-                changed = true;
-            }
 
             if (_sections.EdgesVisible != AppSettings.SectionEdgesVisible)
-            {
                 _sections.EdgesVisible = AppSettings.SectionEdgesVisible;
-                changed = true;
-            }
 
-            if (changed)
-                UpdateSectionButtonStates();
+            if (!_sections.EdgesVisible && (_sections.SelectedPlaneIds.Count > 0 || _hoveredSectionPlaneId.HasValue))
+            {
+                ClearSelectedSectionPlane("section edges hidden");
+                RefreshMeasurementOverlays();
+            }
         }
 
+        UpdateSectionButtonStates();
         UpdateSectionRendererState();
     }
 
@@ -9915,6 +10676,23 @@ public sealed class MainActivity : AppCompatActivity
             => _activity.HandleMeasurementLabelViewTouch(_key, _isDeleteButton, e);
     }
 
+    private sealed class MeasurementLabelGenericMotionProxy : Java.Lang.Object, View.IOnGenericMotionListener
+    {
+        private readonly MainActivity _activity;
+        private readonly MeasurementLabelKey _key;
+        private readonly bool _isDeleteButton;
+
+        public MeasurementLabelGenericMotionProxy(MainActivity activity, MeasurementLabelKey key, bool isDeleteButton)
+        {
+            _activity = activity;
+            _key = key;
+            _isDeleteButton = isDeleteButton;
+        }
+
+        public bool OnGenericMotion(View? v, MotionEvent? e)
+            => _activity.HandleMeasurementLabelViewGenericMotion(_key, _isDeleteButton, e);
+    }
+
     private sealed class MeasurementLabelHoverProxy : Java.Lang.Object, View.IOnHoverListener
     {
         private readonly MainActivity _activity;
@@ -9928,6 +10706,67 @@ public sealed class MainActivity : AppCompatActivity
 
         public bool OnHover(View? v, MotionEvent? e)
             => _activity.HandleMeasurementLabelHover(_key, e);
+    }
+
+    private sealed class SectionAnnotationButtonTouchProxy : Java.Lang.Object, View.IOnTouchListener
+    {
+        private readonly MainActivity _activity;
+        private readonly Guid _id;
+        private readonly bool _isFlipButton;
+
+        public SectionAnnotationButtonTouchProxy(MainActivity activity, Guid id, bool isFlipButton)
+        {
+            _activity = activity;
+            _id = id;
+            _isFlipButton = isFlipButton;
+        }
+
+        public bool OnTouch(View? v, MotionEvent? e)
+        {
+            if (v?.Parent is not null && e is not null)
+            {
+                MotionEventActions action = e.ActionMasked;
+                v.Parent.RequestDisallowInterceptTouchEvent(
+                    action is MotionEventActions.Down
+                        or MotionEventActions.Move
+                        or MotionEventActions.PointerDown
+                        or MotionEventActions.PointerUp);
+            }
+
+            return _activity.HandleSectionAnnotationButtonTouch(_id, _isFlipButton, e);
+        }
+    }
+
+    private sealed class SectionAnnotationButtonGenericMotionProxy : Java.Lang.Object, View.IOnGenericMotionListener
+    {
+        private readonly MainActivity _activity;
+        private readonly Guid _id;
+        private readonly bool _isFlipButton;
+
+        public SectionAnnotationButtonGenericMotionProxy(MainActivity activity, Guid id, bool isFlipButton)
+        {
+            _activity = activity;
+            _id = id;
+            _isFlipButton = isFlipButton;
+        }
+
+        public bool OnGenericMotion(View? v, MotionEvent? e)
+            => _activity.HandleSectionAnnotationButtonGenericMotion(_id, _isFlipButton, e);
+    }
+
+    private sealed class SectionAnnotationButtonHoverProxy : Java.Lang.Object, View.IOnHoverListener
+    {
+        private readonly MainActivity _activity;
+        private readonly Guid _id;
+
+        public SectionAnnotationButtonHoverProxy(MainActivity activity, Guid id)
+        {
+            _activity = activity;
+            _id = id;
+        }
+
+        public bool OnHover(View? v, MotionEvent? e)
+            => _activity.HandleSectionAnnotationButtonHover(_id, e);
     }
 
     private sealed class DisallowParentInterceptTouchListener : Java.Lang.Object, View.IOnTouchListener

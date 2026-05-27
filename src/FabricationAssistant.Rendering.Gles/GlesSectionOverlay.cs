@@ -106,6 +106,49 @@ internal sealed class GlesSectionOverlay : IDisposable
         Draw(view, projection, PrimitiveType.Triangles, depthTest: true, blend: false, lineWidth: 1.0f, pointSize: 1.0f);
     }
 
+    public void RenderCapMaskTriangles(
+        float[] view,
+        float[] projection,
+        float[] triangleVertices)
+    {
+        ArgumentNullException.ThrowIfNull(triangleVertices);
+        if (triangleVertices.Length == 0)
+            return;
+
+        _data.Clear();
+        for (int i = 0; i + 2 < triangleVertices.Length; i += 3)
+        {
+            AppendVertex(
+                _data,
+                new Vector3(triangleVertices[i], triangleVertices[i + 1], triangleVertices[i + 2]),
+                Vector4.Zero);
+        }
+
+        Draw(view, projection, PrimitiveType.Triangles, depthTest: false, blend: false, lineWidth: 1.0f, pointSize: 1.0f);
+    }
+
+    public void RenderLineVertices(
+        float[] view,
+        float[] projection,
+        float[] lineVertices,
+        Vector4 color)
+    {
+        ArgumentNullException.ThrowIfNull(lineVertices);
+        if (lineVertices.Length == 0)
+            return;
+
+        _data.Clear();
+        for (int i = 0; i + 2 < lineVertices.Length; i += 3)
+        {
+            AppendVertex(
+                _data,
+                new Vector3(lineVertices[i], lineVertices[i + 1], lineVertices[i + 2]),
+                color);
+        }
+
+        Draw(view, projection, PrimitiveType.Lines, depthTest: false, blend: true, lineWidth: 2.4f, pointSize: 1.0f);
+    }
+
     public void RenderGizmo(
         float[] view,
         float[] projection,

@@ -181,7 +181,7 @@ public sealed class GpuMesh : IDisposable
         _gl.BindVertexArray(0);
     }
 
-    // ── CAD edges (Plan 2I Phase D) ─────────────────────────────────────
+    // CAD edges (Plan 2I Phase D).
 
     public uint EdgeVao { get; private set; }
     public uint EdgeVbo { get; private set; }

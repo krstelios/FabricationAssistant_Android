@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Numerics;
 using FabricationAssistant.Core.Math;
 using FabricationAssistant.Core.Measurement.Presentation;
 using Silk.NET.OpenGLES;
@@ -26,7 +27,9 @@ internal sealed class GlesFaceHighlightOverlay : IDisposable
     public void Render(
         float[] view,
         float[] projection,
-        IReadOnlyList<FaceHighlight> highlights)
+        IReadOnlyList<FaceHighlight> highlights,
+        Vector4 selectedColor,
+        Vector4 hoverColor)
     {
         if (highlights.Count == 0)
             return;
@@ -35,8 +38,8 @@ internal sealed class GlesFaceHighlightOverlay : IDisposable
         foreach (FaceHighlight highlight in highlights)
         {
             Color4 color = highlight.Kind == FaceHighlightKind.Selected
-                ? new Color4(0.18f, 0.83f, 0.75f, 0.38f)
-                : new Color4(1.00f, 0.58f, 0.16f, 0.30f);
+                ? ToColor4(selectedColor)
+                : ToColor4(hoverColor);
 
             foreach (Vector3d vertex in highlight.WorldVertices)
             {
@@ -78,6 +81,13 @@ internal sealed class GlesFaceHighlightOverlay : IDisposable
             _gl.Enable(EnableCap.CullFace);
         }
     }
+
+    private static Color4 ToColor4(Vector4 color)
+        => new(
+            Math.Clamp(color.X, 0.0f, 1.0f),
+            Math.Clamp(color.Y, 0.0f, 1.0f),
+            Math.Clamp(color.Z, 0.0f, 1.0f),
+            Math.Clamp(color.W, 0.0f, 1.0f));
 
     private unsafe void EnsureBuffers()
     {

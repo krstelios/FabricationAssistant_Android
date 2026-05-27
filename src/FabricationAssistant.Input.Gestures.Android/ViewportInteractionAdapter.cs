@@ -11,7 +11,7 @@ namespace FabricationAssistant.Input.Gestures.Android;
 ///
 /// Tap and LongPress are consumed silently - hosts that want to log can
 /// subscribe to AndroidPointerSource.GestureRecognized directly. DoubleTap
-/// calls <see cref="FitToScene"/>, matching the desktop fit behavior.
+/// can call <see cref="FitToScene"/>, matching the desktop fit behavior.
 /// </summary>
 public sealed class ViewportInteractionAdapter
 {
@@ -35,6 +35,7 @@ public sealed class ViewportInteractionAdapter
     private readonly Func<Point2D, Vector3d?>? _pivotPicker;
     private readonly Func<bool>? _isFixedViewLockedAccessor;
     private readonly Func<bool>? _isNavigationSuppressedAccessor;
+    private readonly Func<bool>? _isDoubleTapFitEnabledAccessor;
     private readonly GestureDeltaNormalizer _orbitDeltaNormalizer = new();
     private readonly GestureDeltaNormalizer _panDeltaNormalizer = new();
     private readonly PinchScaleNormalizer _pinchScaleNormalizer = new();
@@ -81,7 +82,8 @@ public sealed class ViewportInteractionAdapter
         Func<double>? viewportWidthDipAccessor = null,
         Func<bool>? isFixedViewLockedAccessor = null,
         Func<bool>? isNavigationSuppressedAccessor = null,
-        Func<BoundingBox?>? clipBoundsAccessor = null)
+        Func<BoundingBox?>? clipBoundsAccessor = null,
+        Func<bool>? isDoubleTapFitEnabledAccessor = null)
     {
         _camera = camera ?? throw new ArgumentNullException(nameof(camera));
         _boundsAccessor = boundsAccessor ?? throw new ArgumentNullException(nameof(boundsAccessor));
@@ -93,6 +95,7 @@ public sealed class ViewportInteractionAdapter
         _pivotPicker = pivotPicker;
         _isFixedViewLockedAccessor = isFixedViewLockedAccessor;
         _isNavigationSuppressedAccessor = isNavigationSuppressedAccessor;
+        _isDoubleTapFitEnabledAccessor = isDoubleTapFitEnabledAccessor;
     }
 
     public void OnGesture(TouchGestureEvent ev)
@@ -125,13 +128,13 @@ public sealed class ViewportInteractionAdapter
                 }
 
                 _orbitActive = true;
+                _interactionStateChanged?.Invoke(true);
                 _orbitDeltaNormalizer.Reset();
                 lock (_camera)
                 {
                     CaptureGesturePivot(ev.Position);
                     RefreshClipPlanes();
                 }
-                _interactionStateChanged?.Invoke(true);
                 break;
 
             case TouchGestureKind.OrbitDelta:
@@ -169,6 +172,7 @@ public sealed class ViewportInteractionAdapter
 
             case TouchGestureKind.PanZoomBegin:
                 _panZoomActive = true;
+                _interactionStateChanged?.Invoke(true);
                 _panDeltaNormalizer.Reset();
                 _pinchScaleNormalizer.Reset();
                 lock (_camera)
@@ -177,7 +181,6 @@ public sealed class ViewportInteractionAdapter
                     CapturePanZoomAnchor(ev.Position);
                     RefreshClipPlanes();
                 }
-                _interactionStateChanged?.Invoke(true);
                 break;
 
             case TouchGestureKind.PanZoomDelta:
@@ -233,7 +236,8 @@ public sealed class ViewportInteractionAdapter
                 break;
 
             case TouchGestureKind.DoubleTap:
-                FitToScene();
+                if (IsDoubleTapFitEnabled())
+                    FitToScene();
                 break;
 
             case TouchGestureKind.Tap:
@@ -445,6 +449,9 @@ public sealed class ViewportInteractionAdapter
 
     private bool IsNavigationSuppressed()
         => _isNavigationSuppressedAccessor?.Invoke() == true;
+
+    private bool IsDoubleTapFitEnabled()
+        => _isDoubleTapFitEnabledAccessor?.Invoke() ?? true;
 
     private static bool IsCameraGesture(TouchGestureKind kind)
         => kind is TouchGestureKind.OrbitBegin

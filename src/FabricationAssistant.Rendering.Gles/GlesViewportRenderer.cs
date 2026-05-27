@@ -6,6 +6,8 @@ using System.Numerics;
 using FabricationAssistant.Core.Camera;
 using FabricationAssistant.Core.Math;
 using FabricationAssistant.Core.Measurement.Presentation;
+using FabricationAssistant.Core.SceneGraph;
+using FabricationAssistant.Core.Sections;
 using Silk.NET.OpenGLES;
 
 namespace FabricationAssistant.Rendering.Gles;
@@ -22,6 +24,7 @@ public sealed class GlesViewportRenderer : IDisposable
     private const double CameraBasisEpsilon = 1e-8;
     private const float HiddenAlphaThreshold = 0.003f;
     private const float OpaqueAlphaThreshold = 0.999f;
+    private const int SectionCapGeometryDebounceMilliseconds = 120;
 
     private readonly GlThreadGuard _guard = new();
     private GL? _gl;
@@ -36,7 +39,19 @@ public sealed class GlesViewportRenderer : IDisposable
     private GlesFaceHighlightOverlay? _faceHighlightOverlay;
     private GlesSectionOverlay? _sectionOverlay;
     private GlesAxisTriadOverlay? _axisTriadOverlay;
-    private ShaderProgram? _sectionStencilProgram;
+    private SectionCapGeometryCache? _sectionCapGeometryCache;
+    private readonly object _sectionCapGeometryBuildSync = new();
+    private SectionCapGeometryBuildInFlight? _sectionCapGeometryBuildInFlight;
+    private SectionCapGeometryBuildResult? _sectionCapGeometryBuildCompleted;
+    private int _sectionCapGeometryBuildGeneration;
+    private int _sectionCapDebouncePlaneHash = int.MinValue;
+    private long _sectionCapDebounceStartedTicks;
+    private long _lastSectionCapDebounceLogTicks;
+    private long _lastSectionCapInteractionLogTicks;
+    private long _lastSectionCapInFlightLogTicks;
+    private long _lastSectionCapRenderTimingLogTicks;
+    private long _lastSectionCapCancelLogTicks;
+    private long _lastMsaaBypassLogTicks;
     private MsaaSceneFramebuffer? _msaaFbo;
     private uint _whiteAoTexture;
     private bool _initialized;
@@ -73,11 +88,26 @@ public sealed class GlesViewportRenderer : IDisposable
     private SsaoStateKey _lastLoggedSsaoState;
     private SsaoDiagnosticsKey _lastSsaoDiagnostics;
     private TransparencyStateKey _lastLoggedTransparencyState;
+    private int _interactiveNavigationActive;
+    private GpuScene? _scene;
 
-    public GpuScene? Scene { get; set; }
+    public GpuScene? Scene
+    {
+        get => _scene;
+        set
+        {
+            if (ReferenceEquals(_scene, value))
+                return;
+
+            _scene = value;
+            InvalidateSectionCapGeometryBuilds();
+        }
+    }
+
     public CameraState? Camera { get; set; }
     public ConcurrentQueue<Action<GL>>? CommandQueue { get; set; }
     public event Action? FrameRendered;
+    public event Action<int>? DelayedRenderRequested;
 
     /// <summary>
     /// 1-based mesh index to highlight in the next frame, or 0 for none.
@@ -128,7 +158,21 @@ public sealed class GlesViewportRenderer : IDisposable
     /// gesture. Expensive screen-space effects are skipped until the gesture
     /// ends so camera motion stays responsive on mobile GPUs.
     /// </summary>
-    public bool InteractiveNavigationActive { get; set; }
+    public bool InteractiveNavigationActive
+    {
+        get => Volatile.Read(ref _interactiveNavigationActive) != 0;
+        set
+        {
+            int active = value ? 1 : 0;
+            if (Interlocked.Exchange(ref _interactiveNavigationActive, active) == active)
+                return;
+
+            if (value)
+                CancelPendingSectionCapGeometryBuilds();
+
+            LogSectionCapInteractionState(value);
+        }
+    }
 
     /// <summary>
     /// Per-frame appearance state. Mirrors the desktop SceneAppearanceViewModel.
@@ -151,13 +195,17 @@ public sealed class GlesViewportRenderer : IDisposable
 
     public Vector3 DimensionHighlightColor { get; set; } = new(1.0f, 0.5019608f, 0.2509804f);
 
+    public Vector4 MeasurementFaceSelectionColor { get; set; } = new(0.18f, 0.83f, 0.75f, 0.38f);
+
+    public Vector4 MeasurementFaceHoverColor { get; set; } = new(1.00f, 0.58f, 0.16f, 0.30f);
+
     public float SectionPlaneSizeFraction { get; set; } = 0.025f;
 
     public Vector4 SectionFillColor { get; set; } = new(0.20f, 0.80f, 0.40f, 0.18f);
 
     public Vector4 SectionEdgeColor { get; set; } = new(0.20f, 0.80f, 0.40f, 0.80f);
 
-    public Vector4 SectionEdgeHighlightColor { get; set; } = new(1.00f, 1.00f, 1.00f, 1.00f);
+    public Vector4 SectionEdgeHighlightColor { get; set; } = new(1.00f, 0.5019608f, 0.2509804f, 1.00f);
 
     public Vector4 SectionCapColor { get; set; } = new(0.85f, 0.85f, 0.80f, 1.00f);
 
@@ -215,6 +263,10 @@ public sealed class GlesViewportRenderer : IDisposable
     public bool SectionFillVisible { get; set; } = true;
 
     public bool SectionEdgesVisible { get; set; } = true;
+
+    public bool SectionCurvesVisible { get; set; } = true;
+
+    public bool SectionCapsVisible { get; set; } = true;
 
     public IReadOnlyList<Vector3> SectionPlacementCommittedPicks { get; set; } = Array.Empty<Vector3>();
 
@@ -324,10 +376,6 @@ public sealed class GlesViewportRenderer : IDisposable
         var axisTriadVs = LoadEmbeddedShader("axis_triad.gles.vert");
         var axisTriadFs = LoadEmbeddedShader("axis_triad.gles.frag");
         _axisTriadOverlay = new GlesAxisTriadOverlay(_gl, axisTriadVs, axisTriadFs);
-
-        var sectionStencilVs = LoadEmbeddedShader("section_stencil.gles.vert");
-        var sectionStencilFs = LoadEmbeddedShader("section_stencil.gles.frag");
-        _sectionStencilProgram = new ShaderProgram(_gl, "section.stencil", sectionStencilVs, sectionStencilFs);
 
         // Plan 3B: offscreen multisample FBO. All scene passes (grid, mesh,
         // edge) render into this FBO and the resolved color is blitted to
@@ -469,7 +517,15 @@ public sealed class GlesViewportRenderer : IDisposable
         LogSsaoState(a, ssaoActive, ssaoInactiveReason, aoTextureToBind);
         long afterSsao = Stopwatch.GetTimestamp();
 
-        bool useMsaaFbo = TryPrepareMsaaFramebuffer(a);
+        bool msaaBypassedForNavigation = lightweightNavigationActive && a.MsaaSamples > 1;
+        if (msaaBypassedForNavigation && ShouldLogThrottled(ref _lastMsaaBypassLogTicks, 1000.0))
+        {
+            Android.Util.Log.Info(
+                "FA.Renderer",
+                $"MSAA bypassed during lightweight navigation: requested={a.MsaaSamples}x, viewport={_width}x{_height}.");
+        }
+
+        bool useMsaaFbo = !msaaBypassedForNavigation && TryPrepareMsaaFramebuffer(a);
         bool drawEdgesThisFrame = false;
         long sceneStart = afterSsao;
         bool retriedWithoutMsaa = false;
@@ -492,9 +548,8 @@ public sealed class GlesViewportRenderer : IDisposable
         _gl.ClearColor(bg[0], bg[1], bg[2], 1.0f);
         if (useMsaaFbo)
         {
-            // The MSAA FBO has a D24S8 attachment; clear stencil here so
-            // Plan 3A's section-cap stencil-parity algorithm starts each
-            // frame with a clean state.
+            // The MSAA FBO has a D24S8 attachment. Clear stencil here so
+            // section caps start each frame from a clean mask.
             _gl.ClearStencil(0);
             _gl.Clear((uint)(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit | ClearBufferMask.StencilBufferBit));
         }
@@ -673,7 +728,7 @@ public sealed class GlesViewportRenderer : IDisposable
                 _gl.Disable(EnableCap.PolygonOffsetFill);
         }
 
-        // ── Edge pass ─────────────────────────────────────────────────
+        // Edge pass.
         if (drawEdgesThisFrame && _edgeProgram is not null)
         {
             _edgeProgram.Use();
@@ -744,7 +799,7 @@ public sealed class GlesViewportRenderer : IDisposable
         if (SectionVisualPlanes.Count > 0)
         {
             ApplySectionOverlaySettings();
-            RenderSectionCaps(view, proj, identityModel);
+            RenderSectionCaps(view, proj);
             _sectionOverlay?.Render(
                 view,
                 proj,
@@ -802,7 +857,7 @@ public sealed class GlesViewportRenderer : IDisposable
         }
 
         if (FaceHighlights.Count > 0)
-            _faceHighlightOverlay?.Render(view, proj, FaceHighlights);
+            _faceHighlightOverlay?.Render(view, proj, FaceHighlights, MeasurementFaceSelectionColor, MeasurementFaceHoverColor);
         if (MeasurementPresentation.Count > 0)
         {
             if (_measurementOverlay is not null)
@@ -832,7 +887,7 @@ public sealed class GlesViewportRenderer : IDisposable
         }
         long afterScene = Stopwatch.GetTimestamp();
 
-        // ── Selection / hover outline post-process (Phase G) ───────────
+        // Selection / hover outline post-process (Phase G).
         // Hover draws first so the selected body's red outline wins when
         // both targets overlap.
         long outlineStart = afterScene;
@@ -1059,46 +1114,87 @@ public sealed class GlesViewportRenderer : IDisposable
     private static float GetMeshColorAlpha(GpuMesh mesh)
         => mesh.MaterialAlpha;
 
-    private void RenderSectionCaps(float[] view, float[] projection, float[] identityModel)
+    private void RenderSectionCaps(float[] view, float[] projection)
     {
-        if (_gl is null || _sectionStencilProgram is null || _sectionOverlay is null || Scene is null)
+        if (_gl is null || _sectionOverlay is null || Scene is null)
+            return;
+        if (!SectionCapsVisible && !SectionCurvesVisible)
             return;
         if (SectionVisualPlanes.Count == 0 || SectionPlanes.Count == 0)
             return;
 
         const int capStencilBit = 0x80;
         float sceneDiagonal = ResolveSceneDiagonal(Scene);
+        long capStartTicks = Stopwatch.GetTimestamp();
+        SectionCapGeometry[] capGeometries = GetSectionCapGeometries(Scene);
+        long afterGeometryTicks = Stopwatch.GetTimestamp();
+        if (capGeometries.Length == 0)
+        {
+            LogSectionCapRenderTiming(capStartTicks, afterGeometryTicks, afterGeometryTicks, capGeometries);
+            return;
+        }
 
         _gl.Enable(EnableCap.StencilTest);
 
         try
         {
-            foreach (GlesSectionVisualPlane plane in SectionVisualPlanes)
+            if (SectionCapsVisible)
             {
-                _gl.StencilMask(capStencilBit);
-                _gl.ClearStencil(0);
-                _gl.Clear((uint)ClearBufferMask.StencilBufferBit);
+                for (int i = 0; i < SectionVisualPlanes.Count; i++)
+                {
+                    SectionCapGeometry geometry = i < capGeometries.Length
+                        ? capGeometries[i]
+                        : SectionCapGeometry.Empty;
+                    if (geometry.TriangleVertices.Length == 0)
+                        continue;
 
-                _gl.ColorMask(false, false, false, false);
-                _gl.DepthMask(false);
-                _gl.Enable(EnableCap.DepthTest);
-                _gl.DepthFunc(DepthFunction.Lequal);
-                _gl.Disable(EnableCap.CullFace);
-                _gl.Disable(EnableCap.Blend);
-                _gl.StencilFunc(StencilFunction.Always, 0, capStencilBit);
-                _gl.StencilOp(StencilOp.Keep, StencilOp.Keep, StencilOp.Invert);
+                    GlesSectionVisualPlane plane = SectionVisualPlanes[i];
+                    _gl.StencilMask(capStencilBit);
+                    _gl.ClearStencil(0);
+                    _gl.Clear((uint)ClearBufferMask.StencilBufferBit);
 
-                DrawSectionCapStencilGeometry(view, projection, identityModel);
+                    _gl.ColorMask(false, false, false, false);
+                    _gl.DepthMask(false);
+                    // Stencil the actual section contours. Open boundary chains
+                    // are rejected by the cached geometry builder so they cannot
+                    // flood cap color outside the cut footprint.
+                    _gl.Disable(EnableCap.DepthTest);
+                    _gl.Disable(EnableCap.CullFace);
+                    _gl.Disable(EnableCap.Blend);
+                    _gl.StencilFunc(StencilFunction.Always, 0, capStencilBit);
+                    _gl.StencilOp(StencilOp.Keep, StencilOp.Keep, StencilOp.Invert);
 
+                    _sectionOverlay.RenderCapMaskTriangles(view, projection, geometry.TriangleVertices);
+
+                    _gl.ColorMask(true, true, true, true);
+                    _gl.StencilFunc(StencilFunction.Equal, capStencilBit, capStencilBit);
+                    _gl.StencilOp(StencilOp.Keep, StencilOp.Keep, StencilOp.Keep);
+                    _gl.StencilMask(0x00);
+                    _gl.DepthMask(false);
+                    _gl.Enable(EnableCap.DepthTest);
+                    _gl.DepthFunc(DepthFunction.Lequal);
+
+                    _sectionOverlay.RenderCapPlane(view, projection, plane, sceneDiagonal);
+                }
+            }
+
+            if (SectionCurvesVisible)
+            {
                 _gl.ColorMask(true, true, true, true);
-                _gl.StencilFunc(StencilFunction.Equal, capStencilBit, capStencilBit);
-                _gl.StencilOp(StencilOp.Keep, StencilOp.Keep, StencilOp.Keep);
-                _gl.StencilMask(0x00);
-                _gl.DepthMask(false);
-                _gl.Enable(EnableCap.DepthTest);
-                _gl.DepthFunc(DepthFunction.Lequal);
+                _gl.StencilMask(0xFF);
+                _gl.Disable(EnableCap.StencilTest);
 
-                _sectionOverlay.RenderCapPlane(view, projection, plane, sceneDiagonal);
+                int count = System.Math.Min(SectionVisualPlanes.Count, capGeometries.Length);
+                for (int i = 0; i < count; i++)
+                {
+                    SectionCapGeometry geometry = capGeometries[i];
+                    if (geometry.VectorLineVertices.Length == 0)
+                        continue;
+
+                    GlesSectionVisualPlane plane = SectionVisualPlanes[i];
+                    Vector4 color = plane.Selected ? SectionEdgeHighlightColor : SectionEdgeColor;
+                    _sectionOverlay.RenderLineVertices(view, projection, geometry.VectorLineVertices, color);
+                }
             }
         }
         finally
@@ -1109,6 +1205,7 @@ public sealed class GlesViewportRenderer : IDisposable
             _gl.StencilOp(StencilOp.Keep, StencilOp.Keep, StencilOp.Keep);
             _gl.Disable(EnableCap.StencilTest);
             ResetMainFramebufferState();
+            LogSectionCapRenderTiming(capStartTicks, afterGeometryTicks, Stopwatch.GetTimestamp(), capGeometries);
         }
     }
 
@@ -1124,30 +1221,539 @@ public sealed class GlesViewportRenderer : IDisposable
         _sectionOverlay.CapColor = SectionCapColor;
     }
 
-    private void DrawSectionCapStencilGeometry(float[] view, float[] projection, float[] identityModel)
+    private SectionCapGeometry[] GetSectionCapGeometries(GpuScene scene)
     {
-        if (_sectionStencilProgram is null || Scene is null)
-            return;
+        if (scene.Document is not { } document)
+            return Array.Empty<SectionCapGeometry>();
 
-        _sectionStencilProgram.Use();
-        SetMat4(_sectionStencilProgram, "uView", view);
-        SetMat4(_sectionStencilProgram, "uProjection", projection);
-        SetSectionUniforms(_sectionStencilProgram);
-        int modelLoc = _sectionStencilProgram.UniformLocation("uModel");
-
-        foreach (GpuMesh mesh in Scene.Meshes)
+        int planeHash = ComputeSectionCapPlaneHash();
+        long sceneVersion = scene.SectionCapGeometryVersion;
+        SectionCapGeometryCache? cache = _sectionCapGeometryCache;
+        if (cache is not null
+            && ReferenceEquals(cache.Scene, scene)
+            && cache.SceneVersion == sceneVersion
+            && cache.PlaneHash == planeHash)
         {
-            if (!ShouldRenderSectionCapStencilMesh(mesh))
+            return cache.Geometries;
+        }
+
+        if (TryConsumeCompletedSectionCapGeometryBuild(scene, sceneVersion, planeHash, out SectionCapGeometryBuildResult? completed))
+        {
+            SectionCapGeometryBuildResult applied = completed!;
+            LogSectionCapDiagnostics(applied.Geometries, applied.SourceCount);
+            Android.Util.Log.Info(
+                "FA.SectionCap",
+                $"Async cap build applied: generation={applied.Generation}, planeHash={applied.PlaneHash}, sceneVersion={applied.SceneVersion}, planes={applied.Geometries.Length}, sources={applied.SourceCount}, buildMs={applied.ElapsedMilliseconds:F1}.");
+            _sectionCapGeometryCache = new SectionCapGeometryCache(scene, sceneVersion, planeHash, applied.Geometries);
+            return applied.Geometries;
+        }
+
+        SectionCapPlane[] planes = BuildSectionCapPlanes();
+        if (planes.Length == 0)
+            return Array.Empty<SectionCapGeometry>();
+
+        if (ShouldDeferSectionCapGeometryBuild(planeHash, out int delayMs))
+        {
+            if (ShouldLogThrottled(ref _lastSectionCapDebounceLogTicks, 500.0))
+            {
+                Android.Util.Log.Info(
+                    "FA.SectionCap",
+                    $"Cap build deferred by debounce: planeHash={planeHash}, sceneVersion={sceneVersion}, delayMs={delayMs}, planes={planes.Length}, interactive={InteractiveNavigationActive}.");
+            }
+
+            RequestDelayedSectionCapRender(delayMs);
+            return Array.Empty<SectionCapGeometry>();
+        }
+
+        if (InteractiveNavigationActive)
+        {
+            if (ShouldLogThrottled(ref _lastSectionCapInteractionLogTicks, 500.0))
+            {
+                Android.Util.Log.Info(
+                    "FA.SectionCap",
+                    $"Cap build blocked by camera interaction: planeHash={planeHash}, sceneVersion={sceneVersion}, planes={planes.Length}.");
+            }
+
+            CancelPendingSectionCapGeometryBuilds();
+            RequestDelayedSectionCapRender(SectionCapGeometryDebounceMilliseconds);
+            return Array.Empty<SectionCapGeometry>();
+        }
+
+        if (TryStartBackgroundSectionCapGeometryBuild(scene, document, sceneVersion, planeHash, planes))
+            return Array.Empty<SectionCapGeometry>();
+
+        RequestDelayedSectionCapRender(SectionCapGeometryDebounceMilliseconds);
+        return Array.Empty<SectionCapGeometry>();
+    }
+
+    private bool TryStartBackgroundSectionCapGeometryBuild(
+        GpuScene scene,
+        DocumentDto document,
+        long sceneVersion,
+        int planeHash,
+        SectionCapPlane[] planes)
+    {
+        lock (_sectionCapGeometryBuildSync)
+        {
+            if (_sectionCapGeometryBuildInFlight is not null)
+            {
+                if (ShouldLogThrottled(ref _lastSectionCapInFlightLogTicks, 500.0))
+                {
+                    Android.Util.Log.Info(
+                        "FA.SectionCap",
+                        $"Cap build start skipped: inFlight=true, planeHash={planeHash}, sceneVersion={sceneVersion}, generation={_sectionCapGeometryBuildInFlight.Generation}.");
+                }
+
+                return false;
+            }
+
+            if (InteractiveNavigationActive)
+            {
+                if (ShouldLogThrottled(ref _lastSectionCapInteractionLogTicks, 500.0))
+                {
+                    Android.Util.Log.Info(
+                        "FA.SectionCap",
+                        $"Cap build start skipped: interactive=true, planeHash={planeHash}, sceneVersion={sceneVersion}.");
+                }
+
+                return false;
+            }
+        }
+
+        long snapshotStartTicks = Stopwatch.GetTimestamp();
+        var sources = new List<SectionCapMeshSource>(scene.Meshes.Count);
+        foreach (GpuMesh mesh in scene.Meshes)
+        {
+            if (!ShouldRenderSectionCapSourceMesh(mesh))
+                continue;
+            if (mesh.SourceMeshId < 0 || mesh.SourceMeshId >= document.Meshes.Count)
                 continue;
 
-            float[] model = mesh.WorldTransform ?? identityModel;
-            if (modelLoc >= 0)
-                _gl!.UniformMatrix4(modelLoc, true, model);
-            mesh.Draw();
+            MeshDto sourceMesh = document.Meshes[mesh.SourceMeshId];
+            sources.Add(new SectionCapMeshSource(sourceMesh, ToMatrix4d(mesh.WorldTransform)));
+        }
+        double sourceSnapshotMs = TicksToMilliseconds(snapshotStartTicks, Stopwatch.GetTimestamp());
+        if (sourceSnapshotMs >= 4.0)
+        {
+            Android.Util.Log.Warn(
+                "FA.SectionCap",
+                $"Cap source snapshot on GL thread: ms={sourceSnapshotMs:0.0}, sources={sources.Count}, meshes={scene.Meshes.Count}, planeHash={planeHash}, sceneVersion={sceneVersion}.");
+        }
+
+        double sceneDiagonal = ResolveSceneDiagonal(scene);
+        var cancellation = new CancellationTokenSource();
+        var request = new SectionCapGeometryBuildRequest(
+            scene,
+            sceneVersion,
+            planeHash,
+            planes,
+            sources.ToArray(),
+            sceneDiagonal,
+            Interlocked.Increment(ref _sectionCapGeometryBuildGeneration),
+            cancellation,
+            Stopwatch.GetTimestamp());
+
+        lock (_sectionCapGeometryBuildSync)
+        {
+            if (_sectionCapGeometryBuildInFlight is not null || InteractiveNavigationActive)
+            {
+                cancellation.Cancel();
+                cancellation.Dispose();
+                if (ShouldLogThrottled(ref _lastSectionCapInFlightLogTicks, 500.0))
+                {
+                    Android.Util.Log.Info(
+                        "FA.SectionCap",
+                        $"Cap build start aborted after snapshot: inFlight={_sectionCapGeometryBuildInFlight is not null}, interactive={InteractiveNavigationActive}, generation={request.Generation}, planeHash={planeHash}.");
+                }
+
+                return false;
+            }
+
+            _sectionCapGeometryBuildInFlight = new SectionCapGeometryBuildInFlight(
+                request.Generation,
+                scene,
+                sceneVersion,
+                planeHash,
+                cancellation);
+        }
+
+        Android.Util.Log.Info(
+            "FA.SectionCap",
+            $"Async cap build queued: generation={request.Generation}, planeHash={planeHash}, sceneVersion={sceneVersion}, planes={planes.Length}, sources={request.Sources.Length}, sourceSnapshotMs={sourceSnapshotMs:0.0}, sceneDiag={sceneDiagonal:0.###}.");
+
+        _ = Task.Factory.StartNew(
+                () => BuildSectionCapGeometryOffThread(request),
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default)
+            .ContinueWith(
+                task =>
+                {
+                    try
+                    {
+                        CompleteBackgroundSectionCapGeometryBuild(task, request);
+                    }
+                    finally
+                    {
+                        request.Cancellation.Dispose();
+                    }
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+
+        return true;
+    }
+
+    private bool TryConsumeCompletedSectionCapGeometryBuild(
+        GpuScene scene,
+        long sceneVersion,
+        int planeHash,
+        out SectionCapGeometryBuildResult? completed)
+    {
+        lock (_sectionCapGeometryBuildSync)
+        {
+            completed = _sectionCapGeometryBuildCompleted;
+            if (completed is null)
+                return false;
+
+            if (ReferenceEquals(completed.Scene, scene)
+                && completed.SceneVersion == sceneVersion
+                && completed.PlaneHash == planeHash)
+            {
+                _sectionCapGeometryBuildCompleted = null;
+                return true;
+            }
+
+            _sectionCapGeometryBuildCompleted = null;
+            completed = null;
+            return false;
         }
     }
 
-    private bool ShouldRenderSectionCapStencilMesh(GpuMesh mesh)
+    private static SectionCapGeometryBuildResult BuildSectionCapGeometryOffThread(
+        SectionCapGeometryBuildRequest request)
+    {
+        SetSectionCapBuildThreadPriority();
+        request.Cancellation.Token.ThrowIfCancellationRequested();
+        long started = Stopwatch.GetTimestamp();
+        Android.Util.Log.Info(
+            "FA.SectionCap",
+            $"Async cap build started: generation={request.Generation}, planeHash={request.PlaneHash}, sceneVersion={request.SceneVersion}, thread={Environment.CurrentManagedThreadId}, planes={request.Planes.Length}, sources={request.Sources.Length}.");
+
+        var geometries = new SectionCapGeometry[request.Planes.Length];
+        for (int i = 0; i < request.Planes.Length; i++)
+        {
+            request.Cancellation.Token.ThrowIfCancellationRequested();
+            geometries[i] = SectionCapGeometryBuilder.Build(
+                request.Sources,
+                request.Planes[i],
+                request.Planes,
+                i,
+                request.SceneDiagonal,
+                request.Cancellation.Token);
+        }
+
+        double elapsedMilliseconds = (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
+        Android.Util.Log.Info(
+            "FA.SectionCap",
+            $"Async cap build finished: generation={request.Generation}, planeHash={request.PlaneHash}, buildMs={elapsedMilliseconds:0.0}, queuedToFinishMs={TicksToMilliseconds(request.QueuedTicks, Stopwatch.GetTimestamp()):0.0}.");
+
+        return new SectionCapGeometryBuildResult(
+            request.Generation,
+            request.Scene,
+            request.SceneVersion,
+            request.PlaneHash,
+            geometries,
+            request.Sources.Length,
+            elapsedMilliseconds);
+    }
+
+    private static void SetSectionCapBuildThreadPriority()
+    {
+        try
+        {
+            global::Android.OS.Process.SetThreadPriority((global::Android.OS.ThreadPriority)10);
+        }
+        catch (Exception ex)
+        {
+            Android.Util.Log.Warn("FA.SectionCap", $"Could not lower cap build thread priority: {ex.Message}");
+        }
+    }
+
+    private void CompleteBackgroundSectionCapGeometryBuild(Task<SectionCapGeometryBuildResult> task, SectionCapGeometryBuildRequest request)
+    {
+        SectionCapGeometryBuildResult? result = null;
+        Exception? error = null;
+        bool canceled = task.IsCanceled;
+        try
+        {
+            result = task.GetAwaiter().GetResult();
+        }
+        catch (OperationCanceledException ex)
+        {
+            canceled = true;
+            error = ex;
+        }
+        catch (Exception ex)
+        {
+            error = ex;
+        }
+
+        bool accepted = false;
+        lock (_sectionCapGeometryBuildSync)
+        {
+            if (error is not null)
+            {
+                if (_sectionCapGeometryBuildInFlight?.Generation == request.Generation)
+                    _sectionCapGeometryBuildInFlight = null;
+            }
+            else if (result is not null
+                && _sectionCapGeometryBuildInFlight is { } inFlight
+                && inFlight.Generation == result.Generation
+                && ReferenceEquals(inFlight.Scene, result.Scene)
+                && inFlight.SceneVersion == result.SceneVersion
+                && inFlight.PlaneHash == result.PlaneHash)
+            {
+                _sectionCapGeometryBuildInFlight = null;
+                _sectionCapGeometryBuildCompleted = result;
+                accepted = true;
+            }
+        }
+
+        if (canceled)
+        {
+            Android.Util.Log.Info(
+                "FA.SectionCap",
+                $"Async cap build canceled: generation={request.Generation}, planeHash={request.PlaneHash}, queuedToCancelMs={TicksToMilliseconds(request.QueuedTicks, Stopwatch.GetTimestamp()):0.0}, interactive={InteractiveNavigationActive}.");
+            return;
+        }
+
+        if (error is not null)
+        {
+            Android.Util.Log.Warn(
+                "FA.SectionCap",
+                $"Async cap build failed: generation={request.Generation}, planeHash={request.PlaneHash}, queuedToFailMs={TicksToMilliseconds(request.QueuedTicks, Stopwatch.GetTimestamp()):0.0}, error={error.Message}");
+            RequestDelayedSectionCapRender(SectionCapGeometryDebounceMilliseconds);
+            return;
+        }
+
+        if (accepted)
+        {
+            Android.Util.Log.Info(
+                "FA.SectionCap",
+                $"Async cap build completed and pending apply: generation={request.Generation}, planeHash={request.PlaneHash}, queuedToCompleteMs={TicksToMilliseconds(request.QueuedTicks, Stopwatch.GetTimestamp()):0.0}.");
+            RequestDelayedSectionCapRender(1);
+        }
+        else if (result is not null)
+        {
+            Android.Util.Log.Info(
+                "FA.SectionCap",
+                $"Async cap build discarded as stale: generation={request.Generation}, planeHash={request.PlaneHash}, resultSceneVersion={result.SceneVersion}, currentGeneration={Volatile.Read(ref _sectionCapGeometryBuildGeneration)}, interactive={InteractiveNavigationActive}.");
+        }
+    }
+
+    private void InvalidateSectionCapGeometryBuilds()
+    {
+        CancelPendingSectionCapGeometryBuilds();
+        _sectionCapGeometryCache = null;
+        _sectionCapDebouncePlaneHash = int.MinValue;
+        _sectionCapDebounceStartedTicks = 0;
+    }
+
+    private void CancelPendingSectionCapGeometryBuilds()
+    {
+        Interlocked.Increment(ref _sectionCapGeometryBuildGeneration);
+        SectionCapGeometryBuildInFlight? inFlight;
+        bool hadCompleted;
+        lock (_sectionCapGeometryBuildSync)
+        {
+            inFlight = _sectionCapGeometryBuildInFlight;
+            hadCompleted = _sectionCapGeometryBuildCompleted is not null;
+            _sectionCapGeometryBuildInFlight = null;
+            _sectionCapGeometryBuildCompleted = null;
+        }
+
+        if ((inFlight is not null || hadCompleted) && ShouldLogThrottled(ref _lastSectionCapCancelLogTicks, 250.0))
+        {
+            Android.Util.Log.Info(
+                "FA.SectionCap",
+                $"Cap build cancel requested: inFlight={inFlight is not null}, completed={hadCompleted}, canceledGeneration={inFlight?.Generation.ToString() ?? "none"}, interactive={InteractiveNavigationActive}.");
+        }
+
+        try
+        {
+            inFlight?.Cancellation.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
+
+    private bool ShouldDeferSectionCapGeometryBuild(int planeHash, out int delayMilliseconds)
+    {
+        long now = Stopwatch.GetTimestamp();
+        if (_sectionCapDebouncePlaneHash != planeHash)
+        {
+            _sectionCapDebouncePlaneHash = planeHash;
+            _sectionCapDebounceStartedTicks = now;
+            delayMilliseconds = SectionCapGeometryDebounceMilliseconds;
+            return true;
+        }
+
+        double elapsedMilliseconds = (now - _sectionCapDebounceStartedTicks) * 1000.0 / Stopwatch.Frequency;
+        if (elapsedMilliseconds >= SectionCapGeometryDebounceMilliseconds)
+        {
+            delayMilliseconds = 0;
+            return false;
+        }
+
+        delayMilliseconds = Math.Max(1, (int)Math.Ceiling(SectionCapGeometryDebounceMilliseconds - elapsedMilliseconds));
+        return true;
+    }
+
+    private void RequestDelayedSectionCapRender(int delayMilliseconds)
+    {
+        Action<int>? handler = DelayedRenderRequested;
+        if (handler is null)
+            return;
+
+        try
+        {
+            handler(Math.Clamp(delayMilliseconds, 1, SectionCapGeometryDebounceMilliseconds));
+        }
+        catch (Exception ex)
+        {
+            Android.Util.Log.Warn("FA.SectionCap", $"Delayed cap redraw request failed: {ex.Message}");
+        }
+    }
+
+    private static void LogSectionCapDiagnostics(
+        IReadOnlyList<SectionCapGeometry> geometries,
+        int sourceCount)
+    {
+        for (int i = 0; i < geometries.Count; i++)
+        {
+            SectionCapGeometry geometry = geometries[i];
+            SectionCapDiagnostics d = geometry.Diagnostics;
+            bool suspicious = d.OpenPrunedSegmentCount > 0
+                || d.BranchVertexCount > 0
+                || d.FailedRegionCount > 0
+                || (d.VectorSegmentCount > 0 && geometry.TriangleVertices.Length == 0);
+            string message =
+                $"plane={i}, sources={sourceCount}, intersecting={d.IntersectingSourceCount}, " +
+                $"weldTol={d.WeldTolerance:G9}, maxWeldTol={d.MaxWeldTolerance:G9}, stitchTol={d.EndpointStitchTolerance:G9}, " +
+                $"vectors={d.VectorSegmentCount}, candidates={d.CandidateSegmentCount}, " +
+                $"weldedV={d.WeldedVertexCount}, weldedS={d.WeldedSegmentCount}, openEnds={d.OpenEndpointCount}, maxDegree={d.MaxVertexDegree}, " +
+                $"weldRetried={d.AdaptiveWeldRetriedSourceCount}, weldImproved={d.AdaptiveWeldImprovedSourceCount}, stitches={d.EndpointStitchSegmentCount}, " +
+                $"openPruned={d.OpenPrunedSegmentCount}, branches={d.BranchVertexCount}, " +
+                $"regions={d.ClosedRegionCount}, filled={d.FilledRegionCount}, failed={d.FailedRegionCount}, " +
+                $"clipped={d.ClippedAwayRegionCount}, duplicate={d.DuplicateSegmentCount}, " +
+                $"degenerate={d.DegenerateSegmentCount}, edgeCandidates={d.EdgeOnPlaneCandidateCount}, " +
+                $"edgeConfirmed={d.ConfirmedEdgeOnPlaneSegmentCount}, tris={geometry.TriangleVertices.Length / 9}.";
+
+            if (suspicious)
+                Android.Util.Log.Warn("FA.SectionCap", message);
+            else
+                Android.Util.Log.Info("FA.SectionCap", message);
+        }
+    }
+
+    private void LogSectionCapRenderTiming(
+        long startTicks,
+        long afterGeometryTicks,
+        long endTicks,
+        IReadOnlyList<SectionCapGeometry> geometries)
+    {
+        double geometryMs = TicksToMilliseconds(startTicks, afterGeometryTicks);
+        double totalMs = TicksToMilliseconds(startTicks, endTicks);
+        double drawMs = TicksToMilliseconds(afterGeometryTicks, endTicks);
+        if (totalMs < 8.0 && geometryMs < 4.0)
+            return;
+        if (!ShouldLogThrottled(ref _lastSectionCapRenderTimingLogTicks, 500.0))
+            return;
+
+        int triangles = 0;
+        int vectors = 0;
+        foreach (SectionCapGeometry geometry in geometries)
+        {
+            triangles += geometry.TriangleVertices.Length / 9;
+            vectors += geometry.VectorLineVertices.Length / 6;
+        }
+
+        bool inFlight;
+        bool completed;
+        int generation;
+        lock (_sectionCapGeometryBuildSync)
+        {
+            inFlight = _sectionCapGeometryBuildInFlight is not null;
+            completed = _sectionCapGeometryBuildCompleted is not null;
+            generation = Volatile.Read(ref _sectionCapGeometryBuildGeneration);
+        }
+
+        Android.Util.Log.Warn(
+            "FA.SectionCap",
+            $"Cap render timing: totalMs={totalMs:0.0}, geometryMs={geometryMs:0.0}, drawMs={drawMs:0.0}, planes={geometries.Count}, tris={triangles}, vectors={vectors}, interactive={InteractiveNavigationActive}, inFlight={inFlight}, completed={completed}, generation={generation}.");
+    }
+
+    private void LogSectionCapInteractionState(bool active)
+    {
+        bool inFlight;
+        bool completed;
+        int generation;
+        lock (_sectionCapGeometryBuildSync)
+        {
+            inFlight = _sectionCapGeometryBuildInFlight is not null;
+            completed = _sectionCapGeometryBuildCompleted is not null;
+            generation = Volatile.Read(ref _sectionCapGeometryBuildGeneration);
+        }
+
+        Android.Util.Log.Info(
+            "FA.SectionCap",
+            $"Interactive navigation active={active}, generation={generation}, inFlight={inFlight}, completed={completed}.");
+    }
+
+    private SectionCapPlane[] BuildSectionCapPlanes()
+    {
+        int count = Math.Min(SectionVisualPlanes.Count, 8);
+        if (count == 0)
+            return Array.Empty<SectionCapPlane>();
+
+        var planes = new SectionCapPlane[count];
+        for (int i = 0; i < count; i++)
+        {
+            GlesSectionVisualPlane plane = SectionVisualPlanes[i];
+            planes[i] = new SectionCapPlane(plane.Anchor, plane.AxisX, plane.AxisY, plane.Normal);
+        }
+
+        return planes;
+    }
+
+    private int ComputeSectionCapPlaneHash()
+    {
+        var hash = new HashCode();
+        int count = Math.Min(SectionVisualPlanes.Count, 8);
+        hash.Add(count);
+        for (int i = 0; i < count; i++)
+        {
+            GlesSectionVisualPlane plane = SectionVisualPlanes[i];
+            AddVector(ref hash, plane.Anchor);
+            AddVector(ref hash, plane.AxisX);
+            AddVector(ref hash, plane.AxisY);
+            AddVector(ref hash, plane.Normal);
+        }
+
+        return hash.ToHashCode();
+    }
+
+    private static void AddVector(ref HashCode hash, Vector3 value)
+    {
+        hash.Add(value.X);
+        hash.Add(value.Y);
+        hash.Add(value.Z);
+    }
+
+    private bool ShouldRenderSectionCapSourceMesh(GpuMesh mesh)
     {
         if (mesh.IndexCount == 0 || !mesh.Visible)
             return false;
@@ -1157,6 +1763,18 @@ public sealed class GlesViewportRenderer : IDisposable
         var appearance = _appearance;
         bool clay = appearance.Mode == RenderMode.Clay;
         return GetEffectiveMeshAlpha(mesh, appearance, clay) >= OpaqueAlphaThreshold;
+    }
+
+    private static Matrix4d ToMatrix4d(float[]? rowMajor)
+    {
+        if (rowMajor is null || rowMajor.Length < 16)
+            return Matrix4d.Identity;
+
+        return new Matrix4d(
+            rowMajor[0], rowMajor[1], rowMajor[2], rowMajor[3],
+            rowMajor[4], rowMajor[5], rowMajor[6], rowMajor[7],
+            rowMajor[8], rowMajor[9], rowMajor[10], rowMajor[11],
+            rowMajor[12], rowMajor[13], rowMajor[14], rowMajor[15]);
     }
 
     private static float ResolveSceneDiagonal(GpuScene scene)
@@ -1244,6 +1862,17 @@ public sealed class GlesViewportRenderer : IDisposable
     private static double TicksToMilliseconds(long startTicks, long endTicks)
         => (endTicks - startTicks) * 1000.0 / Stopwatch.Frequency;
 
+    private static bool ShouldLogThrottled(ref long lastLogTicks, double intervalMilliseconds)
+    {
+        long now = Stopwatch.GetTimestamp();
+        long last = Volatile.Read(ref lastLogTicks);
+        if (last != 0 && (now - last) * 1000.0 / Stopwatch.Frequency < intervalMilliseconds)
+            return false;
+
+        Interlocked.Exchange(ref lastLogTicks, now);
+        return true;
+    }
+
     private void LogSlowFrame(
         long frameStartTicks,
         SceneAppearance appearance,
@@ -1267,9 +1896,12 @@ public sealed class GlesViewportRenderer : IDisposable
         }
 
         Interlocked.Exchange(ref _lastSlowFrameLogTicks, now);
+        string msaaState = lightweightNavigationActive && appearance.MsaaSamples > 1
+            ? $"Off(interactive, requested={appearance.MsaaSamples}x)"
+            : appearance.MsaaSamples <= 1 ? "Off" : appearance.MsaaSamples + "x";
         Android.Util.Log.Warn(
             "FA.Renderer",
-            $"Slow frame: {elapsedMs:0.0}ms, queueCommands={queueCommandCount}, interactive={interactive}, lightweight={lightweightNavigationActive}, mode={appearance.Mode}, ssao={ssaoActive}, edges={edgesDrawn}, edgeWidth={appearance.EdgeWidth:0.###}, outline={(!lightweightNavigationActive && appearance.OutlineEnabled && HighlightSelection)}, meshes={Scene?.Meshes.Count ?? 0}, transparent={_lastSurfaceTransparentMeshCount}, hiddenAlpha={_lastSurfaceHiddenMeshCount}, msaa={(appearance.MsaaSamples <= 1 ? "Off" : appearance.MsaaSamples + "x")}, viewport={_width}x{_height}.");
+            $"Slow frame: {elapsedMs:0.0}ms, queueCommands={queueCommandCount}, interactive={interactive}, lightweight={lightweightNavigationActive}, mode={appearance.Mode}, ssao={ssaoActive}, edges={edgesDrawn}, edgeWidth={appearance.EdgeWidth:0.###}, outline={(!lightweightNavigationActive && appearance.OutlineEnabled && HighlightSelection)}, meshes={Scene?.Meshes.Count ?? 0}, transparent={_lastSurfaceTransparentMeshCount}, hiddenAlpha={_lastSurfaceHiddenMeshCount}, msaa={msaaState}, viewport={_width}x{_height}.");
     }
 
     private void ResetSlowFrameLogThrottle()
@@ -1645,6 +2277,8 @@ public sealed class GlesViewportRenderer : IDisposable
         _gl.Enable(EnableCap.CullFace);
         _gl.CullFace(TriangleFace.Back);
         _gl.FrontFace(FrontFaceDirection.Ccw);
+        _gl.ActiveTexture(TextureUnit.Texture4);
+        _gl.BindTexture(TextureTarget.Texture2D, 0);
         _gl.ActiveTexture(TextureUnit.Texture0);
     }
 
@@ -1752,12 +2386,14 @@ public sealed class GlesViewportRenderer : IDisposable
     public void Dispose()
     {
         DisposeResources(disposeScene: true);
+        DelayedRenderRequested = null;
         FrameRendered = null;
     }
 
     private void DisposeResources(bool disposeScene)
     {
         _initialized = false;
+        InvalidateSectionCapGeometryBuilds();
 
         if (disposeScene)
         {
@@ -1776,7 +2412,6 @@ public sealed class GlesViewportRenderer : IDisposable
         TryDispose(_faceHighlightOverlay);
         TryDispose(_sectionOverlay);
         TryDispose(_axisTriadOverlay);
-        TryDispose(_sectionStencilProgram);
         TryDispose(_msaaFbo);
 
         _meshProgram = null;
@@ -1790,7 +2425,6 @@ public sealed class GlesViewportRenderer : IDisposable
         _faceHighlightOverlay = null;
         _sectionOverlay = null;
         _axisTriadOverlay = null;
-        _sectionStencilProgram = null;
         _msaaFbo = null;
 
         if (_whiteAoTexture != 0 && _gl is not null)
@@ -1877,6 +2511,39 @@ internal readonly record struct SsaoDiagnosticsKey(
     int BlurPasses,
     float NoiseScale);
 
+internal sealed record SectionCapGeometryCache(
+    GpuScene Scene,
+    long SceneVersion,
+    int PlaneHash,
+    SectionCapGeometry[] Geometries);
+
+internal sealed record SectionCapGeometryBuildInFlight(
+    int Generation,
+    GpuScene Scene,
+    long SceneVersion,
+    int PlaneHash,
+    CancellationTokenSource Cancellation);
+
+internal sealed record SectionCapGeometryBuildRequest(
+    GpuScene Scene,
+    long SceneVersion,
+    int PlaneHash,
+    SectionCapPlane[] Planes,
+    SectionCapMeshSource[] Sources,
+    double SceneDiagonal,
+    int Generation,
+    CancellationTokenSource Cancellation,
+    long QueuedTicks);
+
+internal sealed record SectionCapGeometryBuildResult(
+    int Generation,
+    GpuScene Scene,
+    long SceneVersion,
+    int PlaneHash,
+    SectionCapGeometry[] Geometries,
+    int SourceCount,
+    double ElapsedMilliseconds);
+
 internal readonly record struct FrameTimingStateKey(
     bool Valid,
     RenderMode Mode,
@@ -1961,9 +2628,12 @@ internal sealed class FrameTimingAccumulator
         if (_frames < FramesPerReport)
             return;
 
+        string msaaState = lightweightNavigationActive && appearance.MsaaSamples > 1
+            ? $"Off(interactive, requested={appearance.MsaaSamples}x)"
+            : appearance.MsaaSamples <= 1 ? "Off" : appearance.MsaaSamples + "x";
         Android.Util.Log.Info(
             "FA.FrameTiming",
-            $"Render timing over {_frames} frames: avg={_totalMs / _frames:0.0}ms, max={_maxMs:0.0}ms, over16={_over16}, over33={_over33}, over50={_over50}, queue={_queueMs / _frames:0.0}ms, queueCommands={_queueCommands}, ssao={_ssaoMs / _frames:0.0}ms, scene={_sceneMs / _frames:0.0}ms, outline={_outlineMs / _frames:0.0}ms, mode={appearance.Mode}, interactive={interactive}, lightweight={lightweightNavigationActive}, ssaoActive={ssaoActive}, edges={edgesDrawn}, edgeWidth={appearance.EdgeWidth:0.###}, outline={outlineEnabled}, meshes={meshCount}, transparent={transparentMeshCount}, hiddenAlpha={hiddenAlphaMeshCount}, msaa={(appearance.MsaaSamples <= 1 ? "Off" : appearance.MsaaSamples + "x")}, viewport={width}x{height}.");
+            $"Render timing over {_frames} frames: avg={_totalMs / _frames:0.0}ms, max={_maxMs:0.0}ms, over16={_over16}, over33={_over33}, over50={_over50}, queue={_queueMs / _frames:0.0}ms, queueCommands={_queueCommands}, ssao={_ssaoMs / _frames:0.0}ms, scene={_sceneMs / _frames:0.0}ms, outline={_outlineMs / _frames:0.0}ms, mode={appearance.Mode}, interactive={interactive}, lightweight={lightweightNavigationActive}, ssaoActive={ssaoActive}, edges={edgesDrawn}, edgeWidth={appearance.EdgeWidth:0.###}, outline={outlineEnabled}, meshes={meshCount}, transparent={transparentMeshCount}, hiddenAlpha={hiddenAlphaMeshCount}, msaa={msaaState}, viewport={width}x{height}.");
         Reset();
         _stateKey = stateKey;
     }

@@ -126,6 +126,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         // ── Camera & helpers ───────────────────────────────────────────
         var helpers = AddSection(ctx, root, "Camera & Helpers", "Grid, helpers, projection");
         AddSwitch(ctx, helpers, "Show ground grid", AppSettings.ShowGrid, v => AppSettings.ShowGrid = v);
+        AddSwitch(ctx, helpers, "Double tap Fit Screen", AppSettings.DoubleTapFitScreenEnabled, v => AppSettings.DoubleTapFitScreenEnabled = v);
         AddSwitch(ctx, helpers, "Push grid to model min", AppSettings.ShiftGridToModelMin, v => AppSettings.ShiftGridToModelMin = v);
         AddSwitch(ctx, helpers, "Automatic grid spacing", AppSettings.UseAutomaticGridSpacing, v => AppSettings.UseAutomaticGridSpacing = v);
         AddFloatSlider(ctx, helpers, "Grid spacing (mm)", 0.001f, 1000f, AppSettings.GridSpacingMm, AppSettings.SetManualGridSpacing);
@@ -239,6 +240,12 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         AddLabeledToggleRow(ctx, measure, "Box mode", new[] { "Axis", "Best Fit" },
             AppSettings.MeasureBoxModeSelectionIndex, idx => AppSettings.MeasureBoxModeSelectionIndex = idx);
         AddFloatSlider(ctx, measure, "Dimension text scale", 0.5f, 4f, AppSettings.DimensionTextScale, v => AppSettings.DimensionTextScale = v);
+        AddRgbRow(ctx, measure, "Face selection color",
+            AppSettings.MeasurementFaceSelectionR, AppSettings.MeasurementFaceSelectionG, AppSettings.MeasurementFaceSelectionB,
+            AppSettings.SetMeasurementFaceSelectionColor);
+        AddRgbRow(ctx, measure, "Face hover color",
+            AppSettings.MeasurementFaceHoverR, AppSettings.MeasurementFaceHoverG, AppSettings.MeasurementFaceHoverB,
+            AppSettings.SetMeasurementFaceHoverColor);
         AddSwitch(ctx, measure, "Multi-measure", AppSettings.MeasureMultiMeasureEnabled, v => AppSettings.MeasureMultiMeasureEnabled = v);
         AddSwitch(ctx, measure, "Point delta breakdown", AppSettings.MeasureShowDeltaBreakdown, v => AppSettings.MeasureShowDeltaBreakdown = v);
 
@@ -246,6 +253,8 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         var sections = AddSection(ctx, root, "Section Tools", "Caps, planes, and gizmo");
         AddSwitch(ctx, sections, "Show section fill", AppSettings.SectionFillVisible, v => AppSettings.SectionFillVisible = v);
         AddSwitch(ctx, sections, "Show section edges", AppSettings.SectionEdgesVisible, v => AppSettings.SectionEdgesVisible = v);
+        AddSwitch(ctx, sections, "Show section curves", AppSettings.SectionCurvesVisible, v => AppSettings.SectionCurvesVisible = v);
+        AddSwitch(ctx, sections, "Show Caps", AppSettings.SectionCapsVisible, v => AppSettings.SectionCapsVisible = v);
         AddRgbRow(ctx, sections, "Plane color",
             AppSettings.SectionPlaneR, AppSettings.SectionPlaneG, AppSettings.SectionPlaneB,
             AppSettings.SetSectionPlaneColor);
@@ -253,9 +262,6 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         AddRgbRow(ctx, sections, "Edge color",
             AppSettings.SectionEdgeR, AppSettings.SectionEdgeG, AppSettings.SectionEdgeB,
             AppSettings.SetSectionEdgeColor);
-        AddRgbRow(ctx, sections, "Selected edge",
-            AppSettings.SectionEdgeHighlightR, AppSettings.SectionEdgeHighlightG, AppSettings.SectionEdgeHighlightB,
-            AppSettings.SetSectionEdgeHighlightColor);
         AddRgbRow(ctx, sections, "Cap color",
             AppSettings.SectionCapR, AppSettings.SectionCapG, AppSettings.SectionCapB,
             AppSettings.SetSectionCapColor);
@@ -1261,6 +1267,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         private float _hue;
         private float _saturation;
         private float _value;
+        private int _activePointerId = -1;
 
         public event EventHandler<ColorPlaneChangedEventArgs>? ColorChanged;
 
@@ -1332,12 +1339,56 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
             switch (e.ActionMasked)
             {
                 case MotionEventActions.Down:
-                case MotionEventActions.Move:
+                {
+                    int pointerIndex = AndroidMotionEvents.PreferredPointerIndex(e);
+                    if (pointerIndex < 0)
+                        return false;
+
+                    _activePointerId = e.GetPointerId(pointerIndex);
                     Parent?.RequestDisallowInterceptTouchEvent(true);
-                    UpdateFromTouch(e.GetX(), e.GetY());
+                    UpdateFromTouch(e.GetX(pointerIndex), e.GetY(pointerIndex));
                     return true;
+                }
+
+                case MotionEventActions.PointerDown:
+                {
+                    int pointerIndex = e.ActionIndex;
+                    if (!AndroidMotionEvents.IsPointerStylusOrEraser(e, pointerIndex))
+                        return true;
+
+                    _activePointerId = e.GetPointerId(pointerIndex);
+                    Parent?.RequestDisallowInterceptTouchEvent(true);
+                    UpdateFromTouch(e.GetX(pointerIndex), e.GetY(pointerIndex));
+                    return true;
+                }
+
+                case MotionEventActions.Move:
+                {
+                    if (!AndroidMotionEvents.TryFindPointerIndex(e, _activePointerId, out int pointerIndex))
+                        return true;
+
+                    Parent?.RequestDisallowInterceptTouchEvent(true);
+                    UpdateFromTouch(e.GetX(pointerIndex), e.GetY(pointerIndex));
+                    return true;
+                }
+
+                case MotionEventActions.PointerUp:
+                {
+                    int pointerIndex = e.ActionIndex;
+                    if (pointerIndex >= 0
+                        && pointerIndex < e.PointerCount
+                        && e.GetPointerId(pointerIndex) == _activePointerId)
+                    {
+                        _activePointerId = -1;
+                        Parent?.RequestDisallowInterceptTouchEvent(false);
+                    }
+
+                    return true;
+                }
+
                 case MotionEventActions.Up:
                 case MotionEventActions.Cancel:
+                    _activePointerId = -1;
                     Parent?.RequestDisallowInterceptTouchEvent(false);
                     return true;
                 default:
@@ -1373,6 +1424,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         private readonly Paint _handleInner = new() { AntiAlias = true };
         private readonly float _radius;
         private float _hue;
+        private int _activePointerId = -1;
 
         public event EventHandler<HueChangedEventArgs>? HueChanged;
 
@@ -1439,12 +1491,56 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
             switch (e.ActionMasked)
             {
                 case MotionEventActions.Down:
-                case MotionEventActions.Move:
+                {
+                    int pointerIndex = AndroidMotionEvents.PreferredPointerIndex(e);
+                    if (pointerIndex < 0)
+                        return false;
+
+                    _activePointerId = e.GetPointerId(pointerIndex);
                     Parent?.RequestDisallowInterceptTouchEvent(true);
-                    UpdateFromTouch(e.GetX());
+                    UpdateFromTouch(e.GetX(pointerIndex));
                     return true;
+                }
+
+                case MotionEventActions.PointerDown:
+                {
+                    int pointerIndex = e.ActionIndex;
+                    if (!AndroidMotionEvents.IsPointerStylusOrEraser(e, pointerIndex))
+                        return true;
+
+                    _activePointerId = e.GetPointerId(pointerIndex);
+                    Parent?.RequestDisallowInterceptTouchEvent(true);
+                    UpdateFromTouch(e.GetX(pointerIndex));
+                    return true;
+                }
+
+                case MotionEventActions.Move:
+                {
+                    if (!AndroidMotionEvents.TryFindPointerIndex(e, _activePointerId, out int pointerIndex))
+                        return true;
+
+                    Parent?.RequestDisallowInterceptTouchEvent(true);
+                    UpdateFromTouch(e.GetX(pointerIndex));
+                    return true;
+                }
+
+                case MotionEventActions.PointerUp:
+                {
+                    int pointerIndex = e.ActionIndex;
+                    if (pointerIndex >= 0
+                        && pointerIndex < e.PointerCount
+                        && e.GetPointerId(pointerIndex) == _activePointerId)
+                    {
+                        _activePointerId = -1;
+                        Parent?.RequestDisallowInterceptTouchEvent(false);
+                    }
+
+                    return true;
+                }
+
                 case MotionEventActions.Up:
                 case MotionEventActions.Cancel:
+                    _activePointerId = -1;
                     Parent?.RequestDisallowInterceptTouchEvent(false);
                     return true;
                 default:

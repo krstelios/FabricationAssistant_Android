@@ -22,7 +22,7 @@ public static class AppServices
             cacheDirectory: platformPaths.CacheDir,
             tempDirectory: platformPaths.TempDir,
             logsDirectory: platformPaths.LogsDir);
-        ImportPipeline.PruneImportCache(platformPaths.AppDataRoot);
+        _ = Task.Run(() => ImportPipeline.PruneImportCache(platformPaths.AppDataRoot));
 
         var services = new ServiceCollection();
 

@@ -25,7 +25,7 @@ public sealed class SafFilePicker : IDisposable
     {
         ArgumentNullException.ThrowIfNull(activity);
 
-        var contract = new ActivityResultContracts.OpenDocument();
+        var contract = new ActivityResultContracts.StartActivityForResult();
         var callback = new ResultCallback(CompletePending);
 
         _launcher = activity.RegisterForActivityResult(contract, callback)
@@ -51,7 +51,7 @@ public sealed class SafFilePicker : IDisposable
 
         try
         {
-            _launcher.Launch(mimeTypes);
+            _launcher.Launch(CreateOpenDocumentIntent(mimeTypes));
         }
         catch
         {
@@ -60,6 +60,22 @@ public sealed class SafFilePicker : IDisposable
         }
         _ = CancelPendingAfterTimeoutAsync(timeoutCts.Token);
         return pending.Task;
+    }
+
+    private static Intent CreateOpenDocumentIntent(string[] mimeTypes)
+    {
+        Intent intent = new(Intent.ActionOpenDocument);
+        intent.AddCategory(Intent.CategoryOpenable);
+        intent.SetType("*/*");
+        intent.PutExtra(Intent.ExtraMimeTypes, mimeTypes);
+        intent.AddFlags(ActivityFlags.GrantReadUriPermission | ActivityFlags.GrantPersistableUriPermission);
+        return intent;
+    }
+
+    public void CancelActivePick(string reason)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        CancelPending(reason);
     }
 
     public void Dispose()
@@ -139,6 +155,16 @@ public sealed class SafFilePicker : IDisposable
     {
         private readonly Action<AndroidUri?> _action;
         public ResultCallback(Action<AndroidUri?> action) { _action = action; }
-        public void OnActivityResult(Java.Lang.Object? result) => _action(result as AndroidUri);
+        public void OnActivityResult(Java.Lang.Object? result)
+        {
+            if (result is not ActivityResult activityResult ||
+                activityResult.ResultCode != (int)global::Android.App.Result.Ok)
+            {
+                _action(null);
+                return;
+            }
+
+            _action(activityResult.Data?.Data);
+        }
     }
 }

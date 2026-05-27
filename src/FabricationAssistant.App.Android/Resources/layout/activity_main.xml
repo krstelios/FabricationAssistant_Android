@@ -864,6 +864,40 @@
             app:trackTint="@color/fa_switch_track"
             app:useMaterialThemeColors="false" />
 
+        <com.google.android.material.switchmaterial.SwitchMaterial
+            android:id="@+id/sectionCurves"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:visibility="gone"
+            android:checked="true"
+            android:minWidth="116dp"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp"
+            android:text="@string/cd_section_curves"
+            android:textColor="@color/fa_text_secondary"
+            android:textSize="11sp"
+            app:thumbTint="@color/fa_switch_thumb"
+            app:trackTint="@color/fa_switch_track"
+            app:useMaterialThemeColors="false" />
+
+        <com.google.android.material.switchmaterial.SwitchMaterial
+            android:id="@+id/sectionCaps"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:visibility="gone"
+            android:checked="true"
+            android:minWidth="84dp"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp"
+            android:text="@string/cd_section_caps"
+            android:textColor="@color/fa_text_secondary"
+            android:textSize="11sp"
+            app:thumbTint="@color/fa_switch_thumb"
+            app:trackTint="@color/fa_switch_track"
+            app:useMaterialThemeColors="false" />
+
         <com.google.android.material.button.MaterialButton
             android:id="@+id/explodeBack"
             android:layout_width="40dp"

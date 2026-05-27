@@ -171,7 +171,7 @@ public sealed class GlesOutlineRenderer : IDisposable
 
         try
         {
-            // ── Mask pass ────────────────────────────────────────────────
+            // Mask pass.
             _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _maskFbo);
             _gl.Viewport(0, 0, (uint)_width, (uint)_height);
             _gl.ClearColor(0f, 0f, 0f, 0f);
@@ -196,7 +196,7 @@ public sealed class GlesOutlineRenderer : IDisposable
             }
             GlesRenderUtil.ResetMeshCulling(_gl);
 
-            // ── Composite pass ──────────────────────────────────────────
+            // Composite pass.
             _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
             _gl.Viewport(0, 0, (uint)width, (uint)height);
 

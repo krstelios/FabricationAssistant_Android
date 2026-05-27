@@ -29,7 +29,7 @@ public struct SceneAppearance
 {
     public RenderMode Mode;
 
-    // ── Camera & helpers ───────────────────────────────────────────────
+    // Camera and helpers.
     public bool ShowGrid;
     public bool ShiftGridToModelMin;
     public bool UseAutomaticGridSpacing;
@@ -40,12 +40,12 @@ public struct SceneAppearance
     public bool IsPerspective;
     public bool LightweightNavigationEnabled;
 
-    // ── Scene colors ───────────────────────────────────────────────────
+    // Scene colors.
     public float[] BackgroundColor;     // RGB, 0-1
     public float[] SurfaceColor;        // RGB, 0-1
     public float SurfaceOpacity;        // 0-1
 
-    // ── CAD edges ──────────────────────────────────────────────────────
+    // CAD edges.
     public bool EdgesEnabled;
     public float[] EdgeColor;           // RGB, 0-1
     public float EdgeWidth;             // pixels
@@ -57,7 +57,7 @@ public struct SceneAppearance
     public float SurfaceOffsetFactor;
     public float SurfaceOffsetUnits;
 
-    // ── Clay render ────────────────────────────────────────────────────
+    // Clay render.
     public float[] ClaySurfaceColor;    // RGB, 0-1
     public float[] ClayBackgroundColor; // RGB, 0-1
     public bool ClayFeatureEdgesEnabled;
@@ -66,7 +66,7 @@ public struct SceneAppearance
     public float ClayFeatureEdgeDepthBias;
     public float ClayFeatureEdgeCreaseAngleDegrees;
 
-    // ── Lighting ───────────────────────────────────────────────────────
+    // Lighting.
     public float BaseColorLift;
     public float AmbientStrength;
     public float HeadlightStrength;
@@ -77,7 +77,7 @@ public struct SceneAppearance
     public float SpecularStrength;
     public float SpecularPower;
 
-    // ── AA + occlusion + contour ───────────────────────────────────────
+    // AA, occlusion, and contour.
     public bool AmbientOcclusionEnabled;
     public int AoSampleCount;
     public float AoRadius;
@@ -97,7 +97,7 @@ public struct SceneAppearance
     public float ContourPower;
     public int MsaaSamples;             // 0 / 2 / 4 / 8
 
-    // ── Selection outline ──────────────────────────────────────────────
+    // Selection outline.
     public bool OutlineEnabled;
     public float[] OutlineColor;        // RGB, 0-1
     public float OutlineThicknessPx;
