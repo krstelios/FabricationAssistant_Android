@@ -13,6 +13,14 @@
 
 Updated 2026-05-27 after implementation and tablet verification.
 
+### Fixed in `802a1b4` (`Harden GLES framebuffer allocation cleanup`)
+
+- **R9 offscreen framebuffer allocation cleanup:** normal/depth, pick, outline-mask, and MSAA framebuffer resize paths now unwind partially created textures, renderbuffers, framebuffers, and GL bindings if allocation, storage, attachment, or status checks fail mid-setup.
+- **R9 outline construction cleanup:** outline renderer construction now disposes shader programs and fullscreen VAO/VBO handles if any later constructor step fails, matching the resource-lifetime hardening added to the SSAO path.
+- **R9 AO fallback texture cleanup:** the 1x1 white AO fallback texture now unbinds and deletes its partial texture handle if setup fails, preventing a leaked texture on interrupted surface creation.
+- **R9 binding hygiene:** failure paths now reset texture, renderbuffer, and framebuffer bindings before deleting partial objects so callers that catch setup failures do not inherit bindings to deleted handles.
+- Verification: `tools\test.ps1` passed `109/109`; `tools\build.ps1` passed with `0` errors and the existing five shared XML-doc warnings outside the Android files touched in this batch.
+
 ### Fixed in `0affdfa` (`Harden import file validation`)
 
 - **B23 / I7 GLB structure validation follow-up:** GLB validation now checks the full chunk table shape instead of only the 12-byte header: declared file length must match, the first chunk must be non-empty JSON, chunk lengths must be 4-byte aligned, truncated chunk headers are rejected, and chunk ranges cannot run past the file end.
