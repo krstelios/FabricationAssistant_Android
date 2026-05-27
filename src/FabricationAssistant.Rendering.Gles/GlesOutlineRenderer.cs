@@ -37,9 +37,29 @@ public sealed class GlesOutlineRenderer : IDisposable
         string outlineFragSource)
     {
         _gl = gl ?? throw new ArgumentNullException(nameof(gl));
-        _maskProgram = new ShaderProgram(_gl, "outline.mask", maskVertSource, maskFragSource);
-        _outlineProgram = new ShaderProgram(_gl, "outline.composite", fullscreenVertSource, outlineFragSource);
-        (_fullscreenVao, _fullscreenVbo) = GlesFullscreenTriangle.Create(_gl);
+        ShaderProgram? maskProgram = null;
+        ShaderProgram? outlineProgram = null;
+        uint fullscreenVao = 0;
+        uint fullscreenVbo = 0;
+        try
+        {
+            maskProgram = new ShaderProgram(_gl, "outline.mask", maskVertSource, maskFragSource);
+            outlineProgram = new ShaderProgram(_gl, "outline.composite", fullscreenVertSource, outlineFragSource);
+            (fullscreenVao, fullscreenVbo) = GlesFullscreenTriangle.Create(_gl);
+
+            _maskProgram = maskProgram;
+            _outlineProgram = outlineProgram;
+            _fullscreenVao = fullscreenVao;
+            _fullscreenVbo = fullscreenVbo;
+        }
+        catch
+        {
+            if (fullscreenVbo != 0) _gl.DeleteBuffer(fullscreenVbo);
+            if (fullscreenVao != 0) _gl.DeleteVertexArray(fullscreenVao);
+            outlineProgram?.Dispose();
+            maskProgram?.Dispose();
+            throw;
+        }
     }
 
     public void Resize(int width, int height)
@@ -50,37 +70,47 @@ public sealed class GlesOutlineRenderer : IDisposable
         _width = width;
         _height = height;
 
-        _maskTex = _gl.GenTexture();
-        _gl.BindTexture(TextureTarget.Texture2D, _maskTex);
-        unsafe
+        try
         {
-            _gl.TexImage2D(TextureTarget.Texture2D, 0,
-                InternalFormat.R8, (uint)width, (uint)height,
-                0, PixelFormat.Red, PixelType.UnsignedByte, (void*)0);
-        }
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Nearest);
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Nearest);
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.ClampToEdge);
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.ClampToEdge);
-        _gl.BindTexture(TextureTarget.Texture2D, 0);
+            _maskTex = _gl.GenTexture();
+            _gl.BindTexture(TextureTarget.Texture2D, _maskTex);
+            unsafe
+            {
+                _gl.TexImage2D(TextureTarget.Texture2D, 0,
+                    InternalFormat.R8, (uint)width, (uint)height,
+                    0, PixelFormat.Red, PixelType.UnsignedByte, (void*)0);
+            }
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Nearest);
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Nearest);
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.ClampToEdge);
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.ClampToEdge);
+            _gl.BindTexture(TextureTarget.Texture2D, 0);
 
-        _maskFbo = _gl.GenFramebuffer();
-        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _maskFbo);
-        _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.ColorAttachment0,
-            TextureTarget.Texture2D, _maskTex, 0);
-        var st = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
-        if (st != GLEnum.FramebufferComplete)
-        {
-            _lastFramebufferError = $"Outline mask FBO incomplete: 0x{(int)st:X4} ({width}x{height})";
+            _maskFbo = _gl.GenFramebuffer();
+            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _maskFbo);
+            _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.ColorAttachment0,
+                TextureTarget.Texture2D, _maskTex, 0);
+            var st = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
+            if (st != GLEnum.FramebufferComplete)
+            {
+                _lastFramebufferError = $"Outline mask FBO incomplete: 0x{(int)st:X4} ({width}x{height})";
+                _loggedFramebufferUnavailable = false;
+                Android.Util.Log.Error("FA.Outline", _lastFramebufferError);
+                _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+                DestroyResources();
+                return;
+            }
+            _lastFramebufferError = null;
             _loggedFramebufferUnavailable = false;
-            Android.Util.Log.Error("FA.Outline", _lastFramebufferError);
+            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+        }
+        catch
+        {
+            _gl.BindTexture(TextureTarget.Texture2D, 0);
             _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
             DestroyResources();
-            return;
+            throw;
         }
-        _lastFramebufferError = null;
-        _loggedFramebufferUnavailable = false;
-        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
     }
 
     public void TrimFramebuffers()

@@ -58,61 +58,72 @@ public sealed class GlesPickRenderer : IDisposable
         _width = width;
         _height = height;
 
-        _colorTexture = _gl.GenTexture();
-        _gl.BindTexture(TextureTarget.Texture2D, _colorTexture);
-        unsafe
+        try
         {
-            _gl.TexImage2D(
-                TextureTarget.Texture2D,
-                level: 0,
-                InternalFormat.R32ui,
+            _colorTexture = _gl.GenTexture();
+            _gl.BindTexture(TextureTarget.Texture2D, _colorTexture);
+            unsafe
+            {
+                _gl.TexImage2D(
+                    TextureTarget.Texture2D,
+                    level: 0,
+                    InternalFormat.R32ui,
+                    (uint)width,
+                    (uint)height,
+                    border: 0,
+                    PixelFormat.RedInteger,
+                    PixelType.UnsignedInt,
+                    pixels: (void*)0);
+            }
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Nearest);
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Nearest);
+            _gl.BindTexture(TextureTarget.Texture2D, 0);
+
+            _depthRb = _gl.GenRenderbuffer();
+            _gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, _depthRb);
+            _gl.RenderbufferStorage(
+                RenderbufferTarget.Renderbuffer,
+                InternalFormat.DepthComponent24,
                 (uint)width,
-                (uint)height,
-                border: 0,
-                PixelFormat.RedInteger,
-                PixelType.UnsignedInt,
-                pixels: (void*)0);
-        }
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Nearest);
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Nearest);
-        _gl.BindTexture(TextureTarget.Texture2D, 0);
+                (uint)height);
+            _gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, 0);
 
-        _depthRb = _gl.GenRenderbuffer();
-        _gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, _depthRb);
-        _gl.RenderbufferStorage(
-            RenderbufferTarget.Renderbuffer,
-            InternalFormat.DepthComponent24,
-            (uint)width,
-            (uint)height);
-        _gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, 0);
+            _fbo = _gl.GenFramebuffer();
+            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _fbo);
+            _gl.FramebufferTexture2D(
+                FramebufferTarget.Framebuffer,
+                FramebufferAttachment.ColorAttachment0,
+                TextureTarget.Texture2D,
+                _colorTexture,
+                level: 0);
+            _gl.FramebufferRenderbuffer(
+                FramebufferTarget.Framebuffer,
+                FramebufferAttachment.DepthAttachment,
+                RenderbufferTarget.Renderbuffer,
+                _depthRb);
 
-        _fbo = _gl.GenFramebuffer();
-        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _fbo);
-        _gl.FramebufferTexture2D(
-            FramebufferTarget.Framebuffer,
-            FramebufferAttachment.ColorAttachment0,
-            TextureTarget.Texture2D,
-            _colorTexture,
-            level: 0);
-        _gl.FramebufferRenderbuffer(
-            FramebufferTarget.Framebuffer,
-            FramebufferAttachment.DepthAttachment,
-            RenderbufferTarget.Renderbuffer,
-            _depthRb);
-
-        var status = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
-        if (status != GLEnum.FramebufferComplete)
-        {
-            _lastFramebufferError = $"Pick FBO incomplete: 0x{(int)status:X4} ({width}x{height})";
+            var status = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
+            if (status != GLEnum.FramebufferComplete)
+            {
+                _lastFramebufferError = $"Pick FBO incomplete: 0x{(int)status:X4} ({width}x{height})";
+                _loggedFramebufferUnavailable = false;
+                Android.Util.Log.Error("FA.Pick", _lastFramebufferError);
+                _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+                DestroyResources();
+                return;
+            }
+            _lastFramebufferError = null;
             _loggedFramebufferUnavailable = false;
-            Android.Util.Log.Error("FA.Pick", _lastFramebufferError);
+            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+        }
+        catch
+        {
+            _gl.BindTexture(TextureTarget.Texture2D, 0);
+            _gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, 0);
             _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
             DestroyResources();
-            return;
+            throw;
         }
-        _lastFramebufferError = null;
-        _loggedFramebufferUnavailable = false;
-        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
     }
 
     /// <summary>

@@ -88,54 +88,64 @@ public sealed partial class MsaaSceneFramebuffer : IDisposable
         _height = height;
         _samples = clamped;
 
-        _fbo = _gl.GenFramebuffer();
-        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _fbo);
+        try
+        {
+            _fbo = _gl.GenFramebuffer();
+            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _fbo);
 
-        _colorRbo = _gl.GenRenderbuffer();
-        _gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, _colorRbo);
-        // RenderbufferStorageMultisample with samples == 1 is legal in
-        // GLES 3.x but implementations may silently treat it differently.
-        // Take the explicit single-sample path when samples <= 1.
-        if (clamped > 1)
-        {
-            _gl.RenderbufferStorageMultisample(RenderbufferTarget.Renderbuffer,
-                (uint)clamped, InternalFormat.Rgb8, (uint)width, (uint)height);
-        }
-        else
-        {
-            _gl.RenderbufferStorage(RenderbufferTarget.Renderbuffer,
-                InternalFormat.Rgb8, (uint)width, (uint)height);
-        }
-        _gl.FramebufferRenderbuffer(FramebufferTarget.Framebuffer,
-            FramebufferAttachment.ColorAttachment0, RenderbufferTarget.Renderbuffer, _colorRbo);
+            _colorRbo = _gl.GenRenderbuffer();
+            _gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, _colorRbo);
+            // RenderbufferStorageMultisample with samples == 1 is legal in
+            // GLES 3.x but implementations may silently treat it differently.
+            // Take the explicit single-sample path when samples <= 1.
+            if (clamped > 1)
+            {
+                _gl.RenderbufferStorageMultisample(RenderbufferTarget.Renderbuffer,
+                    (uint)clamped, InternalFormat.Rgb8, (uint)width, (uint)height);
+            }
+            else
+            {
+                _gl.RenderbufferStorage(RenderbufferTarget.Renderbuffer,
+                    InternalFormat.Rgb8, (uint)width, (uint)height);
+            }
+            _gl.FramebufferRenderbuffer(FramebufferTarget.Framebuffer,
+                FramebufferAttachment.ColorAttachment0, RenderbufferTarget.Renderbuffer, _colorRbo);
 
-        _depthStencilRbo = _gl.GenRenderbuffer();
-        _gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, _depthStencilRbo);
-        if (clamped > 1)
-        {
-            _gl.RenderbufferStorageMultisample(RenderbufferTarget.Renderbuffer,
-                (uint)clamped, InternalFormat.Depth24Stencil8, (uint)width, (uint)height);
-        }
-        else
-        {
-            _gl.RenderbufferStorage(RenderbufferTarget.Renderbuffer,
-                InternalFormat.Depth24Stencil8, (uint)width, (uint)height);
-        }
-        _gl.FramebufferRenderbuffer(FramebufferTarget.Framebuffer,
-            FramebufferAttachment.DepthStencilAttachment, RenderbufferTarget.Renderbuffer, _depthStencilRbo);
+            _depthStencilRbo = _gl.GenRenderbuffer();
+            _gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, _depthStencilRbo);
+            if (clamped > 1)
+            {
+                _gl.RenderbufferStorageMultisample(RenderbufferTarget.Renderbuffer,
+                    (uint)clamped, InternalFormat.Depth24Stencil8, (uint)width, (uint)height);
+            }
+            else
+            {
+                _gl.RenderbufferStorage(RenderbufferTarget.Renderbuffer,
+                    InternalFormat.Depth24Stencil8, (uint)width, (uint)height);
+            }
+            _gl.FramebufferRenderbuffer(FramebufferTarget.Framebuffer,
+                FramebufferAttachment.DepthStencilAttachment, RenderbufferTarget.Renderbuffer, _depthStencilRbo);
 
-        var status = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
-        // Unbind before any further work so a successful path and the throw
-        // path leave the same clean binding state (renderbuffer = 0, FBO = 0).
-        // Otherwise a caller that catches the exception inherits bindings
-        // pointing at the just-deleted handles, which is driver-undefined.
-        _gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, 0);
-        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
-        if (status != GLEnum.FramebufferComplete)
+            var status = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
+            // Unbind before any further work so a successful path and the throw
+            // path leave the same clean binding state (renderbuffer = 0, FBO = 0).
+            // Otherwise a caller that catches the exception inherits bindings
+            // pointing at the just-deleted handles, which is driver-undefined.
+            _gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, 0);
+            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+            if (status != GLEnum.FramebufferComplete)
+            {
+                Destroy();
+                throw new InvalidOperationException(
+                    $"MsaaSceneFramebuffer: FBO incomplete after attachment, status = 0x{(int)status:X4}");
+            }
+        }
+        catch
         {
+            _gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, 0);
+            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
             Destroy();
-            throw new InvalidOperationException(
-                $"MsaaSceneFramebuffer: FBO incomplete after attachment, status = 0x{(int)status:X4}");
+            throw;
         }
     }
 

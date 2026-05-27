@@ -1711,15 +1711,24 @@ public sealed class GlesViewportRenderer : IDisposable
     private static unsafe uint CreateWhiteTexture(GL gl)
     {
         uint tex = gl.GenTexture();
-        gl.BindTexture(TextureTarget.Texture2D, tex);
-        byte white = 255;
-        gl.TexImage2D(TextureTarget.Texture2D, 0,
-            InternalFormat.R8, 1u, 1u, 0,
-            PixelFormat.Red, PixelType.UnsignedByte, &white);
-        gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Nearest);
-        gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Nearest);
-        gl.BindTexture(TextureTarget.Texture2D, 0);
-        return tex;
+        try
+        {
+            gl.BindTexture(TextureTarget.Texture2D, tex);
+            byte white = 255;
+            gl.TexImage2D(TextureTarget.Texture2D, 0,
+                InternalFormat.R8, 1u, 1u, 0,
+                PixelFormat.Red, PixelType.UnsignedByte, &white);
+            gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Nearest);
+            gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Nearest);
+            gl.BindTexture(TextureTarget.Texture2D, 0);
+            return tex;
+        }
+        catch
+        {
+            gl.BindTexture(TextureTarget.Texture2D, 0);
+            if (tex != 0) gl.DeleteTexture(tex);
+            throw;
+        }
     }
 
     private static string LoadEmbeddedShader(string fileName)

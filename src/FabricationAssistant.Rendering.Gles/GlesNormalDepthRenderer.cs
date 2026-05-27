@@ -52,51 +52,61 @@ public sealed class GlesNormalDepthRenderer : IDisposable
         _width = width;
         _height = height;
 
-        _normalTex = _gl.GenTexture();
-        _gl.BindTexture(TextureTarget.Texture2D, _normalTex);
-        unsafe
+        try
         {
-            _gl.TexImage2D(TextureTarget.Texture2D, 0,
-                InternalFormat.Rgba8, (uint)width, (uint)height, 0,
-                PixelFormat.Rgba, PixelType.UnsignedByte, (void*)0);
-        }
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Nearest);
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Nearest);
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.ClampToEdge);
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.ClampToEdge);
-        _gl.BindTexture(TextureTarget.Texture2D, 0);
+            _normalTex = _gl.GenTexture();
+            _gl.BindTexture(TextureTarget.Texture2D, _normalTex);
+            unsafe
+            {
+                _gl.TexImage2D(TextureTarget.Texture2D, 0,
+                    InternalFormat.Rgba8, (uint)width, (uint)height, 0,
+                    PixelFormat.Rgba, PixelType.UnsignedByte, (void*)0);
+            }
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Nearest);
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Nearest);
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.ClampToEdge);
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.ClampToEdge);
+            _gl.BindTexture(TextureTarget.Texture2D, 0);
 
-        _depthTex = _gl.GenTexture();
-        _gl.BindTexture(TextureTarget.Texture2D, _depthTex);
-        unsafe
-        {
-            _gl.TexImage2D(TextureTarget.Texture2D, 0,
-                InternalFormat.DepthComponent24, (uint)width, (uint)height, 0,
-                PixelFormat.DepthComponent, PixelType.UnsignedInt, (void*)0);
-        }
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Nearest);
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Nearest);
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.ClampToEdge);
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.ClampToEdge);
-        _gl.BindTexture(TextureTarget.Texture2D, 0);
+            _depthTex = _gl.GenTexture();
+            _gl.BindTexture(TextureTarget.Texture2D, _depthTex);
+            unsafe
+            {
+                _gl.TexImage2D(TextureTarget.Texture2D, 0,
+                    InternalFormat.DepthComponent24, (uint)width, (uint)height, 0,
+                    PixelFormat.DepthComponent, PixelType.UnsignedInt, (void*)0);
+            }
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Nearest);
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Nearest);
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.ClampToEdge);
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.ClampToEdge);
+            _gl.BindTexture(TextureTarget.Texture2D, 0);
 
-        _fbo = _gl.GenFramebuffer();
-        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _fbo);
-        _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.ColorAttachment0, TextureTarget.Texture2D, _normalTex, 0);
-        _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.DepthAttachment, TextureTarget.Texture2D, _depthTex, 0);
-        var st = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
-        if (st != GLEnum.FramebufferComplete)
-        {
-            _lastFramebufferError = $"Normal/depth FBO incomplete: 0x{(int)st:X4} ({width}x{height})";
+            _fbo = _gl.GenFramebuffer();
+            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _fbo);
+            _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.ColorAttachment0, TextureTarget.Texture2D, _normalTex, 0);
+            _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.DepthAttachment, TextureTarget.Texture2D, _depthTex, 0);
+            var st = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
+            if (st != GLEnum.FramebufferComplete)
+            {
+                _lastFramebufferError = $"Normal/depth FBO incomplete: 0x{(int)st:X4} ({width}x{height})";
+                _loggedFramebufferUnavailable = false;
+                Android.Util.Log.Error("FA.NormalDepth", _lastFramebufferError);
+                _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+                DestroyResources();
+                return;
+            }
+            _lastFramebufferError = null;
             _loggedFramebufferUnavailable = false;
-            Android.Util.Log.Error("FA.NormalDepth", _lastFramebufferError);
+            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+        }
+        catch
+        {
+            _gl.BindTexture(TextureTarget.Texture2D, 0);
             _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
             DestroyResources();
-            return;
+            throw;
         }
-        _lastFramebufferError = null;
-        _loggedFramebufferUnavailable = false;
-        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
     }
 
     public void TrimFramebuffers()
