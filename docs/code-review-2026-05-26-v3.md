@@ -133,15 +133,23 @@ Updated 2026-05-27 after implementation and tablet verification.
 - **U10 follow-up:** embedded Recent files panel content is now passed through the left-panel disposal path and clears row click listeners, resize touch listener, and `OnRecentFileSelected` on replacement/close/destroy.
 - **D1 follow-up:** `AndroidPathComparer` is confirmed live and now sorts digit-only path segments by numeric text without `int` overflow, including very large occurrence ordinals and leading-zero variants. Unit coverage was added.
 
+### Fixed in `e1aa3a8` (`Dispose model explorer panel views`)
+
+- **U10 / model explorer follow-up:** Model Explorer now creates a disposable left-panel view lease, so replacing or closing the panel detaches its short-lived Android view content instead of leaving the singleton panel attached to old views.
+- **Model Explorer listener cleanup:** the `ListView.ItemClick` handler is now a named method and is explicitly removed when the view lease is disposed.
+- **Model Explorer action cleanup:** Expand, Collapse, Pack, and Unpack buttons use explicit `IOnClickListener` instances and clear those listeners on view disposal.
+- **Model Explorer row cleanup:** row expand and visibility controls use explicit Java click listeners instead of managed `Click +=` lambdas.
+- **Activity teardown cleanup:** `MainActivity.OnDestroy` now fully disposes the model explorer singleton, clearing host callbacks, scene/tree references, visible row state, and any live view lease.
+
 ### Latest tablet verification
 
-- Installed the debug APK containing `53361ea` on tablet `R52TA040AQT`.
+- Installed the debug APK containing `e1aa3a8` on tablet `R52TA040AQT`.
 - Opened the app, loaded recent file `50-0001916_00.fa`.
-- Load log scan: `documentNodes=1937`, `documentMeshes=666`, `visibleMeshNodes=666`, diagonal `4.622`; tablet reports `GL_MAX_SAMPLES=4`. Initial `load-document` GL command run was `5133.7ms`.
-- Panel exercise: opened Settings, scrolled it, replaced it with Recent files, Model Explorer, hierarchy BOM, consolidated BOM, then Recent files again. The app stayed alive; no left-panel disposal warning or lifecycle task failure was logged.
-- App-PID regression scan after load and panel exercise: no fatal exception, ANR, import failure, GLES error, framebuffer failure, JNI error, or disposal/lifecycle failure. One Choreographer skipped-frame entry occurred during the heavy import/upload window, before the post-load panel checks.
-- Latest full-viewport render-queue run: sampled frame timing blocks averaged `16.3-17.2ms`, max `27.5ms`, with `0` blocks over `33ms` or `50ms`.
-- Render queue burst: top `pick:tap` run `70.8ms`, top wait `62.1ms`, slow-frame log count `2`, Choreographer skipped-frame log count during scripted interaction `0`.
+- Load log scan: `documentNodes=1937`, `documentMeshes=666`, `visibleMeshNodes=666`, diagonal `4.622`; tablet reports `GL_MAX_SAMPLES=4`. Initial `load-document` GL command run was `5080.3ms`.
+- Panel exercise: opened Model Explorer, used Expand/Collapse/Pack/Unpack, toggled row expansion and visibility, selected a row, scrolled the list, then repeatedly replaced Model Explorer with Recent files, hierarchy BOM, consolidated BOM, and Model Explorer again. The app stayed alive; no left-panel disposal warning or lifecycle task failure was logged.
+- App-PID regression scan after load and panel exercise: no fatal exception, ANR, import failure, GLES error, framebuffer failure, JNI error, disposal/lifecycle failure, or `ObjectDisposedException`.
+- Latest full-viewport render-queue run: sampled frame timing blocks averaged `13.7-14.7ms`, max `31.7ms`, with `0` blocks over `33ms` or `50ms`.
+- Render queue burst: top `pick:tap` run `36.3ms`, top wait `28.9ms`, slow-frame log count `4`, Choreographer skipped-frame log count during scripted interaction `0`.
 - Final app-PID logcat regression scan after scripted interaction: no crash, ANR, import, GLES, framebuffer, render, disposal, lifecycle, or load failure.
 
 ---
