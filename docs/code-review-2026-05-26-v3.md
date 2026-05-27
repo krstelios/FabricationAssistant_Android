@@ -141,15 +141,24 @@ Updated 2026-05-27 after implementation and tablet verification.
 - **Model Explorer row cleanup:** row expand and visibility controls use explicit Java click listeners instead of managed `Click +=` lambdas.
 - **Activity teardown cleanup:** `MainActivity.OnDestroy` now fully disposes the model explorer singleton, clearing host callbacks, scene/tree references, visible row state, and any live view lease.
 
+### Fixed in `905e691` (`Harden viewport lifecycle dispatch`)
+
+- **B6 / L4 follow-up:** `ViewportSurfaceView` now tracks disposal separately from pause, clears queued render flags, pending GL commands, and `RendererSurfaceCreated` subscribers when the surface is detached or the renderer is disposed.
+- **Main looper dispatch hardening:** all viewport-owned `_mainHandler.Post(...)` calls now check the return value and log failures; failed render scheduling resets pending render flags instead of leaving a stuck scheduled state.
+- **Vsync lifecycle cleanup:** pause/detach vsync callback removal now goes through one guarded helper, catching/logging Choreographer removal failures instead of duplicating unchecked post paths.
+- **Pick callback lifecycle guard:** `PickAsync` drops picks when the surface cannot render and rechecks lifecycle state before running the main-thread callback, preventing stale pick callbacks after pause/dispose.
+- **Renderer wait/load fail-fast:** first-frame waits fail immediately when the viewport is paused/disposed, `QueueRendererCommand` returns whether work was accepted, and model upload fails the load task immediately if the viewport rejects the GL command.
+- **Paused command recovery:** commands queued while the surface is paused are scheduled on `OnResume` if any remain, avoiding a silent queue stall after resume.
+
 ### Latest tablet verification
 
-- Installed the debug APK containing `e1aa3a8` on tablet `R52TA040AQT`.
+- Installed the debug APK containing `905e691` on tablet `R52TA040AQT`.
 - Opened the app, loaded recent file `50-0001916_00.fa`.
-- Load log scan: `documentNodes=1937`, `documentMeshes=666`, `visibleMeshNodes=666`, diagonal `4.622`; tablet reports `GL_MAX_SAMPLES=4`. Initial `load-document` GL command run was `5080.3ms`.
-- Panel exercise: opened Model Explorer, used Expand/Collapse/Pack/Unpack, toggled row expansion and visibility, selected a row, scrolled the list, then repeatedly replaced Model Explorer with Recent files, hierarchy BOM, consolidated BOM, and Model Explorer again. The app stayed alive; no left-panel disposal warning or lifecycle task failure was logged.
-- App-PID regression scan after load and panel exercise: no fatal exception, ANR, import failure, GLES error, framebuffer failure, JNI error, disposal/lifecycle failure, or `ObjectDisposedException`.
-- Latest full-viewport render-queue run: sampled frame timing blocks averaged `13.7-14.7ms`, max `31.7ms`, with `0` blocks over `33ms` or `50ms`.
-- Render queue burst: top `pick:tap` run `36.3ms`, top wait `28.9ms`, slow-frame log count `4`, Choreographer skipped-frame log count during scripted interaction `0`.
+- Load log scan: `documentNodes=1937`, `documentMeshes=666`, `visibleMeshNodes=666`, diagonal `4.622`; tablet reports `GL_MAX_SAMPLES=4`. Initial `load-document` GL command run was `5255.0ms`.
+- Lifecycle exercise: backgrounded the loaded app with `KEYCODE_HOME`, relaunched it, and verified the loaded scene resumed without rejected main-looper posts, dropped GL commands, vsync cleanup failures, disposal exceptions, or app errors.
+- App-PID regression scan after load and lifecycle exercise: no fatal exception, ANR, import failure, GLES error, framebuffer failure, JNI error, disposal/lifecycle failure, `ObjectDisposedException`, or viewport dispatch warning.
+- Latest warm full-viewport render-queue run: sampled frame timing blocks averaged `11.5-12.9ms`, max `44.3ms`, with `1` block over `33ms` and `0` blocks over `50ms`.
+- Render queue burst: top `pick:tap` run `23.7ms`, top wait `20.1ms`, slow-frame log count `2`, Choreographer skipped-frame log count during the warm scripted interaction `0`.
 - Final app-PID logcat regression scan after scripted interaction: no crash, ANR, import, GLES, framebuffer, render, disposal, lifecycle, or load failure.
 
 ---
