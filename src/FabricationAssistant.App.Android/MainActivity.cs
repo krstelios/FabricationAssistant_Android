@@ -9618,7 +9618,10 @@ public sealed class MainActivity : AppCompatActivity
         if (_viewport is not null)
         {
             var viewport = _viewport;
-            var appearance = SceneAppearance.CreateDefault();
+            // AppSettings.Apply assigns every SceneAppearance field; starting
+            // from default avoids allocating color arrays that are overwritten
+            // before the renderer snapshot is queued.
+            SceneAppearance appearance = default;
             AppSettings.Apply(ref appearance);
             bool requestedPerspective = appearance.IsPerspective;
             bool effectivePerspective = _isInFixedView ? false : requestedPerspective;
