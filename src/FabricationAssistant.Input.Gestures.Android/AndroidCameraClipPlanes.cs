@@ -8,6 +8,8 @@ namespace FabricationAssistant.Input.Gestures.Android;
 /// </summary>
 public static class AndroidCameraClipPlanes
 {
+    private const double GroundGridExtentScale = 8.0;
+    private const double GroundGridZOffsetScale = 0.001;
     private const double MinimumNearPlane = 0.0001;
     private const double NearPlaneSceneScale = 0.0005;
     private const double NearPlaneDistanceScale = 0.001;
@@ -53,6 +55,37 @@ public static class AndroidCameraClipPlanes
 
         camera.NearPlane = near;
         camera.FarPlane = far;
+    }
+
+    public static BoundingBox IncludeGroundGrid(
+        BoundingBox sceneBounds,
+        bool showGrid,
+        bool shiftGridToModelMin)
+    {
+        if (!showGrid || !sceneBounds.IsValid)
+            return sceneBounds;
+
+        double diagonal = sceneBounds.Diagonal;
+        if (!double.IsFinite(diagonal) || diagonal <= 1e-10)
+            diagonal = 1.0;
+
+        double scale = diagonal * GroundGridExtentScale;
+        Vector3d center = sceneBounds.Center;
+        double planeZ = (shiftGridToModelMin ? sceneBounds.Min.Z : 0.0) - diagonal * GroundGridZOffsetScale;
+        if (!double.IsFinite(center.X)
+            || !double.IsFinite(center.Y)
+            || !double.IsFinite(scale)
+            || !double.IsFinite(planeZ))
+        {
+            return sceneBounds;
+        }
+
+        var expanded = sceneBounds;
+        expanded.Expand(new Vector3d(center.X - scale, center.Y - scale, planeZ));
+        expanded.Expand(new Vector3d(center.X + scale, center.Y - scale, planeZ));
+        expanded.Expand(new Vector3d(center.X + scale, center.Y + scale, planeZ));
+        expanded.Expand(new Vector3d(center.X - scale, center.Y + scale, planeZ));
+        return expanded;
     }
 
     private static bool TryProjectBoundsToViewDepth(

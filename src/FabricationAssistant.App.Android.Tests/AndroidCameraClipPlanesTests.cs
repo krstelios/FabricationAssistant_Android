@@ -48,4 +48,39 @@ public sealed class AndroidCameraClipPlanesTests
         Assert.InRange(camera.FarPlane, 11.0, 12.0);
         Assert.True(camera.NearPlane < camera.FarPlane);
     }
+
+    [Fact]
+    public void IncludeGroundGrid_WhenGridVisible_ExpandsToRenderedGridQuad()
+    {
+        var bounds = new BoundingBox(new Vector3d(-1, -2, 3), new Vector3d(3, 4, 5));
+        double diagonal = bounds.Diagonal;
+        double scale = diagonal * 8.0;
+        Vector3d center = bounds.Center;
+
+        BoundingBox expanded = AndroidCameraClipPlanes.IncludeGroundGrid(
+            bounds,
+            showGrid: true,
+            shiftGridToModelMin: true);
+
+        Assert.True(expanded.IsValid);
+        Assert.Equal(center.X - scale, expanded.Min.X, precision: 9);
+        Assert.Equal(center.X + scale, expanded.Max.X, precision: 9);
+        Assert.Equal(center.Y - scale, expanded.Min.Y, precision: 9);
+        Assert.Equal(center.Y + scale, expanded.Max.Y, precision: 9);
+        Assert.Equal(bounds.Min.Z - diagonal * 0.001, expanded.Min.Z, precision: 9);
+        Assert.Equal(bounds.Max.Z, expanded.Max.Z, precision: 9);
+    }
+
+    [Fact]
+    public void IncludeGroundGrid_WhenGridHidden_LeavesBoundsUnchanged()
+    {
+        var bounds = new BoundingBox(new Vector3d(-1, -2, 3), new Vector3d(3, 4, 5));
+
+        BoundingBox expanded = AndroidCameraClipPlanes.IncludeGroundGrid(
+            bounds,
+            showGrid: false,
+            shiftGridToModelMin: true);
+
+        Assert.Equal(bounds, expanded);
+    }
 }

@@ -13,6 +13,11 @@
 
 Updated 2026-05-27 after implementation and tablet verification.
 
+### Fixed in pending batch (`Grid-aware Android clip planes`)
+
+- **Grid clipping regression after `9a104b8`:** the tight Android perspective clip slab projected only the model bounds, while the GLES ground grid renders a quad `8x` the scene diagonal around the model. At shallow camera angles, the grid plane could be clipped at the near and far edges even though the model depth remained correct. Android clip-plane updates now expand the clip envelope to include the rendered ground-grid quad when grid display is enabled, preserving the close-up depth-precision improvement without returning to the old `sceneDiagonal * 100` far slab. Unit coverage verifies the grid envelope and hidden-grid no-op behavior.
+- Verification so far: `tools\test.ps1` passed `103/103`; `tools\build.ps1` passed with `0` errors. The build emitted existing shared-project XML-doc warnings outside the Android files touched in this batch.
+
 ### Fixed in `9a104b8` (`Fix GLES double-sided backface shading`)
 
 - **Live render artifact:** tablet captures showed the dark rail "edge leak" persisted with CAD Edges off and SSAO off. Local import inspection of `50-0001916_00.fa` showed all `666/666` meshes import as double-sided; the desktop shader flips normals for every back-facing fragment, but the GLES mesh shader only did so when section clipping was active. The GLES shader now matches desktop and flips `!gl_FrontFacing` normals in normal Shaded mode too, preventing double-sided back faces from shading as dark contour/ambient bands at grazing angles. `GlesShaderParityTests` locks this behavior.
