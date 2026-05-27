@@ -622,50 +622,56 @@ public sealed class GlesViewportRenderer : IDisposable
             drawEdgesThisFrame
             && a.Mode != RenderMode.Wireframe
             && !sectionClippingActive;
+        bool surfaceDepthOffsetEnabled = false;
         if (useSurfaceDepthOffsetForEdges)
         {
             _gl.Enable(EnableCap.PolygonOffsetFill);
             _gl.PolygonOffset(a.SurfaceOffsetFactor, a.SurfaceOffsetUnits);
+            surfaceDepthOffsetEnabled = true;
         }
 
         _lastSurfaceTransparentMeshCount = 0;
         _lastSurfaceHiddenMeshCount = 0;
-        if (a.Mode != RenderMode.Wireframe)
+        try
         {
-            PrepareSurfacePassMeshes(Scene.Meshes, a, clay, _opaqueSurfaceMeshes, _transparentSurfaceMeshes);
+            if (a.Mode != RenderMode.Wireframe)
+            {
+                PrepareSurfacePassMeshes(Scene.Meshes, a, clay, _opaqueSurfaceMeshes, _transparentSurfaceMeshes);
 
-            if (_transparentSurfaceMeshes.Count == 0)
-            {
-                _gl.Disable(EnableCap.Blend);
-                _gl.DepthMask(true);
-                foreach (var m in _opaqueSurfaceMeshes)
-                    DrawSurfaceMesh(m, a, clay, modelLoc, normalLoc, colorLoc, meshIndexLoc, selectedMeshIndexLoc, identityModel, identityNormal);
-            }
-            else
-            {
-                if (_opaqueSurfaceMeshes.Count > 0)
+                if (_transparentSurfaceMeshes.Count == 0)
                 {
                     _gl.Disable(EnableCap.Blend);
                     _gl.DepthMask(true);
                     foreach (var m in _opaqueSurfaceMeshes)
                         DrawSurfaceMesh(m, a, clay, modelLoc, normalLoc, colorLoc, meshIndexLoc, selectedMeshIndexLoc, identityModel, identityNormal);
                 }
+                else
+                {
+                    if (_opaqueSurfaceMeshes.Count > 0)
+                    {
+                        _gl.Disable(EnableCap.Blend);
+                        _gl.DepthMask(true);
+                        foreach (var m in _opaqueSurfaceMeshes)
+                            DrawSurfaceMesh(m, a, clay, modelLoc, normalLoc, colorLoc, meshIndexLoc, selectedMeshIndexLoc, identityModel, identityNormal);
+                    }
 
-                SortTransparentMeshesBackToFront(_transparentSurfaceMeshes, camera);
-                _gl.Enable(EnableCap.Blend);
-                _gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
-                _gl.DepthMask(false);
-                foreach (var m in _transparentSurfaceMeshes)
-                    DrawSurfaceMesh(m, a, clay, modelLoc, normalLoc, colorLoc, meshIndexLoc, selectedMeshIndexLoc, identityModel, identityNormal);
-
-                _gl.DepthMask(true);
-                _gl.Disable(EnableCap.Blend);
+                    SortTransparentMeshesBackToFront(_transparentSurfaceMeshes, camera);
+                    _gl.Enable(EnableCap.Blend);
+                    _gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+                    _gl.DepthMask(false);
+                    foreach (var m in _transparentSurfaceMeshes)
+                        DrawSurfaceMesh(m, a, clay, modelLoc, normalLoc, colorLoc, meshIndexLoc, selectedMeshIndexLoc, identityModel, identityNormal);
+                }
             }
         }
-        GlesRenderUtil.ResetMeshCulling(_gl);
-
-        if (useSurfaceDepthOffsetForEdges)
-            _gl.Disable(EnableCap.PolygonOffsetFill);
+        finally
+        {
+            GlesRenderUtil.ResetMeshCulling(_gl);
+            _gl.DepthMask(true);
+            _gl.Disable(EnableCap.Blend);
+            if (surfaceDepthOffsetEnabled)
+                _gl.Disable(EnableCap.PolygonOffsetFill);
+        }
 
         // ── Edge pass ─────────────────────────────────────────────────
         if (drawEdgesThisFrame && _edgeProgram is not null)
@@ -700,34 +706,39 @@ public sealed class GlesViewportRenderer : IDisposable
             _gl.Enable(EnableCap.Blend);
             _gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
 
-            foreach (var m in Scene.Meshes)
+            try
             {
-                if (!ShouldRenderMesh(m))
-                    continue;
-                if (m.EdgeVertexCount == 0) continue;
-                float effectiveAlpha = GetEffectiveMeshAlpha(m, a, clay);
-                float meshEdgeAlpha = edgeA * effectiveAlpha;
-                if (meshEdgeAlpha <= HiddenAlphaThreshold) continue;
-                if (edgeColorLoc >= 0
-                    && (float.IsNaN(lastUploadedEdgeAlpha)
-                        || System.Math.Abs(meshEdgeAlpha - lastUploadedEdgeAlpha) > 0.000001f))
+                foreach (var m in Scene.Meshes)
                 {
-                    _gl.Uniform4(edgeColorLoc, edgeR, edgeG, edgeB, meshEdgeAlpha);
-                    lastUploadedEdgeAlpha = meshEdgeAlpha;
+                    if (!ShouldRenderMesh(m))
+                        continue;
+                    if (m.EdgeVertexCount == 0) continue;
+                    float effectiveAlpha = GetEffectiveMeshAlpha(m, a, clay);
+                    float meshEdgeAlpha = edgeA * effectiveAlpha;
+                    if (meshEdgeAlpha <= HiddenAlphaThreshold) continue;
+                    if (edgeColorLoc >= 0
+                        && (float.IsNaN(lastUploadedEdgeAlpha)
+                            || System.Math.Abs(meshEdgeAlpha - lastUploadedEdgeAlpha) > 0.000001f))
+                    {
+                        _gl.Uniform4(edgeColorLoc, edgeR, edgeG, edgeB, meshEdgeAlpha);
+                        lastUploadedEdgeAlpha = meshEdgeAlpha;
+                    }
+                    float[] model = m.WorldTransform ?? identityModel;
+                    if (edgeModelLoc >= 0) _gl.UniformMatrix4(edgeModelLoc, true, model);
+                    float[] normalMatrix = identityNormal;
+                    if (m.WorldNormalMatrix is not null)
+                        normalMatrix = m.WorldNormalMatrix;
+                    if (edgeNormalLoc >= 0) _gl.UniformMatrix3(edgeNormalLoc, true, normalMatrix);
+                    m.DrawEdges();
                 }
-                float[] model = m.WorldTransform ?? identityModel;
-                if (edgeModelLoc >= 0) _gl.UniformMatrix4(edgeModelLoc, true, model);
-                float[] normalMatrix = identityNormal;
-                if (m.WorldNormalMatrix is not null)
-                    normalMatrix = m.WorldNormalMatrix;
-                if (edgeNormalLoc >= 0) _gl.UniformMatrix3(edgeNormalLoc, true, normalMatrix);
-                m.DrawEdges();
             }
-
-            _gl.DepthMask(true);
-            _gl.DepthFunc(DepthFunction.Lequal);
-            _gl.Enable(EnableCap.CullFace);
-            _gl.Disable(EnableCap.Blend);
+            finally
+            {
+                _gl.DepthMask(true);
+                _gl.DepthFunc(DepthFunction.Lequal);
+                GlesRenderUtil.ResetMeshCulling(_gl);
+                _gl.Disable(EnableCap.Blend);
+            }
         }
 
         if (SectionVisualPlanes.Count > 0)
@@ -1060,40 +1071,45 @@ public sealed class GlesViewportRenderer : IDisposable
 
         _gl.Enable(EnableCap.StencilTest);
 
-        foreach (GlesSectionVisualPlane plane in SectionVisualPlanes)
+        try
         {
-            _gl.StencilMask(capStencilBit);
-            _gl.ClearStencil(0);
-            _gl.Clear((uint)ClearBufferMask.StencilBufferBit);
+            foreach (GlesSectionVisualPlane plane in SectionVisualPlanes)
+            {
+                _gl.StencilMask(capStencilBit);
+                _gl.ClearStencil(0);
+                _gl.Clear((uint)ClearBufferMask.StencilBufferBit);
 
-            _gl.ColorMask(false, false, false, false);
-            _gl.DepthMask(false);
-            _gl.Enable(EnableCap.DepthTest);
-            _gl.DepthFunc(DepthFunction.Lequal);
-            _gl.Disable(EnableCap.CullFace);
-            _gl.Disable(EnableCap.Blend);
-            _gl.StencilFunc(StencilFunction.Always, 0, capStencilBit);
-            _gl.StencilOp(StencilOp.Keep, StencilOp.Keep, StencilOp.Invert);
+                _gl.ColorMask(false, false, false, false);
+                _gl.DepthMask(false);
+                _gl.Enable(EnableCap.DepthTest);
+                _gl.DepthFunc(DepthFunction.Lequal);
+                _gl.Disable(EnableCap.CullFace);
+                _gl.Disable(EnableCap.Blend);
+                _gl.StencilFunc(StencilFunction.Always, 0, capStencilBit);
+                _gl.StencilOp(StencilOp.Keep, StencilOp.Keep, StencilOp.Invert);
 
-            DrawSectionCapStencilGeometry(view, projection, identityModel);
+                DrawSectionCapStencilGeometry(view, projection, identityModel);
 
-            _gl.ColorMask(true, true, true, true);
-            _gl.StencilFunc(StencilFunction.Equal, capStencilBit, capStencilBit);
-            _gl.StencilOp(StencilOp.Keep, StencilOp.Keep, StencilOp.Keep);
-            _gl.StencilMask(0x00);
-            _gl.DepthMask(false);
-            _gl.Enable(EnableCap.DepthTest);
-            _gl.DepthFunc(DepthFunction.Lequal);
+                _gl.ColorMask(true, true, true, true);
+                _gl.StencilFunc(StencilFunction.Equal, capStencilBit, capStencilBit);
+                _gl.StencilOp(StencilOp.Keep, StencilOp.Keep, StencilOp.Keep);
+                _gl.StencilMask(0x00);
+                _gl.DepthMask(false);
+                _gl.Enable(EnableCap.DepthTest);
+                _gl.DepthFunc(DepthFunction.Lequal);
 
-            _sectionOverlay.RenderCapPlane(view, projection, plane, sceneDiagonal);
+                _sectionOverlay.RenderCapPlane(view, projection, plane, sceneDiagonal);
+            }
         }
-
-        _gl.ColorMask(true, true, true, true);
-        _gl.StencilMask(0xFF);
-        _gl.StencilFunc(StencilFunction.Always, 0, 0xFF);
-        _gl.StencilOp(StencilOp.Keep, StencilOp.Keep, StencilOp.Keep);
-        _gl.Disable(EnableCap.StencilTest);
-        ResetMainFramebufferState();
+        finally
+        {
+            _gl.ColorMask(true, true, true, true);
+            _gl.StencilMask(0xFF);
+            _gl.StencilFunc(StencilFunction.Always, 0, 0xFF);
+            _gl.StencilOp(StencilOp.Keep, StencilOp.Keep, StencilOp.Keep);
+            _gl.Disable(EnableCap.StencilTest);
+            ResetMainFramebufferState();
+        }
     }
 
     private void ApplySectionOverlaySettings()

@@ -13,11 +13,20 @@
 
 Updated 2026-05-27 after implementation and tablet verification.
 
-### Fixed in pending batch (`GLES back-face lighting and close-up depth precision`)
+### Fixed in `9a104b8` (`Fix GLES double-sided backface shading`)
 
 - **Live render artifact:** tablet captures showed the dark rail "edge leak" persisted with CAD Edges off and SSAO off. Local import inspection of `50-0001916_00.fa` showed all `666/666` meshes import as double-sided; the desktop shader flips normals for every back-facing fragment, but the GLES mesh shader only did so when section clipping was active. The GLES shader now matches desktop and flips `!gl_FrontFacing` normals in normal Shaded mode too, preventing double-sided back faces from shading as dark contour/ambient bands at grazing angles. `GlesShaderParityTests` locks this behavior.
 - **Close-up depth precision:** Android camera clip-plane refreshes now go through `AndroidCameraClipPlanes.Update`, which keeps perspective near/far planes tight to the projected scene bounds instead of retaining the shared `sceneDiagonal * 100` far slab. This reduces close-up depth quantization/z-fighting on tablet views. Unit coverage verifies both inside-bounds close-ups and outside-bounds perspective views.
-- Verification so far: `tools\test.ps1` passed `101/101`; `tools\build.ps1` passed with `0` warnings/errors. Tablet reinstall/visual verification still needs a user-controlled reproduction of the same camera angle after APK install.
+- Verification: `tools\test.ps1` passed `101/101`; `tools\build.ps1` passed with `0` warnings/errors. The signed debug APK containing `9a104b8` was installed on tablet `R52TA040AQT`; user-controlled visual check reported the render artifact was looking OK.
+
+### Fixed in `0b8ae24` (`Harden GLES render pass state cleanup`)
+
+- **R9 overlay-state bleed follow-up:** main surface and CAD edge passes now restore mesh culling, depth mask, blend state, and polygon offset from `finally` blocks, so an interrupted draw cannot leak state into the next pass or frame.
+- **R9 section-cap stencil hardening:** section cap rendering now restores color mask, stencil mask/function/op, stencil test, and main framebuffer state from `finally`, protecting the renderer if cap stencil geometry or cap overlay drawing fails.
+- **R9 outline post-process hardening:** outline mask/composite rendering now resets mesh culling, framebuffer binding, active texture, blend, depth test, depth mask, and cull state from `finally`.
+- **R9 measurement/section overlay hardening:** measurement and section overlay draw paths now restore line width, VAO binding, depth mask, blend, depth test, and cull state even if dynamic buffer upload or draw fails.
+- **R9 pick/normal-depth hardening:** pick and normal/depth passes now restore culling, depth state, active texture, and framebuffer binding from `finally`, avoiding stale offscreen-render state after readback/pre-pass failures.
+- Verification so far: `tools\test.ps1` passed `101/101`; `tools\build.ps1` passed with `0` warnings/errors.
 
 ### Fixed in `955147f` (`updates`)
 

@@ -192,8 +192,13 @@ public sealed class GlesPickRenderer : IDisposable
         }
         finally
         {
+            GlesRenderUtil.ResetMeshCulling(_gl);
+            _gl.Enable(EnableCap.DepthTest);
+            _gl.DepthMask(true);
+            _gl.DepthFunc(DepthFunction.Lequal);
             _gl.Disable(EnableCap.ScissorTest);
             _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0u);
+            _gl.ActiveTexture(TextureUnit.Texture0);
         }
     }
 

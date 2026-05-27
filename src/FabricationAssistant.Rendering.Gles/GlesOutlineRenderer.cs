@@ -139,53 +139,61 @@ public sealed class GlesOutlineRenderer : IDisposable
         }
         if (selectedMeshes.Count == 0) return;
 
-        // ── Mask pass ────────────────────────────────────────────────
-        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _maskFbo);
-        _gl.Viewport(0, 0, (uint)_width, (uint)_height);
-        _gl.ClearColor(0f, 0f, 0f, 0f);
-        _gl.Clear((uint)ClearBufferMask.ColorBufferBit);
-        _gl.Disable(EnableCap.DepthTest);
-
-        _maskProgram.Use();
-        float aspect = (float)_width / _height;
-        ViewportCameraMath.FillViewMatrix(camera, _viewScratch);
-        ViewportCameraMath.FillProjectionMatrix(camera, aspect, _projectionScratch);
-        var identity = ViewportCameraMath.IdentityModelMatrix();
-        SetMat4(_maskProgram, "uView", _viewScratch);
-        SetMat4(_maskProgram, "uProjection", _projectionScratch);
-        SetSectionUniforms(_maskProgram);
-        int modelLoc = _maskProgram.UniformLocation("uModel");
-        foreach (GpuMesh selected in selectedMeshes)
+        try
         {
-            float[] model = selected.WorldTransform ?? identity;
-            if (modelLoc >= 0) _gl.UniformMatrix4(modelLoc, true, model);
-            GlesRenderUtil.ApplyMeshCulling(_gl, selected);
-            selected.Draw();
+            // ── Mask pass ────────────────────────────────────────────────
+            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _maskFbo);
+            _gl.Viewport(0, 0, (uint)_width, (uint)_height);
+            _gl.ClearColor(0f, 0f, 0f, 0f);
+            _gl.Clear((uint)ClearBufferMask.ColorBufferBit);
+            _gl.Disable(EnableCap.DepthTest);
+
+            _maskProgram.Use();
+            float aspect = (float)_width / _height;
+            ViewportCameraMath.FillViewMatrix(camera, _viewScratch);
+            ViewportCameraMath.FillProjectionMatrix(camera, aspect, _projectionScratch);
+            var identity = ViewportCameraMath.IdentityModelMatrix();
+            SetMat4(_maskProgram, "uView", _viewScratch);
+            SetMat4(_maskProgram, "uProjection", _projectionScratch);
+            SetSectionUniforms(_maskProgram);
+            int modelLoc = _maskProgram.UniformLocation("uModel");
+            foreach (GpuMesh selected in selectedMeshes)
+            {
+                float[] model = selected.WorldTransform ?? identity;
+                if (modelLoc >= 0) _gl.UniformMatrix4(modelLoc, true, model);
+                GlesRenderUtil.ApplyMeshCulling(_gl, selected);
+                selected.Draw();
+            }
+            GlesRenderUtil.ResetMeshCulling(_gl);
+
+            // ── Composite pass ──────────────────────────────────────────
+            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+            _gl.Viewport(0, 0, (uint)width, (uint)height);
+
+            _gl.Enable(EnableCap.Blend);
+            _gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+            _gl.Disable(EnableCap.CullFace);
+
+            _outlineProgram.Use();
+            _gl.ActiveTexture(TextureUnit.Texture0);
+            _gl.BindTexture(TextureTarget.Texture2D, _maskTex);
+            SetInt(_outlineProgram, "uMask", 0);
+            SetVec2(_outlineProgram, "uTexelSize", 1f / _width, 1f / _height);
+            SetVec3(_outlineProgram, "uOutlineColor", outlineColor[0], outlineColor[1], outlineColor[2]);
+            SetFloat(_outlineProgram, "uThicknessPx", thicknessPx);
+
+            GlesFullscreenTriangle.Draw(_gl, _fullscreenVao);
         }
-        GlesRenderUtil.ResetMeshCulling(_gl);
-
-        // ── Composite pass ──────────────────────────────────────────
-        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
-        _gl.Viewport(0, 0, (uint)width, (uint)height);
-
-        _gl.Enable(EnableCap.Blend);
-        _gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
-        _gl.Disable(EnableCap.CullFace);
-
-        _outlineProgram.Use();
-        _gl.ActiveTexture(TextureUnit.Texture0);
-        _gl.BindTexture(TextureTarget.Texture2D, _maskTex);
-        SetInt(_outlineProgram, "uMask", 0);
-        SetVec2(_outlineProgram, "uTexelSize", 1f / _width, 1f / _height);
-        SetVec3(_outlineProgram, "uOutlineColor", outlineColor[0], outlineColor[1], outlineColor[2]);
-        SetFloat(_outlineProgram, "uThicknessPx", thicknessPx);
-
-        GlesFullscreenTriangle.Draw(_gl, _fullscreenVao);
-
-        _gl.Disable(EnableCap.Blend);
-        _gl.Enable(EnableCap.DepthTest);
-        _gl.DepthMask(true);
-        _gl.Enable(EnableCap.CullFace);
+        finally
+        {
+            GlesRenderUtil.ResetMeshCulling(_gl);
+            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+            _gl.ActiveTexture(TextureUnit.Texture0);
+            _gl.Disable(EnableCap.Blend);
+            _gl.Enable(EnableCap.DepthTest);
+            _gl.DepthMask(true);
+            _gl.Enable(EnableCap.CullFace);
+        }
     }
 
     private void SetMat4(ShaderProgram p, string name, float[] m)

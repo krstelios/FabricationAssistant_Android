@@ -103,47 +103,54 @@ internal sealed class GlesMeasurementOverlay : IDisposable
         _gl.Enable(EnableCap.Blend);
         _gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
 
-        if (_lineData.Count > 0)
+        try
         {
-            SetFloat("uPointSize", _primitiveLimits.ClampPointSize(1.0f));
-            SetInt("uRoundPoints", 0);
-            _gl.LineWidth(_primitiveLimits.ClampLineWidth(2.0f));
-            UploadAndDraw(_lineData, PrimitiveType.Lines);
-        }
+            if (_lineData.Count > 0)
+            {
+                SetFloat("uPointSize", _primitiveLimits.ClampPointSize(1.0f));
+                SetInt("uRoundPoints", 0);
+                _gl.LineWidth(_primitiveLimits.ClampLineWidth(2.0f));
+                UploadAndDraw(_lineData, PrimitiveType.Lines);
+            }
 
-        if (_diskData.Count > 0)
+            if (_diskData.Count > 0)
+            {
+                _diskProgram.Use();
+                SetDiskMat4("uMVP", MultiplyProjectionView(
+                    projection,
+                    ViewMatrixTranslatedByOrigin(view, diskOrigin, _diskViewScratch),
+                    _mvpScratch));
+                float projectionY = MathF.Abs(projection.Length > 5 ? projection[5] : 0f);
+                float worldPerPixelFactor = projectionY > 0.000001f && viewportHeight > 0
+                    ? 2.0f / (projectionY * viewportHeight)
+                    : 0.0f;
+                worldPerPixelFactor = float.IsFinite(worldPerPixelFactor)
+                    ? Math.Clamp(worldPerPixelFactor, 0.0f, 1.0e6f)
+                    : 0.0f;
+                SetDiskFloat("uWorldPerPixelFactor", worldPerPixelFactor);
+                SetDiskFloat("uPixelRadius", DiskPixelRadius);
+                SetDiskFloat("uFillAlpha", DiskFillAlpha);
+                SetDiskFloat("uRingAlpha", DiskRingAlpha);
+                UploadAndDrawDisk(_diskData);
+                _program.Use();
+            }
+
+            if (_pointData.Count > 0)
+            {
+                SetFloat("uPointSize", _primitiveLimits.ClampPointSize(BallPixelSize));
+                SetInt("uRoundPoints", 1);
+                UploadAndDraw(_pointData, PrimitiveType.Points);
+            }
+        }
+        finally
         {
-            _diskProgram.Use();
-            SetDiskMat4("uMVP", MultiplyProjectionView(
-                projection,
-                ViewMatrixTranslatedByOrigin(view, diskOrigin, _diskViewScratch),
-                _mvpScratch));
-            float projectionY = MathF.Abs(projection.Length > 5 ? projection[5] : 0f);
-            float worldPerPixelFactor = projectionY > 0.000001f && viewportHeight > 0
-                ? 2.0f / (projectionY * viewportHeight)
-                : 0.0f;
-            worldPerPixelFactor = float.IsFinite(worldPerPixelFactor)
-                ? Math.Clamp(worldPerPixelFactor, 0.0f, 1.0e6f)
-                : 0.0f;
-            SetDiskFloat("uWorldPerPixelFactor", worldPerPixelFactor);
-            SetDiskFloat("uPixelRadius", DiskPixelRadius);
-            SetDiskFloat("uFillAlpha", DiskFillAlpha);
-            SetDiskFloat("uRingAlpha", DiskRingAlpha);
-            UploadAndDrawDisk(_diskData);
-            _program.Use();
+            _gl.LineWidth(_primitiveLimits.ClampLineWidth(1.0f));
+            _gl.BindVertexArray(0);
+            _gl.DepthMask(true);
+            _gl.Disable(EnableCap.Blend);
+            _gl.Enable(EnableCap.DepthTest);
+            _gl.Enable(EnableCap.CullFace);
         }
-
-        if (_pointData.Count > 0)
-        {
-            SetFloat("uPointSize", _primitiveLimits.ClampPointSize(BallPixelSize));
-            SetInt("uRoundPoints", 1);
-            UploadAndDraw(_pointData, PrimitiveType.Points);
-        }
-
-        _gl.DepthMask(true);
-        _gl.Disable(EnableCap.Blend);
-        _gl.Enable(EnableCap.DepthTest);
-        _gl.Enable(EnableCap.CullFace);
     }
 
     private unsafe void EnsureBuffers()

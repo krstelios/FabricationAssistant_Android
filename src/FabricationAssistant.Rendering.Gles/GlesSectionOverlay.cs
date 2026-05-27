@@ -266,25 +266,30 @@ internal sealed class GlesSectionOverlay : IDisposable
         }
 
         _gl.LineWidth(_primitiveLimits.ClampLineWidth(lineWidth));
-        _gl.BindVertexArray(_vao);
-        _gl.BindBuffer(BufferTargetARB.ArrayBuffer, _vbo);
-        Span<float> span = CollectionsMarshal.AsSpan(_data);
-        fixed (float* p = span)
+        try
         {
-            _gl.BufferData(
-                BufferTargetARB.ArrayBuffer,
-                (nuint)(span.Length * sizeof(float)),
-                p,
-                BufferUsageARB.DynamicDraw);
+            _gl.BindVertexArray(_vao);
+            _gl.BindBuffer(BufferTargetARB.ArrayBuffer, _vbo);
+            Span<float> span = CollectionsMarshal.AsSpan(_data);
+            fixed (float* p = span)
+            {
+                _gl.BufferData(
+                    BufferTargetARB.ArrayBuffer,
+                    (nuint)(span.Length * sizeof(float)),
+                    p,
+                    BufferUsageARB.DynamicDraw);
+            }
+            _gl.DrawArrays(primitive, 0, (uint)vertexCount);
         }
-        _gl.DrawArrays(primitive, 0, (uint)vertexCount);
-        _gl.BindVertexArray(0);
-
-        _gl.LineWidth(_primitiveLimits.ClampLineWidth(1.0f));
-        _gl.DepthMask(true);
-        _gl.Disable(EnableCap.Blend);
-        _gl.Enable(EnableCap.DepthTest);
-        _gl.Enable(EnableCap.CullFace);
+        finally
+        {
+            _gl.BindVertexArray(0);
+            _gl.LineWidth(_primitiveLimits.ClampLineWidth(1.0f));
+            _gl.DepthMask(true);
+            _gl.Disable(EnableCap.Blend);
+            _gl.Enable(EnableCap.DepthTest);
+            _gl.Enable(EnableCap.CullFace);
+        }
     }
 
     private void SetMat4(string name, float[] matrix)

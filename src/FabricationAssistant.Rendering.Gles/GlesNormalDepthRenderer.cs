@@ -139,50 +139,61 @@ public sealed class GlesNormalDepthRenderer : IDisposable
         _gl.DepthMask(true);
         _gl.Disable(EnableCap.Blend);
 
-        _program.Use();
-
-        float aspect = (float)_width / _height;
-        var identity = ViewportCameraMath.IdentityModelMatrix();
-        var identityN = ViewportCameraMath.NormalMatrixFromIdentity();
-        ViewportCameraMath.FillViewMatrix(camera, _viewScratch);
-        ViewportCameraMath.FillProjectionMatrix(camera, aspect, _projectionScratch);
-        (_linearDepthMin, _linearDepthMax) = ComputeLinearDepthRange(camera, scene.Bounds);
-
-        SetMat4("uView", _viewScratch);
-        SetMat4("uProjection", _projectionScratch);
-        SetVec2("uLinearDepthRange", _linearDepthMin, _linearDepthMax);
-        SetSectionUniforms();
-
-        int modelLoc = _program.UniformLocation("uModel");
-        int normalMatLoc = _program.UniformLocation("uNormalMatrix");
-
-        bool clay = appearance.Mode == RenderMode.Clay;
-        float surfaceOpacity = clay ? 1.0f : appearance.SurfaceOpacity;
-        int renderedMeshes = 0;
-        foreach (var mesh in scene.Meshes)
+        try
         {
-            if (!mesh.Visible)
-                continue;
+            _program.Use();
 
-            if (!ShouldRenderMeshForDepth(mesh, surfaceOpacity, clay))
-                continue;
+            float aspect = (float)_width / _height;
+            var identity = ViewportCameraMath.IdentityModelMatrix();
+            var identityN = ViewportCameraMath.NormalMatrixFromIdentity();
+            ViewportCameraMath.FillViewMatrix(camera, _viewScratch);
+            ViewportCameraMath.FillProjectionMatrix(camera, aspect, _projectionScratch);
+            (_linearDepthMin, _linearDepthMax) = ComputeLinearDepthRange(camera, scene.Bounds);
 
-            float[] model = mesh.WorldTransform ?? identity;
-            if (modelLoc >= 0) _gl.UniformMatrix4(modelLoc, true, model);
-            float[] nm = identityN;
-            if (mesh.WorldNormalMatrix is not null)
-                nm = mesh.WorldNormalMatrix;
-            if (normalMatLoc >= 0) _gl.UniformMatrix3(normalMatLoc, true, nm);
-            GlesRenderUtil.ApplyMeshCulling(_gl, mesh);
-            mesh.Draw();
-            renderedMeshes++;
+            SetMat4("uView", _viewScratch);
+            SetMat4("uProjection", _projectionScratch);
+            SetVec2("uLinearDepthRange", _linearDepthMin, _linearDepthMax);
+            SetSectionUniforms();
+
+            int modelLoc = _program.UniformLocation("uModel");
+            int normalMatLoc = _program.UniformLocation("uNormalMatrix");
+
+            bool clay = appearance.Mode == RenderMode.Clay;
+            float surfaceOpacity = clay ? 1.0f : appearance.SurfaceOpacity;
+            int renderedMeshes = 0;
+            foreach (var mesh in scene.Meshes)
+            {
+                if (!mesh.Visible)
+                    continue;
+
+                if (!ShouldRenderMeshForDepth(mesh, surfaceOpacity, clay))
+                    continue;
+
+                float[] model = mesh.WorldTransform ?? identity;
+                if (modelLoc >= 0) _gl.UniformMatrix4(modelLoc, true, model);
+                float[] nm = identityN;
+                if (mesh.WorldNormalMatrix is not null)
+                    nm = mesh.WorldNormalMatrix;
+                if (normalMatLoc >= 0) _gl.UniformMatrix3(normalMatLoc, true, nm);
+                GlesRenderUtil.ApplyMeshCulling(_gl, mesh);
+                mesh.Draw();
+                renderedMeshes++;
+            }
+            GlesRenderUtil.ResetMeshCulling(_gl);
+
+            GlesNormalDepthStats stats = collectDiagnostics ? ReadStats() : default;
+            LastRenderInfo = new GlesNormalDepthRenderInfo(true, _width, _height, renderedMeshes, _linearDepthMin, _linearDepthMax, stats);
         }
-        GlesRenderUtil.ResetMeshCulling(_gl);
-
-        GlesNormalDepthStats stats = collectDiagnostics ? ReadStats() : default;
-        LastRenderInfo = new GlesNormalDepthRenderInfo(true, _width, _height, renderedMeshes, _linearDepthMin, _linearDepthMax, stats);
-
-        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+        finally
+        {
+            GlesRenderUtil.ResetMeshCulling(_gl);
+            _gl.Enable(EnableCap.DepthTest);
+            _gl.DepthFunc(DepthFunction.Lequal);
+            _gl.DepthMask(true);
+            _gl.Disable(EnableCap.Blend);
+            _gl.ActiveTexture(TextureUnit.Texture0);
+            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+        }
     }
 
     private static bool ShouldRenderMeshForDepth(GpuMesh mesh, float surfaceOpacity, bool clay)
