@@ -44,13 +44,36 @@ public sealed class GlesSsaoRenderer : IDisposable
     public GlesSsaoRenderer(GL gl, string fullscreenVert, string ssaoFrag, string blurFrag)
     {
         _gl = gl ?? throw new ArgumentNullException(nameof(gl));
-        _ssaoProgram = new ShaderProgram(_gl, "ssao", fullscreenVert, ssaoFrag);
-        _blurProgram = new ShaderProgram(_gl, "ssao_blur", fullscreenVert, blurFrag);
-        (_fullscreenVao, _fullscreenVbo) = GlesFullscreenTriangle.Create(_gl);
-        _kernel = BuildKernel(MaxKernelSamples);
-        _noiseTexture = BuildNoiseTexture();
-        _samplesLocation = GetArrayUniformLocation(_ssaoProgram, "uSamples");
-        _gaussianWeightsLocation = GetArrayUniformLocation(_blurProgram, "uGaussianWeights");
+        ShaderProgram? ssaoProgram = null;
+        ShaderProgram? blurProgram = null;
+        uint fullscreenVao = 0;
+        uint fullscreenVbo = 0;
+        uint noiseTexture = 0;
+        try
+        {
+            ssaoProgram = new ShaderProgram(_gl, "ssao", fullscreenVert, ssaoFrag);
+            blurProgram = new ShaderProgram(_gl, "ssao_blur", fullscreenVert, blurFrag);
+            (fullscreenVao, fullscreenVbo) = GlesFullscreenTriangle.Create(_gl);
+            noiseTexture = BuildNoiseTexture();
+
+            _ssaoProgram = ssaoProgram;
+            _blurProgram = blurProgram;
+            _fullscreenVao = fullscreenVao;
+            _fullscreenVbo = fullscreenVbo;
+            _kernel = BuildKernel(MaxKernelSamples);
+            _noiseTexture = noiseTexture;
+            _samplesLocation = GetArrayUniformLocation(_ssaoProgram, "uSamples");
+            _gaussianWeightsLocation = GetArrayUniformLocation(_blurProgram, "uGaussianWeights");
+        }
+        catch
+        {
+            if (noiseTexture != 0) _gl.DeleteTexture(noiseTexture);
+            if (fullscreenVbo != 0) _gl.DeleteBuffer(fullscreenVbo);
+            if (fullscreenVao != 0) _gl.DeleteVertexArray(fullscreenVao);
+            blurProgram?.Dispose();
+            ssaoProgram?.Dispose();
+            throw;
+        }
     }
 
     public void Resize(int width, int height)
@@ -60,14 +83,21 @@ public sealed class GlesSsaoRenderer : IDisposable
         DestroyResources();
         _width = width;
         _height = height;
-
-        _ssaoTex = MakeAoTexture(width, height);
-        _ssaoFbo = MakeFboAround(_ssaoTex, "ssao");
-        _blurTexA = MakeAoTexture(width, height);
-        _blurFboA = MakeFboAround(_blurTexA, "ssao.blurA");
-        _blurTexB = MakeAoTexture(width, height);
-        _blurFboB = MakeFboAround(_blurTexB, "ssao.blurB");
-        AoTexture = _ssaoFbo != 0 ? _ssaoTex : 0;
+        try
+        {
+            _ssaoTex = MakeAoTexture(width, height);
+            _ssaoFbo = MakeFboAround(_ssaoTex, "ssao");
+            _blurTexA = MakeAoTexture(width, height);
+            _blurFboA = MakeFboAround(_blurTexA, "ssao.blurA");
+            _blurTexB = MakeAoTexture(width, height);
+            _blurFboB = MakeFboAround(_blurTexB, "ssao.blurB");
+            AoTexture = _ssaoFbo != 0 ? _ssaoTex : 0;
+        }
+        catch
+        {
+            DestroyResources();
+            throw;
+        }
     }
 
     public void TrimFramebuffers()
@@ -354,28 +384,47 @@ public sealed class GlesSsaoRenderer : IDisposable
     private unsafe uint MakeAoTexture(int w, int h)
     {
         uint tex = _gl.GenTexture();
-        _gl.BindTexture(TextureTarget.Texture2D, tex);
-        _gl.TexImage2D(TextureTarget.Texture2D, 0,
-            InternalFormat.R8, (uint)w, (uint)h, 0,
-            PixelFormat.Red, PixelType.UnsignedByte, (void*)0);
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Linear);
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.ClampToEdge);
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.ClampToEdge);
-        _gl.BindTexture(TextureTarget.Texture2D, 0);
-        return tex;
+        try
+        {
+            _gl.BindTexture(TextureTarget.Texture2D, tex);
+            _gl.TexImage2D(TextureTarget.Texture2D, 0,
+                InternalFormat.R8, (uint)w, (uint)h, 0,
+                PixelFormat.Red, PixelType.UnsignedByte, (void*)0);
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Linear);
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.ClampToEdge);
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.ClampToEdge);
+            _gl.BindTexture(TextureTarget.Texture2D, 0);
+            return tex;
+        }
+        catch
+        {
+            _gl.BindTexture(TextureTarget.Texture2D, 0);
+            if (tex != 0) _gl.DeleteTexture(tex);
+            throw;
+        }
     }
 
     private uint MakeFboAround(uint colorTex, string label)
     {
         uint fbo = _gl.GenFramebuffer();
-        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, fbo);
-        _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.ColorAttachment0,
-            TextureTarget.Texture2D, colorTex, 0);
-        var status = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
-        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
-        if (status == GLEnum.FramebufferComplete)
-            return fbo;
+        GLEnum status;
+        try
+        {
+            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, fbo);
+            _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.ColorAttachment0,
+                TextureTarget.Texture2D, colorTex, 0);
+            status = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
+            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+            if (status == GLEnum.FramebufferComplete)
+                return fbo;
+        }
+        catch
+        {
+            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+            if (fbo != 0) _gl.DeleteFramebuffer(fbo);
+            throw;
+        }
 
         Android.Util.Log.Error("FA.Ssao", $"{label} FBO incomplete: 0x{(int)status:X4}");
         _gl.DeleteFramebuffer(fbo);
@@ -427,19 +476,28 @@ public sealed class GlesSsaoRenderer : IDisposable
         }
 
         uint tex = _gl.GenTexture();
-        _gl.BindTexture(TextureTarget.Texture2D, tex);
-        fixed (byte* p = data)
+        try
         {
-            _gl.TexImage2D(TextureTarget.Texture2D, 0,
-                InternalFormat.Rgb8, NoiseTextureSize, NoiseTextureSize, 0,
-                PixelFormat.Rgb, PixelType.UnsignedByte, p);
+            _gl.BindTexture(TextureTarget.Texture2D, tex);
+            fixed (byte* p = data)
+            {
+                _gl.TexImage2D(TextureTarget.Texture2D, 0,
+                    InternalFormat.Rgb8, NoiseTextureSize, NoiseTextureSize, 0,
+                    PixelFormat.Rgb, PixelType.UnsignedByte, p);
+            }
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Nearest);
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Nearest);
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.Repeat);
+            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.Repeat);
+            _gl.BindTexture(TextureTarget.Texture2D, 0);
+            return tex;
         }
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Nearest);
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Nearest);
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.Repeat);
-        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.Repeat);
-        _gl.BindTexture(TextureTarget.Texture2D, 0);
-        return tex;
+        catch
+        {
+            _gl.BindTexture(TextureTarget.Texture2D, 0);
+            if (tex != 0) _gl.DeleteTexture(tex);
+            throw;
+        }
     }
 
     private float[] GetGaussianWeights(int radius)

@@ -28,7 +28,15 @@ public sealed class GlesGridRenderer : IDisposable
     {
         _gl = gl ?? throw new ArgumentNullException(nameof(gl));
         _program = new ShaderProgram(_gl, "grid", vertSource, fragSource);
-        BuildQuad();
+        try
+        {
+            BuildQuad();
+        }
+        catch
+        {
+            _program.Dispose();
+            throw;
+        }
     }
 
     private unsafe void BuildQuad()
@@ -46,24 +54,43 @@ public sealed class GlesGridRenderer : IDisposable
         };
         uint[] indices = { 0, 1, 2, 0, 2, 3 };
 
-        _vao = _gl.GenVertexArray();
-        _vbo = _gl.GenBuffer();
-        _ebo = _gl.GenBuffer();
+        uint vao = 0;
+        uint vbo = 0;
+        uint ebo = 0;
+        try
+        {
+            vao = _gl.GenVertexArray();
+            vbo = _gl.GenBuffer();
+            ebo = _gl.GenBuffer();
 
-        _gl.BindVertexArray(_vao);
+            _gl.BindVertexArray(vao);
 
-        _gl.BindBuffer(BufferTargetARB.ArrayBuffer, _vbo);
-        fixed (float* p = verts)
-            _gl.BufferData(BufferTargetARB.ArrayBuffer, (nuint)(verts.Length * sizeof(float)), p, BufferUsageARB.StaticDraw);
+            _gl.BindBuffer(BufferTargetARB.ArrayBuffer, vbo);
+            fixed (float* p = verts)
+                _gl.BufferData(BufferTargetARB.ArrayBuffer, (nuint)(verts.Length * sizeof(float)), p, BufferUsageARB.StaticDraw);
 
-        _gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, _ebo);
-        fixed (uint* p = indices)
-            _gl.BufferData(BufferTargetARB.ElementArrayBuffer, (nuint)(indices.Length * sizeof(uint)), p, BufferUsageARB.StaticDraw);
+            _gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, ebo);
+            fixed (uint* p = indices)
+                _gl.BufferData(BufferTargetARB.ElementArrayBuffer, (nuint)(indices.Length * sizeof(uint)), p, BufferUsageARB.StaticDraw);
 
-        _gl.EnableVertexAttribArray(0);
-        _gl.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, 3 * sizeof(float), (void*)0);
+            _gl.EnableVertexAttribArray(0);
+            _gl.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, 3 * sizeof(float), (void*)0);
 
-        _gl.BindVertexArray(0);
+            _gl.BindVertexArray(0);
+            _vao = vao;
+            _vbo = vbo;
+            _ebo = ebo;
+        }
+        catch
+        {
+            _gl.BindVertexArray(0);
+            _gl.BindBuffer(BufferTargetARB.ArrayBuffer, 0);
+            _gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, 0);
+            if (ebo != 0) _gl.DeleteBuffer(ebo);
+            if (vbo != 0) _gl.DeleteBuffer(vbo);
+            if (vao != 0) _gl.DeleteVertexArray(vao);
+            throw;
+        }
     }
 
     /// <summary>
