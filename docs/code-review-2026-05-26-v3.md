@@ -13,6 +13,14 @@
 
 Updated 2026-05-27 after implementation and tablet verification.
 
+### Fixed in `13967de` (`Harden GLES allocation cleanup`)
+
+- **R9 resource-lifetime follow-up:** fullscreen triangle setup now keeps VAO/VBO handles local until construction succeeds, unbinds GL state, and deletes any partial handles if buffer upload or vertex attribute setup throws.
+- **R9 grid allocation cleanup:** `GlesGridRenderer` now disposes its shader program if quad setup fails, and only publishes VAO/VBO/EBO handles after the whole quad setup succeeds. Partial grid buffers/arrays are deleted on failure.
+- **R9 SSAO allocation cleanup:** SSAO construction now unwinds shaders, fullscreen buffers, and the noise texture if any later setup step fails. SSAO resize now destroys partially allocated transient textures/FBOs before rethrowing.
+- **R9 SSAO texture/FBO helper cleanup:** AO textures, noise textures, and SSAO framebuffer wrappers now unbind and delete their partially created GL object when setup fails mid-helper, avoiding transient GPU handle leaks during allocation or context-loss edge cases.
+- Verification: `tools\test.ps1` passed `103/103`; `tools\build.ps1` passed with `0` warnings/errors.
+
 ### Fixed in `c5f74c9` (`Include Android grid in camera clip bounds`)
 
 - **Grid clipping regression after `9a104b8`:** the tight Android perspective clip slab projected only the model bounds, while the GLES ground grid renders a quad `8x` the scene diagonal around the model. At shallow camera angles, the grid plane could be clipped at the near and far edges even though the model depth remained correct. Android clip-plane updates now expand the clip envelope to include the rendered ground-grid quad when grid display is enabled, preserving the close-up depth-precision improvement without returning to the old `sceneDiagonal * 100` far slab. Unit coverage verifies the grid envelope and hidden-grid no-op behavior.
