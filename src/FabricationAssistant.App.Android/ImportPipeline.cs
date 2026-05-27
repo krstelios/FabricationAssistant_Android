@@ -1,5 +1,4 @@
-using System.Buffers.Binary;
-using System.Text.Json;
+using System.Buffers;
 using Android.Content;
 using Android.Provider;
 using FabricationAssistant.Core.SceneGraph;
@@ -23,11 +22,7 @@ public sealed class ImportPipeline
 {
     private const int ImportCacheKeepCount = 10;
     private const long MaxImportBytes = 2L * 1024L * 1024L * 1024L;
-    private const int CopyBufferBytes = 128 * 1024;
-    private const uint GlbMagic = 0x46546C67; // "glTF"
-    private const uint GlbVersion = 2;
-    private const int GlbHeaderBytes = 12;
-    private const int GlbMinimumBytes = 20;
+    private const int CopyBufferBytes = 64 * 1024;
     private static readonly TimeSpan StaleTempFileAge = TimeSpan.FromHours(1);
     private static readonly TimeSpan CopyTimeout = TimeSpan.FromMinutes(15);
 
@@ -239,19 +234,26 @@ public sealed class ImportPipeline
         long maxBytes,
         CancellationToken ct)
     {
-        byte[] buffer = new byte[CopyBufferBytes];
-        long total = 0;
-        while (true)
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(CopyBufferBytes);
+        try
         {
-            int read = await input.ReadAsync(buffer.AsMemory(0, buffer.Length), ct).ConfigureAwait(false);
-            if (read == 0)
-                return;
+            long total = 0;
+            while (true)
+            {
+                int read = await input.ReadAsync(buffer.AsMemory(0, CopyBufferBytes), ct).ConfigureAwait(false);
+                if (read == 0)
+                    return;
 
-            total += read;
-            if (total > maxBytes)
-                throw new InvalidDataException($"The selected file exceeds the maximum supported import size of {maxBytes:n0} bytes.");
+                total += read;
+                if (total > maxBytes)
+                    throw new InvalidDataException($"The selected file exceeds the maximum supported import size of {maxBytes:n0} bytes.");
 
-            await output.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
+                await output.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
         }
     }
 
@@ -266,57 +268,23 @@ public sealed class ImportPipeline
         if (fileLength == 0)
             throw new InvalidDataException("The selected file is empty.");
 
-        byte[] buffer = new byte[256];
-        int read;
-        await using (var input = File.OpenRead(localPath))
-            read = await input.ReadAsync(buffer.AsMemory(0, buffer.Length), ct).ConfigureAwait(false);
-
-        bool signatureValid = extension switch
+        switch (extension)
         {
-            ".glb" => IsValidGlbHeader(buffer, read, fileLength),
-            ".gltf" => FirstNonWhitespace(buffer, read) is (byte)'{',
-            ".fa" => read >= 2 && buffer[0] == (byte)'P' && buffer[1] == (byte)'K',
-            _ => true,
-        };
-
-        if (!signatureValid)
-            throw new InvalidDataException($"The selected {extension} file does not look like a valid supported model.");
-
-        if (extension == ".gltf")
-            await ValidateGltfJsonAsync(localPath, ct).ConfigureAwait(false);
-        else if (extension == ".fa")
-            await ValidateFaArchiveAsync(localPath, ct).ConfigureAwait(false);
-    }
-
-    private static bool IsValidGlbHeader(byte[] buffer, int read, long fileLength)
-    {
-        if (read < GlbHeaderBytes || fileLength < GlbMinimumBytes)
-            return false;
-
-        uint magic = BinaryPrimitives.ReadUInt32LittleEndian(buffer.AsSpan(0, 4));
-        uint version = BinaryPrimitives.ReadUInt32LittleEndian(buffer.AsSpan(4, 4));
-        uint declaredLength = BinaryPrimitives.ReadUInt32LittleEndian(buffer.AsSpan(8, 4));
-        return magic == GlbMagic
-               && version == GlbVersion
-               && declaredLength == fileLength;
-    }
-
-    private static async Task ValidateGltfJsonAsync(string localPath, CancellationToken ct)
-    {
-        try
-        {
-            await using var input = File.OpenRead(localPath);
-            using JsonDocument document = await JsonDocument.ParseAsync(input, cancellationToken: ct).ConfigureAwait(false);
-            if (document.RootElement.ValueKind != JsonValueKind.Object
-                || !document.RootElement.TryGetProperty("asset", out JsonElement asset)
-                || asset.ValueKind != JsonValueKind.Object)
-            {
-                throw new InvalidDataException("The selected .gltf file is missing a valid asset object.");
-            }
-        }
-        catch (JsonException ex)
-        {
-            throw new InvalidDataException("The selected .gltf file is not valid JSON.", ex);
+            case ".glb":
+                await ImportFileSignatureValidator.ValidateGlbAsync(localPath, ct).ConfigureAwait(false);
+                break;
+            case ".gltf":
+                await ImportFileSignatureValidator.ValidateGltfJsonAsync(localPath, ct).ConfigureAwait(false);
+                break;
+            case ".fa":
+                byte[] buffer = new byte[2];
+                int read;
+                await using (var input = File.OpenRead(localPath))
+                    read = await input.ReadAsync(buffer.AsMemory(0, buffer.Length), ct).ConfigureAwait(false);
+                if (read < 2 || buffer[0] != (byte)'P' || buffer[1] != (byte)'K')
+                    throw new InvalidDataException($"The selected {extension} file does not look like a valid supported model.");
+                await ValidateFaArchiveAsync(localPath, ct).ConfigureAwait(false);
+                break;
         }
     }
 
@@ -339,18 +307,6 @@ public sealed class ImportPipeline
         {
             throw new InvalidDataException("The selected .fa file is not a valid Fabrication Assistant archive.", ex);
         }
-    }
-
-    private static byte FirstNonWhitespace(byte[] buffer, int length)
-    {
-        for (int i = 0; i < length; i++)
-        {
-            byte value = buffer[i];
-            if (value != (byte)' ' && value != (byte)'\t' && value != (byte)'\r' && value != (byte)'\n')
-                return value;
-        }
-
-        return 0;
     }
 
     private static void TryPruneImportCache(string importCacheRoot, int keep)

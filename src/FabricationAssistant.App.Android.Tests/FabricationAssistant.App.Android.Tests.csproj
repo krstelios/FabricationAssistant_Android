@@ -61,6 +61,8 @@
              LinkBase="Linked\Android" />
     <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\ImportFileTypeResolver.cs"
              LinkBase="Linked\Android" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\ImportFileSignatureValidator.cs"
+             LinkBase="Linked\Android" />
     <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\RecentFileEntry.cs"
              LinkBase="Linked\Android" />
     <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\RecentFilesList.cs"
