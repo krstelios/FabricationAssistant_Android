@@ -13,6 +13,14 @@
 
 Updated 2026-05-27 after implementation and tablet verification.
 
+### Fixed in `0affdfa` (`Harden import file validation`)
+
+- **B23 / I7 GLB structure validation follow-up:** GLB validation now checks the full chunk table shape instead of only the 12-byte header: declared file length must match, the first chunk must be non-empty JSON, chunk lengths must be 4-byte aligned, truncated chunk headers are rejected, and chunk ranges cannot run past the file end.
+- **B14 / I6 glTF metadata validation follow-up:** `.gltf` validation now requires a glTF 2.0 `asset.version` instead of accepting any JSON object with an `asset` shell.
+- **B4 / import copy allocation hygiene:** SAF import copying now rents its transfer buffer from `ArrayPool<byte>` and uses a 64 KB slice, keeping the hot copy buffer below LOH size and returning it reliably after success, cancellation, or failure.
+- **Import validation testability:** GLB/GLTF signature validation moved into a pure helper linked into the host test project, with unit coverage for valid GLB/GLTF files plus non-JSON first chunks, chunk overrun, unaligned chunk lengths, and missing glTF 2.0 asset metadata.
+- Verification: `tools\test.ps1` passed `109/109`; `tools\build.ps1` passed with `0` errors and the existing five shared XML-doc warnings outside the Android files touched in this batch.
+
 ### Fixed in `13967de` (`Harden GLES allocation cleanup`)
 
 - **R9 resource-lifetime follow-up:** fullscreen triangle setup now keeps VAO/VBO handles local until construction succeeds, unbinds GL state, and deletes any partial handles if buffer upload or vertex attribute setup throws.
