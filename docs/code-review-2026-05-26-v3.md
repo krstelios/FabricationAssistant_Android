@@ -13,6 +13,12 @@
 
 Updated 2026-05-27 after implementation and tablet verification.
 
+### Fixed in `867ddbc` (`Avoid throwaway appearance defaults`)
+
+- **S2 settings allocation cleanup:** `MainActivity.ApplySettingsToScene` now starts from `default(SceneAppearance)` before `AppSettings.Apply(ref appearance)` instead of creating default appearance arrays that are immediately overwritten by persisted settings values. The GL-thread handoff still calls `CreateRendererSnapshot()`, so array fields remain isolated for queued renderer commands.
+- **Sections 6-11 document normalization:** the original rendering/import/settings/dead-code/simplification findings are now marked by current resolved status. The only deliberate keep is `HorizontalTableScrollTouchListener`, which still coordinates BOM header/list horizontal dragging and is already disposed on panel teardown.
+- Verification: `tools\test.ps1` passed `109/109`; `tools\build.ps1` passed with `0` errors and the existing five shared XML-doc warnings outside the Android files touched in this batch.
+
 ### Fixed in `802a1b4` (`Harden GLES framebuffer allocation cleanup`)
 
 - **R9 offscreen framebuffer allocation cleanup:** normal/depth, pick, outline-mask, and MSAA framebuffer resize paths now unwind partially created textures, renderbuffers, framebuffers, and GL bindings if allocation, storage, attachment, or status checks fail mid-setup.
@@ -422,111 +428,67 @@ A 3-byte file containing `gl{` passes validation. Reject below minimum sizes.
 
 ## 6. Rendering / GLES problems
 
-- **R1.** `ShaderProgram` vs-leak on fs failure (B1, P1).
-- **R2.** `ShaderProgram` link failure leaves attached shaders potentially unfreed in non-conformant drivers (P2). Detach + delete shaders before `DeleteProgram` on failure path.
-- **R3.** `GpuMesh` ctor-time `Gen*` invalidated by context loss (B3, P1).
-- **R4.** `GpuMesh.Upload` LOH allocations unpooled (B4, P1).
-- **R5.** `GpuScene.Load` swap window (B2, P1).
-- **R6.** `GpuScene.SyncNodeTransforms` recomputes `WorldNormalMatrix`/`WorldBounds` for every node every call without dirty tracking - wasted CPU on visibility-only changes.
-- **R7.** `ViewportCameraMath.ClampAspect` clamps to `[0.1, 10.0]` silently (`ViewportCameraMath.cs:104-105`). Foldable / ultrawide tablets may report aspects outside this range.
-- **R8.** `SceneUploader.Upload` correctly catches and disposes partial uploads (lines 88-94) - **good** (strength worth noting).
-- **R9 (renderer-agent batch, all file:line):**
-  - **P1** `GlesViewportRenderer.cs:472-812` MSAA recovery infinite loop (B18).
-  - **P1** `GlesViewportRenderer.cs:1062-1076` Section-cap stencil depth ordering desync.
-  - **P2** `GlesViewportRenderer.cs:587-594` AO bound to unit 4, ActiveTexture(0) reset - overlays must explicitly bind their unit; one missing bind reads stale AO.
-  - **P2** `GlesViewportRenderer.cs:1597-1615` `ResetMainFramebufferState` restores depth/blend/stencil/cull but **not viewport** - any overlay that changes viewport leaks to the next pass.
-  - **P1** `GlesOutlineRenderer.cs:131-170` mask pass disables depth test then `ResetMainFramebufferState` is not called (B20).
-  - **P2** `GlesSsaoRenderer.cs:233-261,292` last blur FBO binding leaks into read framebuffer for downstream `BindFramebuffer(ReadFramebuffer,...)` callers.
-  - **P1** `GlesGridRenderer.cs:152-163` `DepthMask(false)` never restored if exception interrupts the pass.
-  - **P1** `GlesViewportRenderer.cs:250-260` `ClearProgramUniformCaches` runs before `DisposeResources`.
-  - **P1** `GlesViewportRenderer.cs:299` `_whiteAoTexture` recreated without verifying prior dispose - orphan on double-OnSurfaceCreated.
-  - **P1** multiple overlay VAO/VBO stale across context loss (B19).
-  - **P2** Line widths > 1.0 in `GlesSectionOverlay`, mesh edges, `GlesMeasurementOverlay`. Android GL ES often caps `GL_ALIASED_LINE_WIDTH_RANGE` at 1.0.
-  - **P2** Point sizes (`GlesSectionOverlay.cs:93` pointSize=13; `GlesAxisTriadOverlay.cs:52` 96-180 px) not clamped to `GL_POINT_SIZE_MAX_EXT`.
-  - **P1** `ReadPixels` immediate stall on mobile (L10).
-  - **P1** FBO incomplete falls back to FBO 0 silently (`GlesNormalDepthRenderer.cs:86-92`, `GlesPickRenderer.cs:102-110`).
+- **R1-R5:** fixed in `955147f`.
+- **R6:** fixed in `942c234`.
+- **R7:** fixed in `955147f`.
+- **R8:** remains a strength; no action required.
+- **R9:** fixed and hardened across `955147f`, `486b5c0`, `cf75428`, `81caa73`, `13967de`, `802a1b4`, `9a104b8`, and `c5f74c9`. This includes MSAA fallback, section-cap depth ordering, AO/viewport binding hygiene, outline/grid pass state restoration, SSAO readback binding, white AO texture cleanup, overlay VAO/VBO context handling, line/point primitive clamping, readback flushing/diagnostic finishing, and incomplete-FBO handling.
+- **Remaining action:** no active rendering/GLES bug from this section. Latest APK still needs a recent-file tablet regression pass after the newest commits.
 
 ---
 
 ## 7. File import and SAF problems
 
-- **I1.** **P0** SAF persistable permission taken AFTER import success - dead recents on process death (B10).
-- **I2.** **P1** `RecentFilesStore` uses `Apply()` not `Commit()` (B11).
-- **I3.** **P1** ContentResolver input stream lifecycle on timeout cancellation (`ImportPipeline.cs:107-117`). Prefer `await using`.
-- **I4.** **P1** URI dedup uses `StringComparison.Ordinal` (`RecentFilesList.cs:45`) - percent-encoded variants duplicate.
-- **I5.** **P2** `RecentFilesStore.Load.FilterAccessible` (`RecentFilesStore.cs:20-35`) probes via `HasReadableAccess()` - flicker if permission is intermittent.
-- **I6.** **P1** `ImportFileTypeResolver` trusts mime type for `.fa` mapping (B14).
-- **I7.** **P1** `ValidateLocalFileSignatureAsync` accepts truncated header files (B23).
-- **I8.** **P1** Concurrent imports not serialized (B13).
-- **I9.** **P1** Draco transcoder loads whole GLB into memory (B12).
-- **I10.** **P1** Draco MemoryStream grows unbounded during decode (`DracoGltfTranscoder.cs:43,84-96`).
-- **I11.** `AndroidScenePackageState` uses `SHA256.HashData` for deterministic occurrence IDs (line 189-198). Stable; safe.
-- **I12.** `AppServices.Build` (line 38-43) calls `ValidateOnBuild = true` - validates DI graph at build time. **Strength**.
+- **I1-I2:** fixed in `955147f`.
+- **I3:** fixed in `955147f` via `await using` on SAF streams.
+- **I4:** fixed in `955147f`.
+- **I5:** fixed in `64c602d`.
+- **I6-I7:** fixed in `955147f` and strengthened in `0affdfa`.
+- **I8:** fixed in `deac167`.
+- **I9-I10:** fixed in `5dc1bd3` and `955147f`.
+- **I11-I12:** strengths; no action required.
+- **Remaining action:** no active import/SAF bug from this section.
 
 ---
 
 ## 8. Settings / persistence problems
 
-- **S1.** **P1** `AppSettings.Edit` (line 365-371) uses `editor.Apply()` (async). Schema migration commit at line 502 is also `.Apply()` - migration not durable on crash.
-- **S2.** **P2** `AppSettings.Apply(ref appearance)` allocates a fresh array per color field on every call. Acceptable today; future hot-path callers would churn.
-- **S3.** **P2** Setters call `Prefs.Edit().PutXxx().Apply()` (line 373-375) - one transaction per setter.
-- **S4.** **P1** `AppSettings.MsaaSamples` clamp (line 230 + `AppSettingsValueGuards.ClampAndroidMsaaSamples` line 8-14) maps `value > 2 -> 4`. If a future version offers 8x, this read-side clamp downgrades silently with no notice.
-- **S5.** **P2** `PreferencesBottomSheet.CreateEmbeddedView` calls `AppSettings.Initialize(ctx)` defensively (line 65) - idempotent so OK.
-- **S6.** **P2** `PreferencesBottomSheet.OnDestroy` (line 57) only nulls `OnSettingsChanged`; doesn't dispose color-picker drawables created in `ShowColorPickerDialog`.
-- **S7.** **P3** Schema migration drops settings only if value approximately equals OLD default (lines 404-484). Idempotent - good. App killed mid-migration re-runs all removes on next launch.
-- **S8.** **P3** Setter clamps are present everywhere but no setter raises a "Changed" event. `PreferencesBottomSheet.NotifySettingsChanged` (line 1458) handles it via the enclosing closures - implicit contract.
+- **S1:** fixed in `955147f`.
+- **S2:** partially optimized in `867ddbc` by avoiding throwaway default `SceneAppearance` arrays before applying persisted settings. `AppSettings.Apply` still replaces color arrays to preserve the GL-thread snapshot contract; in-place mutation is intentionally avoided.
+- **S3:** fixed in `e92e4be`.
+- **S4:** fixed in `c0c36d6`.
+- **S5:** acceptable/idempotent; no action required.
+- **S6:** fixed in `942c234` and the embedded-settings follow-up in `478395f`.
+- **S7-S8:** acceptable behavior/implicit UI contract; no action required.
+- **Remaining action:** no active settings/persistence bug from this section.
 
 ---
 
 ## 9. Hardening recommendations
 
-1. **Take SAF persistable URI permission immediately on pick** (I1, P0).
-2. **Switch RecentFilesStore writes and schema-migration writes to `Commit()`** (S1, I2, P1).
-3. **Add a load-in-flight semaphore around `OpenModelUriAsync`/`ReloadRendererSceneAfterContextLossAsync`** (B9, I8, P1).
-4. **Wrap `GpuMesh.Upload` large allocations with `ArrayPool`** (B4, P1).
-5. **Make `GpuScene.Load` atomic** (B2, P1).
-6. **Fix MSAA resolve loop to fall back exactly once** (R9-MSAA, P1).
-7. **Call `ResetMainFramebufferState` after every overlay pass** that mutates GL state (R9-multiple, P1).
-8. **Regenerate every overlay's VAO/VBO on `OnSurfaceCreated`**, not lazily on next draw (R9-VAO, P1).
-9. **Implement S-Pen hover at `AndroidPointerSource`** (B21, P1).
-10. **Defer palm rejection arming to ACTION_DOWN** (B22, P1).
-11. **Validate file structure beyond magic bytes for `.fa`/`.gltf`/`.glb`** (B14, B23, I6, I7, P1).
-12. **Stream Draco transcoding to disk; never load whole GLB into byte[]** (B12, I9, I10, P1).
-13. **Add Scene version counter so raycast acceleration invalidates on in-place mutation** (B16, P1).
-14. **Make `AndroidMeasureIntegration` IDisposable; unsubscribe events on tool switch** (B17, P1).
-15. **Wrap `ShaderProgram` ctor in try/catch to delete `vs` if `fs` fails; detach+delete shaders before deleting failed program** (B1, R2, P1).
-16. **Query `GL_ALIASED_LINE_WIDTH_RANGE` and `GL_POINT_SIZE_MAX` at renderer init; clamp**, or expand sub-pixel lines into ribbons (R9-line-width, P2).
-17. **Add `Finish()` before `ReadPixels` on mobile or gate behind explicit diagnostic flag** (R9-readpixels, P1).
-18. **Propagate FBO-incomplete errors to caller; do not silently fall back to FBO 0** (R9-fbo, P1).
-19. **Add `_paused` flag short-circuit in `ViewportSurfaceView.RequestRender`** (B6, P1).
-20. **In `OnDestroy`, null the View listeners** and detach all button click handlers (B7, P1).
-21. **Log when `ViewportCameraMath.ClampAspect` triggers** (R7, P2).
-22. **Selection state on BOM/ModelExplorer should key on node ID, not row reference** (B15, P1).
-23. **Document the `SceneAppearance` array-immutability contract at every consumer** (B5, P1).
-24. **Lengthen / parameterize `AndroidDispatcher.Send` timeout, or eliminate `Send` in favor of `Post`** (B8, P1).
-25. **Lazy-init `GpuMesh` VAO/VBO/EBO in `Upload`** (B3, P1).
+All items in this section are implemented or intentionally closed by the fix-progress entries above. Some were solved by a narrower hardening path than the original wording, but the risk described by each recommendation is no longer active.
 
 ---
 
 ## 10. Dead code candidates
 
-- **D1.** **`AndroidPathComparer`** (`Android\src\FabricationAssistant.App.Android\AndroidPathComparer.cs`) - SAF/import agent reports zero callers outside its own test file. Verify with `Grep` for `AndroidPathComparer\.` before deletion.
-- **D2.** **`GlesViewportRenderer.SetMat3`/`SetMat4` non-shader-program overloads** (`GlesViewportRenderer.cs:1672-1684`) - replaced by the `(ShaderProgram, name, matrix)` overload everywhere; no callers.
-- **D3.** **`MainActivity._preferredPointerFallbackLogged`** (line 97) static int - assigned via `Interlocked.Exchange` once for one-shot logging; works but unusual.
-- **D4.** **`MainActivity._lastSlowFrameLogTicks`** (`GlesViewportRenderer.cs:56,1234-1241`) - throttle that never resets across mode changes.
-- **D5.** **`HorizontalTableScrollTouchListener`** in `AndroidBomPanel.cs:1081-1145` - reimplements horizontal scroll on top of `HorizontalScrollView`. Verify the standard widget cannot do this before keeping.
-- **D6.** **`BomPanelAdapter` ">" / "v" expansion text indicator** (`AndroidBomPanel.cs:840`) - redundant with the click-driven expand button.
+- **D1:** verified live in `53361ea`; keep.
+- **D2:** removed in `cf75428`.
+- **D3:** fixed in `478395f`.
+- **D4:** fixed in `f80d6bb`.
+- **D5:** kept after verification. `HorizontalTableScrollTouchListener` still coordinates BOM table horizontal dragging from both header and list rows into the shared `HorizontalScrollView`; it is now explicitly detached/disposed with the panel, so the original lifecycle risk is closed.
+- **D6:** fixed in `478395f`.
 
 ---
 
 ## 11. Simplification opportunities
 
-- **C1.** `AppSettings.Initialize` could use `Interlocked.CompareExchange` instead of lock + `??=`. Marginal.
-- **C2.** `AppSettings.Edit` block - skip (no disposable editor on AndroidX).
-- **C3.** `GpuScene.IsIdentity(float[])` and `IsIdentity(Matrix4d)` - keep both (intentionally distinct inputs).
-- **C4.** `MainActivity`'s 9000+ lines - you have explicitly forbidden splitting.
-- **C5.** The migration block in `AppSettings.MigrateDefaultsIfNeeded` (lines 385-503) lists every prior default by hand. A `static readonly (string key, float old)[]` table would shrink the surface and prevent missed entries.
-- **C6.** `AndroidScenePackageState.GetNodeIdsForOccurrences` (line 41-56) iterates `scene.NodesById.Values` twice - LINQ chain already optimal.
+- **C1:** fixed in `478395f`.
+- **C2:** intentionally skipped; Android `ISharedPreferencesEditor` is not disposable.
+- **C3:** intentionally kept; the overloads take distinct matrix representations.
+- **C4:** intentionally skipped per project constraint against splitting `MainActivity`.
+- **C5:** fixed in `942c234`.
+- **C6:** intentionally kept; current LINQ chain is acceptable and low risk.
 
 ---
 
