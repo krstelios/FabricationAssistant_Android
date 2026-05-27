@@ -11,12 +11,13 @@ using ColorStateList = Android.Content.Res.ColorStateList;
 
 namespace FabricationAssistant.App.Android;
 
-internal sealed class AndroidModelExplorerPanel
+internal sealed class AndroidModelExplorerPanel : IDisposable
 {
     private readonly Func<Scene?> _sceneAccessor;
     private readonly List<AndroidModelExplorerRow> _visibleRows = new();
     private readonly HashSet<int> _highlightedPresentedIds = new();
     private readonly HashSet<int> _pathPresentedIds = new();
+    private readonly List<MaterialButton> _actionButtons = new();
 
     private Scene? _scene;
     private AndroidModelExplorerTree? _tree;
@@ -27,6 +28,7 @@ internal sealed class AndroidModelExplorerPanel
     private bool _packDuplicates;
     private int? _selectedPresentedId;
     private int _rowVersion;
+    private bool _disposed;
 
     public AndroidModelExplorerPanel(Func<Scene?> sceneAccessor)
     {
@@ -39,6 +41,9 @@ internal sealed class AndroidModelExplorerPanel
 
     public View CreateView(Context ctx)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        DisposeViewContent();
+
         int pad = Dp(ctx, 14);
         var root = new LinearLayout(ctx)
         {
@@ -81,16 +86,7 @@ internal sealed class AndroidModelExplorerPanel
             FastScrollEnabled = true,
         };
         _list.SetBackgroundColor(ColorRes(ctx, Resource.Color.fa_app_background));
-        _list.ItemClick += (_, e) =>
-        {
-            if (e.Position < 0 || e.Position >= _visibleRows.Count)
-                return;
-
-            AndroidModelExplorerNode node = _visibleRows[e.Position].Node;
-            _selectedPresentedId = node.Id;
-            NodeSelected?.Invoke(node);
-            _adapter?.NotifyDataSetChanged();
-        };
+        _list.ItemClick += OnListItemClick;
         root.AddView(_list, new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MatchParent,
             0,
@@ -98,6 +94,58 @@ internal sealed class AndroidModelExplorerPanel
 
         SetScene(_sceneAccessor());
         return root;
+    }
+
+    public IDisposable CreateViewDisposer()
+        => new ModelExplorerViewDisposer(this);
+
+    public void DisposeView()
+        => DisposeViewContent();
+
+    public void Dispose()
+    {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+        DisposeViewContent();
+        NodeSelected = null;
+        VisibilityChanged = null;
+        _visibleRows.Clear();
+        _highlightedPresentedIds.Clear();
+        _pathPresentedIds.Clear();
+        _tree = null;
+        _scene = null;
+    }
+
+    private void DisposeViewContent()
+    {
+        if (_list is not null)
+        {
+            _list.ItemClick -= OnListItemClick;
+            _list.Adapter = null;
+        }
+
+        foreach (MaterialButton button in _actionButtons)
+            button.SetOnClickListener(null);
+        _actionButtons.Clear();
+
+        _adapter?.Dispose();
+        _adapter = null;
+        _list = null;
+        _status = null;
+        _summary = null;
+    }
+
+    private void OnListItemClick(object? sender, AdapterView.ItemClickEventArgs e)
+    {
+        if (e.Position < 0 || e.Position >= _visibleRows.Count)
+            return;
+
+        AndroidModelExplorerNode node = _visibleRows[e.Position].Node;
+        _selectedPresentedId = node.Id;
+        NodeSelected?.Invoke(node);
+        _adapter?.NotifyDataSetChanged();
     }
 
     public void SetScene(Scene? scene)
@@ -259,7 +307,7 @@ internal sealed class AndroidModelExplorerPanel
         }));
     }
 
-    private static MaterialButton CreateActionButton(Context ctx, string text, Action action)
+    private MaterialButton CreateActionButton(Context ctx, string text, Action action)
     {
         var button = new MaterialButton(ctx)
         {
@@ -277,7 +325,8 @@ internal sealed class AndroidModelExplorerPanel
         button.StrokeWidth = Dp(ctx, 1);
         button.CornerRadius = Dp(ctx, 6);
         button.SetPadding(Dp(ctx, 10), 0, Dp(ctx, 10), 0);
-        button.Click += (_, _) => action();
+        button.SetOnClickListener(new ActionClickListener(action));
+        _actionButtons.Add(button);
 
         var lp = new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.WrapContent,
@@ -444,7 +493,9 @@ internal sealed class AndroidModelExplorerPanel
             expand.SetTextColor(ColorRes(_ctx, Resource.Color.fa_text_secondary));
             expand.Clickable = node.Children.Count > 0;
             expand.Focusable = false;
-            expand.Click += (_, _) => _toggleExpansion(node);
+            expand.SetOnClickListener(node.Children.Count > 0
+                ? new NodeActionClickListener(_toggleExpansion, node)
+                : null);
             root.AddView(expand, new LinearLayout.LayoutParams(Dp(_ctx, 28), Dp(_ctx, 36)));
 
             var icon = new TextView(_ctx)
@@ -487,7 +538,7 @@ internal sealed class AndroidModelExplorerPanel
             visibility.SetColorFilter(ColorRes(_ctx, node.IsVisible
                 ? Resource.Color.fa_text_secondary
                 : Resource.Color.fa_text_disabled));
-            visibility.Click += (_, _) => _toggleVisibility(node);
+            visibility.SetOnClickListener(new NodeActionClickListener(_toggleVisibility, node));
             root.AddView(visibility, new LinearLayout.LayoutParams(Dp(_ctx, 40), Dp(_ctx, 36)));
 
             return root;
@@ -524,6 +575,32 @@ internal sealed class AndroidModelExplorerPanel
                         : global::Android.Resource.Color.Transparent;
             background.SetColor(ColorRes(ctx, colorRes));
             return background;
+        }
+    }
+
+    private sealed class ActionClickListener(Action action) : Java.Lang.Object, View.IOnClickListener
+    {
+        public void OnClick(View? v) => action();
+    }
+
+    private sealed class NodeActionClickListener(
+        Action<AndroidModelExplorerNode> action,
+        AndroidModelExplorerNode node) : Java.Lang.Object, View.IOnClickListener
+    {
+        public void OnClick(View? v) => action(node);
+    }
+
+    private sealed class ModelExplorerViewDisposer(AndroidModelExplorerPanel owner) : IDisposable
+    {
+        private bool _disposed;
+
+        public void Dispose()
+        {
+            if (_disposed)
+                return;
+
+            _disposed = true;
+            owner.DisposeView();
         }
     }
 }

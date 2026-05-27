@@ -824,7 +824,10 @@ public sealed class MainActivity : AppCompatActivity
             VisibilityChanged = SetModelExplorerNodeVisibility,
         };
 
-        ShowLeftToolPanel(LeftToolPanelKind.ModelExplorer, _modelExplorerPanel.CreateView(this));
+        ShowLeftToolPanel(
+            LeftToolPanelKind.ModelExplorer,
+            _modelExplorerPanel.CreateView(this),
+            _modelExplorerPanel.CreateViewDisposer());
         SyncModelExplorerSelectionFromViewport(scrollToSelection: false);
     }
 
@@ -9562,6 +9565,8 @@ public sealed class MainActivity : AppCompatActivity
         _pointerSource = null;
         _measure?.Dispose();
         _measure = null;
+        _modelExplorerPanel?.Dispose();
+        _modelExplorerPanel = null;
         _picker?.Dispose();
         _picker = null;
         DisposeStyledTooltips();
