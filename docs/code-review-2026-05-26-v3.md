@@ -19,7 +19,7 @@ Updated 2026-05-27 after implementation and tablet verification.
 - **Close-up depth precision:** Android camera clip-plane refreshes now go through `AndroidCameraClipPlanes.Update`, which keeps perspective near/far planes tight to the projected scene bounds instead of retaining the shared `sceneDiagonal * 100` far slab. This reduces close-up depth quantization/z-fighting on tablet views. Unit coverage verifies both inside-bounds close-ups and outside-bounds perspective views.
 - Verification: `tools\test.ps1` passed `101/101`; `tools\build.ps1` passed with `0` warnings/errors. The signed debug APK containing `9a104b8` was installed on tablet `R52TA040AQT`; user-controlled visual check reported the render artifact was looking OK.
 
-### Fixed in `0b8ae24` (`Harden GLES render pass state cleanup`)
+### Fixed in `81caa73` (`Harden GLES render pass state cleanup`)
 
 - **R9 overlay-state bleed follow-up:** main surface and CAD edge passes now restore mesh culling, depth mask, blend state, and polygon offset from `finally` blocks, so an interrupted draw cannot leak state into the next pass or frame.
 - **R9 section-cap stencil hardening:** section cap rendering now restores color mask, stencil mask/function/op, stencil test, and main framebuffer state from `finally`, protecting the renderer if cap stencil geometry or cap overlay drawing fails.
