@@ -31,6 +31,7 @@ public sealed class ViewportSurfaceView : GLSurfaceView
     private int _rendererDisposeQueued;
     private int _queueSoftCapWarningArmed;
     private int _paused;
+    private int _disposed;
 
     public GlesViewportRenderer Renderer => _renderer;
 
@@ -56,7 +57,7 @@ public sealed class ViewportSurfaceView : GLSurfaceView
 
     public new void RequestRender()
     {
-        if (Volatile.Read(ref _paused) != 0)
+        if (!CanScheduleRendering())
             return;
 
         Volatile.Write(ref _renderRequestPending, 1);
@@ -65,20 +66,14 @@ public sealed class ViewportSurfaceView : GLSurfaceView
 
         if (Looper.MyLooper() == Looper.MainLooper)
             PostVsyncRenderCallback();
-        else
-            _mainHandler.Post(PostVsyncRenderCallback);
+        else if (!TryPostToMain(PostVsyncRenderCallback, "schedule-vsync-render"))
+            ClearPendingRenderCallbacks();
     }
 
     protected override void OnDetachedFromWindow()
     {
+        MarkDisposed("detached");
         DisposeRendererOnGlThread();
-        ClearPendingRenderCallbacks();
-
-        if (Looper.MyLooper() == Looper.MainLooper)
-            MainChoreographer.RemoveFrameCallback(_vsyncRenderCallback);
-        else
-            _mainHandler.Post(() => MainChoreographer.RemoveFrameCallback(_vsyncRenderCallback));
-
         base.OnDetachedFromWindow();
     }
 
@@ -87,26 +82,34 @@ public sealed class ViewportSurfaceView : GLSurfaceView
         Volatile.Write(ref _paused, 1);
         ClearPendingRenderCallbacks();
         ClearPendingRendererCommands("pause");
-        if (Looper.MyLooper() == Looper.MainLooper)
-            MainChoreographer.RemoveFrameCallback(_vsyncRenderCallback);
-        else
-            _mainHandler.Post(() => MainChoreographer.RemoveFrameCallback(_vsyncRenderCallback));
+        RemoveVsyncRenderCallback("pause");
         base.OnPause();
     }
 
     public new void OnResume()
     {
+        if (Volatile.Read(ref _disposed) != 0)
+            return;
+
         Volatile.Write(ref _paused, 0);
         base.OnResume();
+        if (!_pending.IsEmpty)
+            RequestRender();
     }
 
-    public void QueueRendererCommand(Action<GL> action)
+    public bool QueueRendererCommand(Action<GL> action)
         => QueueRendererCommand("renderer-command", action);
 
-    public void QueueRendererCommand(string name, Action<GL> action, bool logSlow = true)
+    public bool QueueRendererCommand(string name, Action<GL> action, bool logSlow = true)
     {
         ArgumentNullException.ThrowIfNull(action);
         string commandName = string.IsNullOrWhiteSpace(name) ? "renderer-command" : name;
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            Log.Warn("FA.RenderQueue", $"Dropped GL command: name={commandName}, reason=disposed.");
+            return false;
+        }
+
         long queuedTicks = Stopwatch.GetTimestamp();
         _pending.Enqueue(gl =>
         {
@@ -142,11 +145,15 @@ public sealed class ViewportSurfaceView : GLSurfaceView
         {
             Interlocked.Exchange(ref _queueSoftCapWarningArmed, 0);
         }
-        RequestRender();
+        if (CanScheduleRendering())
+            RequestRender();
+
+        return true;
     }
 
     public void DisposeRendererOnGlThread()
     {
+        MarkDisposed("dispose");
         if (Interlocked.Exchange(ref _rendererDisposeQueued, 1) != 0)
             return;
 
@@ -169,6 +176,12 @@ public sealed class ViewportSurfaceView : GLSurfaceView
 
     public Task WaitForNextRenderedFrameAsync(CancellationToken cancellationToken)
     {
+        if (Volatile.Read(ref _disposed) != 0)
+            return Task.FromException(new ObjectDisposedException(nameof(ViewportSurfaceView)));
+
+        if (Volatile.Read(ref _paused) != 0)
+            return Task.FromCanceled(new CancellationToken(canceled: true));
+
         var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         CancellationTokenRegistration registration = default;
         int completed = 0;
@@ -202,8 +215,8 @@ public sealed class ViewportSurfaceView : GLSurfaceView
 
         if (cancellationToken.IsCancellationRequested)
             Cancel();
-        else
-            QueueRendererCommand("first-frame-marker", _ => Volatile.Write(ref armed, 1));
+        else if (!QueueRendererCommand("first-frame-marker", _ => Volatile.Write(ref armed, 1)))
+            Cancel();
 
         return tcs.Task;
     }
@@ -219,10 +232,24 @@ public sealed class ViewportSurfaceView : GLSurfaceView
     public void PickAsync(int x, int y, string reason, Action<int?> callback)
     {
         ArgumentNullException.ThrowIfNull(callback);
-        QueueRendererCommand("pick:" + reason, _ =>
+        string commandName = "pick:" + reason;
+        if (!CanScheduleRendering())
         {
+            Log.Warn("FA.RenderQueue", $"Dropped pick request: name={commandName}, reason={GetRenderUnavailableReason()}.");
+            return;
+        }
+
+        QueueRendererCommand(commandName, _ =>
+        {
+            if (!CanScheduleRendering())
+                return;
+
             int? hit = _renderer.Pick(x, y);
-            _mainHandler.Post(() => callback(hit));
+            TryPostToMain(() =>
+            {
+                if (CanScheduleRendering())
+                    callback(hit);
+            }, commandName);
         });
     }
 
@@ -246,19 +273,40 @@ public sealed class ViewportSurfaceView : GLSurfaceView
     }
 
     private void OnRendererSurfaceCreated()
-        => _mainHandler.Post(() => RendererSurfaceCreated?.Invoke());
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+            return;
+
+        TryPostToMain(() =>
+        {
+            if (Volatile.Read(ref _disposed) == 0)
+                RendererSurfaceCreated?.Invoke();
+        }, "renderer-surface-created");
+    }
 
     private void PostVsyncRenderCallback()
     {
-        if (Volatile.Read(ref _paused) == 0
-            && Volatile.Read(ref _renderRequestScheduled) != 0)
+        if (!CanScheduleRendering()
+            || Volatile.Read(ref _renderRequestScheduled) == 0)
+        {
+            return;
+        }
+
+        try
+        {
             MainChoreographer.PostFrameCallback(_vsyncRenderCallback);
+        }
+        catch (Exception ex)
+        {
+            ClearPendingRenderCallbacks();
+            Log.Warn("FA.Renderer", "Could not post vsync render callback: " + ex.Message);
+        }
     }
 
     private void OnVsyncRender(long frameTimeNanos)
     {
         Interlocked.Exchange(ref _renderRequestScheduled, 0);
-        if (Volatile.Read(ref _paused) != 0)
+        if (!CanScheduleRendering())
         {
             Interlocked.Exchange(ref _renderRequestPending, 0);
             return;
@@ -282,6 +330,64 @@ public sealed class ViewportSurfaceView : GLSurfaceView
 
         if (count > 0)
             Log.Warn("FA.RenderQueue", $"Dropped {count} pending GL command(s): reason={reason}.");
+    }
+
+    private bool CanScheduleRendering()
+        => Volatile.Read(ref _paused) == 0 && Volatile.Read(ref _disposed) == 0;
+
+    private string GetRenderUnavailableReason()
+        => Volatile.Read(ref _disposed) != 0
+            ? "disposed"
+            : Volatile.Read(ref _paused) != 0
+                ? "paused"
+                : "unavailable";
+
+    private void MarkDisposed(string reason)
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
+
+        RendererSurfaceCreated = null;
+        ClearPendingRenderCallbacks();
+        ClearPendingRendererCommands(reason);
+        RemoveVsyncRenderCallback(reason);
+    }
+
+    private void RemoveVsyncRenderCallback(string reason)
+    {
+        void Remove()
+        {
+            try
+            {
+                MainChoreographer.RemoveFrameCallback(_vsyncRenderCallback);
+            }
+            catch (Exception ex)
+            {
+                Log.Warn("FA.Renderer", $"Could not remove vsync render callback: reason={reason}, error={ex.Message}");
+            }
+        }
+
+        if (Looper.MyLooper() == Looper.MainLooper)
+            Remove();
+        else
+            TryPostToMain(Remove, "remove-vsync-render-" + reason);
+    }
+
+    private bool TryPostToMain(Action action, string reason)
+    {
+        try
+        {
+            if (_mainHandler.Post(action))
+                return true;
+
+            Log.Warn("FA.Renderer", $"Main looper post rejected: reason={reason}.");
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("FA.Renderer", $"Main looper post failed: reason={reason}, error={ex.Message}");
+        }
+
+        return false;
     }
 
     private sealed class VsyncRenderCallback : Java.Lang.Object, Choreographer.IFrameCallback

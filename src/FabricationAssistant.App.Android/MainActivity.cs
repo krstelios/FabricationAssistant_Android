@@ -7219,7 +7219,7 @@ public sealed class MainActivity : AppCompatActivity
         var tcs = new TaskCompletionSource<BoundingBox>(TaskCreationOptions.RunContinuationsAsynchronously);
         var registration = ct.Register(() => tcs.TrySetCanceled(ct));
 
-        viewport.QueueRendererCommand("load-document", gl =>
+        bool queued = viewport.QueueRendererCommand("load-document", gl =>
         {
             GpuScene? newScene = null;
             try
@@ -7271,6 +7271,11 @@ public sealed class MainActivity : AppCompatActivity
                 }
             }
         });
+        if (!queued)
+        {
+            registration.Dispose();
+            return Task.FromException<BoundingBox>(new ObjectDisposedException(nameof(ViewportSurfaceView)));
+        }
 
         return CompleteRendererLoadAsync(tcs.Task, registration);
     }
