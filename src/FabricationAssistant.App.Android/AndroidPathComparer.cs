@@ -32,11 +32,49 @@ internal sealed class AndroidPathComparer : IComparer<string>
 
     private static int CompareSegment(string left, string right)
     {
-        bool leftNumber = int.TryParse(left, out int leftValue);
-        bool rightNumber = int.TryParse(right, out int rightValue);
+        bool leftNumber = IsUnsignedInteger(left);
+        bool rightNumber = IsUnsignedInteger(right);
         if (leftNumber && rightNumber)
-            return leftValue.CompareTo(rightValue);
+            return CompareUnsignedIntegerText(left, right);
 
         return string.Compare(left, right, StringComparison.Ordinal);
+    }
+
+    private static bool IsUnsignedInteger(string value)
+    {
+        if (value.Length == 0)
+            return false;
+
+        foreach (char ch in value)
+        {
+            if (ch < '0' || ch > '9')
+                return false;
+        }
+
+        return true;
+    }
+
+    private static int CompareUnsignedIntegerText(string left, string right)
+    {
+        ReadOnlySpan<char> normalizedLeft = TrimLeadingZeroes(left);
+        ReadOnlySpan<char> normalizedRight = TrimLeadingZeroes(right);
+        int lengthCompare = normalizedLeft.Length.CompareTo(normalizedRight.Length);
+        if (lengthCompare != 0)
+            return lengthCompare;
+
+        int valueCompare = normalizedLeft.SequenceCompareTo(normalizedRight);
+        if (valueCompare != 0)
+            return valueCompare;
+
+        return left.Length.CompareTo(right.Length);
+    }
+
+    private static ReadOnlySpan<char> TrimLeadingZeroes(string value)
+    {
+        int index = 0;
+        while (index < value.Length - 1 && value[index] == '0')
+            index++;
+
+        return value.AsSpan(index);
     }
 }

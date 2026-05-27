@@ -801,7 +801,7 @@ public sealed class MainActivity : AppCompatActivity
                 _ = OpenRecentFileAsync(entry);
             },
         };
-        ShowLeftToolPanel(LeftToolPanelKind.Recent, panel.CreateEmbeddedView(this));
+        ShowLeftToolPanel(LeftToolPanelKind.Recent, panel.CreateEmbeddedView(this), panel);
     }
 
     private void ToggleModelExplorerPanel()

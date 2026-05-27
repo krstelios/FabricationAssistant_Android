@@ -12,13 +12,15 @@ using ColorStateList = Android.Content.Res.ColorStateList;
 
 namespace FabricationAssistant.App.Android;
 
-public sealed class RecentFilesBottomSheet : BottomSheetDialogFragment
+public sealed class RecentFilesBottomSheet : BottomSheetDialogFragment, IDisposable
 {
     private const float TabletBreakpointDp = 700f;
     private const float TabletPanelWidthDp = 260f;
     private const float CompactPanelWidthDp = 240f;
     private int _sheetWidthOverridePx;
     private FrameLayout? _resizeHandle;
+    private readonly List<MaterialCardView> _recentCards = [];
+    private bool _disposed;
 
     public Action<RecentFileEntry>? OnRecentFileSelected { get; set; }
 
@@ -43,8 +45,23 @@ public sealed class RecentFilesBottomSheet : BottomSheetDialogFragment
     public override View OnCreateView(LayoutInflater inflater, ViewGroup? container, Bundle? savedInstanceState)
         => CreateEmbeddedView(Context!);
 
+    public override void OnDestroy()
+    {
+        DisposeManagedContent();
+        base.OnDestroy();
+    }
+
+    public new void Dispose()
+    {
+        DisposeManagedContent();
+        base.Dispose();
+    }
+
     public View CreateEmbeddedView(Context ctx)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        _recentCards.Clear();
+
         int pad = Dp(ctx, 16);
         var entries = RecentFilesStore.Load(ctx).Take(10).ToArray();
 
@@ -77,6 +94,21 @@ public sealed class RecentFilesBottomSheet : BottomSheetDialogFragment
 
         scroll.AddView(root);
         return scroll;
+    }
+
+    private void DisposeManagedContent()
+    {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+
+        foreach (MaterialCardView card in _recentCards)
+            card.SetOnClickListener(null);
+        _recentCards.Clear();
+        _resizeHandle?.SetOnTouchListener(null);
+        _resizeHandle = null;
+        OnRecentFileSelected = null;
     }
 
     private void ApplySheetLayout()
@@ -357,7 +389,8 @@ public sealed class RecentFilesBottomSheet : BottomSheetDialogFragment
         var card = CreateCard(ctx);
         card.Clickable = true;
         card.Focusable = true;
-        card.Click += (_, _) => OnRecentFileSelected?.Invoke(entry);
+        card.SetOnClickListener(new RecentFileClickListener(this, entry));
+        _recentCards.Add(card);
 
         var row = new LinearLayout(ctx) { Orientation = Orientation.Horizontal };
         row.SetGravity(GravityFlags.CenterVertical);
@@ -446,4 +479,15 @@ public sealed class RecentFilesBottomSheet : BottomSheetDialogFragment
     }
 
     private static Color GetColor(Context ctx, int resId) => new(ctx.GetColor(resId));
+
+    private sealed class RecentFileClickListener(
+        RecentFilesBottomSheet owner,
+        RecentFileEntry entry) : Java.Lang.Object, View.IOnClickListener
+    {
+        public void OnClick(View? v)
+        {
+            if (!owner._disposed)
+                owner.OnRecentFileSelected?.Invoke(entry);
+        }
+    }
 }
