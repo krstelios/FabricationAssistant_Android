@@ -47,6 +47,8 @@
              LinkBase="Linked\Gestures" />
     <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.Input.Gestures.Android\TouchGestureEvent.cs"
              LinkBase="Linked\Gestures" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.Input.Gestures.Android\AndroidCameraClipPlanes.cs"
+             LinkBase="Linked\Gestures" />
     <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.Input.Gestures.Android\ViewportTouchGestureRecognizer.cs"
              LinkBase="Linked\Gestures" />
     <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.Input.Gestures.Android\ViewportInteractionAdapter.cs"

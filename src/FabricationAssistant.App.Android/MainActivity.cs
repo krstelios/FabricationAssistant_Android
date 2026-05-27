@@ -710,7 +710,7 @@ public sealed class MainActivity : AppCompatActivity
         {
             FitCameraToBoundsPreservingView(_camera, fitBounds, aspect);
             if (fullBounds.IsValid)
-                _camera.UpdateClipPlanes(fullBounds);
+                AndroidCameraClipPlanes.Update(_camera, fullBounds);
         }
 
         RefreshMeasurementOverlays();
@@ -2605,7 +2605,7 @@ public sealed class MainActivity : AppCompatActivity
 
             BoundingBox fullBounds = GetFullSceneBounds();
             if (fullBounds.IsValid)
-                _camera.UpdateClipPlanes(fullBounds);
+                AndroidCameraClipPlanes.Update(_camera, fullBounds);
         }
 
         RefreshMeasurementOverlays();
@@ -2865,7 +2865,7 @@ public sealed class MainActivity : AppCompatActivity
         {
             FitCameraToBoundsPreservingView(_camera, bounds, aspect);
             if (fullBounds.IsValid)
-                _camera.UpdateClipPlanes(fullBounds);
+                AndroidCameraClipPlanes.Update(_camera, fullBounds);
         }
 
         _interaction?.SetNavigationPivot(bounds.Center);
@@ -5851,7 +5851,7 @@ public sealed class MainActivity : AppCompatActivity
             if (fitAll)
                 FitCameraToBoundsPreservingView(camera, fitBounds, aspect);
             if (fullBounds.IsValid)
-                camera.UpdateClipPlanes(fullBounds);
+                AndroidCameraClipPlanes.Update(camera, fullBounds);
 
             _isInFixedView = isLockEntry;
             effectivePerspective = camera.IsPerspective;
@@ -5894,7 +5894,7 @@ public sealed class MainActivity : AppCompatActivity
             camera.OrthoWidth = 10.0;
             FitCameraToBoundsPreservingView(camera, fitBounds, aspect);
             if (fullBounds.IsValid)
-                camera.UpdateClipPlanes(fullBounds);
+                AndroidCameraClipPlanes.Update(camera, fullBounds);
             effectivePerspective = camera.IsPerspective;
         }
 
@@ -5914,7 +5914,7 @@ public sealed class MainActivity : AppCompatActivity
         if (camera.IsPerspective != isPerspective)
             camera.SetProjectionMode(isPerspective, aspect);
         if (fullBounds.IsValid)
-            camera.UpdateClipPlanes(fullBounds);
+            AndroidCameraClipPlanes.Update(camera, fullBounds);
     }
 
     private void SetRendererProjectionAppearance(bool isPerspective)
@@ -7418,7 +7418,7 @@ public sealed class MainActivity : AppCompatActivity
             _camera.FarPlane = farPlane;
             _camera.IsPerspective = isPerspective;
             if (bounds.IsValid)
-                _camera.UpdateClipPlanes(bounds);
+                AndroidCameraClipPlanes.Update(_camera, bounds);
         }
 
         _isInFixedView = false;
@@ -9624,7 +9624,7 @@ public sealed class MainActivity : AppCompatActivity
 
                     _camera.SetProjectionMode(effectivePerspective, aspect);
                     if (_runtimeScene?.Bounds is { IsValid: true } bounds)
-                        _camera.UpdateClipPlanes(bounds);
+                        AndroidCameraClipPlanes.Update(_camera, bounds);
                     LogProjectionState(requestedPerspective, aspect);
                 }
             }

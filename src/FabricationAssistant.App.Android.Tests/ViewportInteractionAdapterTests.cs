@@ -284,7 +284,7 @@ public sealed class ViewportInteractionAdapterTests
         Assert.Equal(navigationBounds.Center.Y, camera.Target.Y, precision: 9);
         Assert.Equal(navigationBounds.Center.Z, camera.Target.Z, precision: 9);
         Assert.Equal(navigationBounds.Diagonal * 0.001, camera.MinOrthoWidth, precision: 9);
-        Assert.True(camera.FarPlane > 100000.0);
+        Assert.InRange(camera.FarPlane, 1000.0, 5000.0);
     }
 
     [Fact]

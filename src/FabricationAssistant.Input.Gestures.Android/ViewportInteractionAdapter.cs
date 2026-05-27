@@ -437,7 +437,7 @@ public sealed class ViewportInteractionAdapter
     {
         BoundingBox? bounds = _clipBoundsAccessor();
         if (bounds is { IsValid: true } valid)
-            _camera.UpdateClipPlanes(valid);
+            AndroidCameraClipPlanes.Update(_camera, valid);
     }
 
     private bool IsFixedViewLocked()

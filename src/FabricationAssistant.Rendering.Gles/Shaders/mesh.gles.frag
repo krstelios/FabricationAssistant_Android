@@ -62,10 +62,10 @@ void main()
     }
 
     vec3 normal = normalize(vNormal);
-    // Back-face flip: section cuts expose back faces. Keep normal winding
-    // strict when no section is active so single-sided mesh issues stay
-    // visible during debugging.
-    if (uSectionPlaneCount > 0 && !gl_FrontFacing) normal = -normal;
+    // A section cut or a double-sided mesh exposes geometry back faces.
+    // Match the desktop shader: flip those normals so they shade as real
+    // surfaces instead of collapsing to dark contour/ambient bands.
+    if (!gl_FrontFacing) normal = -normal;
 
     vec3 viewDir = normalize(uCameraPos - vWorldPos);
     vec3 worldUpDir = uWorldUpDir;

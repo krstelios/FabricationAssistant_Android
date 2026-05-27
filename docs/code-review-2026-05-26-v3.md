@@ -13,6 +13,12 @@
 
 Updated 2026-05-27 after implementation and tablet verification.
 
+### Fixed in pending batch (`GLES back-face lighting and close-up depth precision`)
+
+- **Live render artifact:** tablet captures showed the dark rail "edge leak" persisted with CAD Edges off and SSAO off. Local import inspection of `50-0001916_00.fa` showed all `666/666` meshes import as double-sided; the desktop shader flips normals for every back-facing fragment, but the GLES mesh shader only did so when section clipping was active. The GLES shader now matches desktop and flips `!gl_FrontFacing` normals in normal Shaded mode too, preventing double-sided back faces from shading as dark contour/ambient bands at grazing angles. `GlesShaderParityTests` locks this behavior.
+- **Close-up depth precision:** Android camera clip-plane refreshes now go through `AndroidCameraClipPlanes.Update`, which keeps perspective near/far planes tight to the projected scene bounds instead of retaining the shared `sceneDiagonal * 100` far slab. This reduces close-up depth quantization/z-fighting on tablet views. Unit coverage verifies both inside-bounds close-ups and outside-bounds perspective views.
+- Verification so far: `tools\test.ps1` passed `101/101`; `tools\build.ps1` passed with `0` warnings/errors. Tablet reinstall/visual verification still needs a user-controlled reproduction of the same camera angle after APK install.
+
 ### Fixed in `955147f` (`updates`)
 
 - **B1 / R1 / R2:** shader compile/link cleanup now deletes the vertex shader on fragment compile failure and detaches/deletes shaders on link failure.
