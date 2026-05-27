@@ -13,7 +13,7 @@
 
 Updated 2026-05-27 after implementation and tablet verification.
 
-### Fixed in pending batch (`Grid-aware Android clip planes`)
+### Fixed in `c5f74c9` (`Include Android grid in camera clip bounds`)
 
 - **Grid clipping regression after `9a104b8`:** the tight Android perspective clip slab projected only the model bounds, while the GLES ground grid renders a quad `8x` the scene diagonal around the model. At shallow camera angles, the grid plane could be clipped at the near and far edges even though the model depth remained correct. Android clip-plane updates now expand the clip envelope to include the rendered ground-grid quad when grid display is enabled, preserving the close-up depth-precision improvement without returning to the old `sceneDiagonal * 100` far slab. Unit coverage verifies the grid envelope and hidden-grid no-op behavior.
 - Verification so far: `tools\test.ps1` passed `103/103`; `tools\build.ps1` passed with `0` errors. The build emitted existing shared-project XML-doc warnings outside the Android files touched in this batch.
