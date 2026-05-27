@@ -125,16 +125,24 @@ Updated 2026-05-27 after implementation and tablet verification.
 - **L7:** lifecycle background tasks are now observed via an async try/catch helper, so faults are logged directly and cancellation is explicitly ignored without relying on a fault-only continuation.
 - **D3:** preferred-pointer fallback logging is now scoped to the activity instance instead of a process-wide static field.
 
+### Fixed in `53361ea` (`Harden dispatcher paths and recent panel cleanup`)
+
+- **L5 / dispatcher hardening:** `AndroidDispatcher.CheckAccess` now compares the current `Looper` with the captured main looper instead of holding a cached Java thread reference, and both `Post` and `Send` fail fast if Android rejects the handler post.
+- **L9:** `FabricationAssistantPaths` now publishes one immutable Android path snapshot with `Volatile.Read/Write`, avoiding partially observed static path state during startup/reconfiguration.
+- **Path shim correctness:** `FabricationAssistantPaths.CacheDirectory` now returns the configured Android cache directory instead of silently deriving `RootDirectory/cache`; root-constraining still uses the app data root snapshot.
+- **U10 follow-up:** embedded Recent files panel content is now passed through the left-panel disposal path and clears row click listeners, resize touch listener, and `OnRecentFileSelected` on replacement/close/destroy.
+- **D1 follow-up:** `AndroidPathComparer` is confirmed live and now sorts digit-only path segments by numeric text without `int` overflow, including very large occurrence ordinals and leading-zero variants. Unit coverage was added.
+
 ### Latest tablet verification
 
-- Installed the debug APK containing `478395f` on tablet `R52TA040AQT`.
+- Installed the debug APK containing `53361ea` on tablet `R52TA040AQT`.
 - Opened the app, loaded recent file `50-0001916_00.fa`.
-- Load log scan: `documentNodes=1937`, `documentMeshes=666`, `visibleMeshNodes=666`, diagonal `4.622`; tablet reports `GL_MAX_SAMPLES=4`, so the 8x-capable MSAA path clamps to 4x on this hardware. Initial `load-document` GL command run was `5118.0ms`.
-- Panel exercise: opened Settings, scrolled it, replaced it with hierarchy BOM, toggled the new BOM disclosure control, horizontally swiped the table, replaced it with consolidated BOM, then replaced it with Recent files. The app stayed alive; no left-panel disposal warning or lifecycle task failure was logged.
-- Scripted interaction: no fatal exception, ANR, import failure, GLES error, framebuffer failure, JNI error, or Choreographer skipped-frame warning.
-- Latest full-viewport render-queue run: sampled frame timing blocks averaged `15.7-17.5ms`, max `22.4ms`, with `0` blocks over `33ms` or `50ms`.
-- Render queue burst: top `pick:tap` run `36.8ms`, top wait `41.7ms`, slow-frame log count `2`, Choreographer skipped-frame log count during scripted interaction `0`.
-- Final app-PID logcat regression scan after scripted interaction: no crash, ANR, import, GLES, framebuffer, render, or load failure.
+- Load log scan: `documentNodes=1937`, `documentMeshes=666`, `visibleMeshNodes=666`, diagonal `4.622`; tablet reports `GL_MAX_SAMPLES=4`. Initial `load-document` GL command run was `5133.7ms`.
+- Panel exercise: opened Settings, scrolled it, replaced it with Recent files, Model Explorer, hierarchy BOM, consolidated BOM, then Recent files again. The app stayed alive; no left-panel disposal warning or lifecycle task failure was logged.
+- App-PID regression scan after load and panel exercise: no fatal exception, ANR, import failure, GLES error, framebuffer failure, JNI error, or disposal/lifecycle failure. One Choreographer skipped-frame entry occurred during the heavy import/upload window, before the post-load panel checks.
+- Latest full-viewport render-queue run: sampled frame timing blocks averaged `16.3-17.2ms`, max `27.5ms`, with `0` blocks over `33ms` or `50ms`.
+- Render queue burst: top `pick:tap` run `70.8ms`, top wait `62.1ms`, slow-frame log count `2`, Choreographer skipped-frame log count during scripted interaction `0`.
+- Final app-PID logcat regression scan after scripted interaction: no crash, ANR, import, GLES, framebuffer, render, disposal, lifecycle, or load failure.
 
 ---
 
