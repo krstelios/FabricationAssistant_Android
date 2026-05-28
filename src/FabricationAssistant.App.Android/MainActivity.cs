@@ -330,6 +330,7 @@ public sealed class MainActivity : AppCompatActivity
     private CloudOpenSession? _activeCloudSession;
     private readonly SemaphoreSlim _cloudSessionGate = new(1, 1);
     private int _cloudSessionEndInProgress;
+    private int _cloudAccessRevocationInProgress;
     private CloudFilesPanel? _cloudPanel;
     private string? _cloudReloadAvailablePackageId;
     private int? _cloudReloadAvailableCounter;
@@ -1036,10 +1037,11 @@ public sealed class MainActivity : AppCompatActivity
     private void OnCloudNotificationReceived(CloudNotificationEnvelope envelope)
     {
         string eventName = envelope.Event ?? "";
-        string? packageId = envelope.Scope?.Id;
+        string? scopeType = envelope.Scope?.Type;
+        string? scopeId = envelope.Scope?.Id;
         global::Android.Util.Log.Info(
             "FA.Cloud.SignalR",
-            $"Received {eventName} for {packageId ?? "unknown"} C{envelope.Scope?.Counter?.ToString(CultureInfo.InvariantCulture) ?? "?"}.");
+            $"Received {eventName} for {scopeType ?? "unknown"}:{scopeId ?? "unknown"} C{envelope.Scope?.Counter?.ToString(CultureInfo.InvariantCulture) ?? "?"}.");
 
         if (string.Equals(eventName, "session.revoked", StringComparison.OrdinalIgnoreCase))
         {
@@ -1055,20 +1057,16 @@ public sealed class MainActivity : AppCompatActivity
 
         if (string.Equals(eventName, "access.revoked", StringComparison.OrdinalIgnoreCase))
         {
-            RunOnUiThread(() =>
-            {
-                PurgeTransientCloudCache();
-                ShowError("Cloud access changed", "Your access to this cloud model or project was revoked.");
-            });
+            BeginCloudAccessRevoked(envelope.Scope);
             return;
         }
 
-        if (!IsCloudVersionChangeEvent(eventName) || string.IsNullOrWhiteSpace(packageId))
+        if (!IsCloudVersionChangeEvent(eventName) || string.IsNullOrWhiteSpace(scopeId))
             return;
 
         CloudOpenSession? session = _activeCloudSession;
         if (session is null
-            || !string.Equals(session.PackageId, packageId, StringComparison.OrdinalIgnoreCase))
+            || !string.Equals(session.PackageId, scopeId, StringComparison.OrdinalIgnoreCase))
         {
             return;
         }
@@ -1077,7 +1075,7 @@ public sealed class MainActivity : AppCompatActivity
         if (counter is not null && counter <= session.Counter)
             return;
 
-        RunOnUiThread(() => ShowCloudReloadAvailable(packageId, counter));
+        RunOnUiThread(() => ShowCloudReloadAvailable(scopeId, counter));
     }
 
     private static bool IsCloudVersionChangeEvent(string eventName)
@@ -1650,6 +1648,7 @@ public sealed class MainActivity : AppCompatActivity
             string readerLock = await _cloudClient.AcquireReaderLockAsync(session.PackageId, versionId, ct).ConfigureAwait(false);
             _activeCloudSession = new CloudOpenSession(
                 session.PackageId,
+                session.ProjectId,
                 versionId,
                 readerLock,
                 session.LocalPath,
@@ -2090,6 +2089,7 @@ public sealed class MainActivity : AppCompatActivity
 
             _activeCloudSession = new CloudOpenSession(
                 downloaded.Package.PackageId,
+                downloaded.Package.ProjectId,
                 downloaded.VersionId,
                 downloaded.LockId,
                 sessionLocalPath,
@@ -2389,6 +2389,66 @@ public sealed class MainActivity : AppCompatActivity
             return;
 
         ObserveLifecycleTask(HandleCloudSessionEndedAsync(title, message, reason), "cloud-session-ended");
+    }
+
+    private void BeginCloudAccessRevoked(CloudNotificationScope? scope)
+    {
+        if (Interlocked.CompareExchange(ref _cloudAccessRevocationInProgress, 1, 0) != 0)
+            return;
+
+        ObserveLifecycleTask(HandleCloudAccessRevokedAsync(scope), "cloud-access-revoked");
+    }
+
+    private async Task HandleCloudAccessRevokedAsync(CloudNotificationScope? scope)
+    {
+        try
+        {
+            CloudOpenSession? session = _activeCloudSession;
+            bool closeActiveModel = CloudAccessRevocationAffectsSession(scope, session);
+
+            if (closeActiveModel)
+            {
+                StopCloudHeartbeat();
+                await CloseActiveCloudSessionAsync("access revoked").ConfigureAwait(false);
+                await ClearActiveModelViewAsync("access revoked").ConfigureAwait(false);
+            }
+
+            PurgeTransientCloudCache();
+            await RunOnUiThreadAsync(() =>
+            {
+                UpdateCloudAccountButton();
+                UpdateSaveButton();
+                _cloudPanel?.Refresh();
+                ShowError("Cloud access changed", "Your access to this cloud model or project was revoked.");
+            }).ConfigureAwait(false);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _cloudAccessRevocationInProgress, 0);
+        }
+    }
+
+    private static bool CloudAccessRevocationAffectsSession(CloudNotificationScope? scope, CloudOpenSession? session)
+    {
+        if (session is null)
+            return false;
+
+        string? scopeType = scope?.Type;
+        string? scopeId = scope?.Id;
+        if (string.IsNullOrWhiteSpace(scopeType) || string.IsNullOrWhiteSpace(scopeId))
+            return true;
+
+        if (string.Equals(scopeType, "package", StringComparison.OrdinalIgnoreCase))
+            return string.Equals(session.PackageId, scopeId, StringComparison.OrdinalIgnoreCase);
+
+        if (string.Equals(scopeType, "project", StringComparison.OrdinalIgnoreCase))
+            return string.Equals(session.ProjectId, scopeId, StringComparison.OrdinalIgnoreCase);
+
+        if (string.Equals(scopeType, "user", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return string.Equals(session.PackageId, scopeId, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(session.ProjectId, scopeId, StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task HandleCloudSessionEndedAsync(string title, string message, string reason)
@@ -9298,8 +9358,13 @@ public sealed class MainActivity : AppCompatActivity
             return;
         }
 
-        if (pickVersion == _pendingHoverPickVersion)
-            SetHoveredMesh(meshIndex ?? 0);
+        // Always apply the pick result: the prior dedup ("only accept when
+        // no newer event is queued") was discarding correct results during
+        // continuous motion because each pick takes longer than the gap
+        // between motion events. The next chained pick will overwrite this
+        // value if the cursor has moved to a different mesh in the meantime,
+        // so transient flicker is bounded by one pick cycle.
+        SetHoveredMesh(meshIndex ?? 0);
         if (_pendingHoverPickX >= 0 && _pendingHoverPickY >= 0)
             StartNextHoverPick();
     }

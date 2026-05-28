@@ -52,6 +52,7 @@ public sealed record CloudDownloadedModel(
 
 public sealed record CloudOpenSession(
     string PackageId,
+    string ProjectId,
     string VersionId,
     string? LockId,
     string LocalPath,
