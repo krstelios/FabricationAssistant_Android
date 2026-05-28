@@ -84,6 +84,55 @@ public sealed class GpuScene : IDisposable
         IncrementSectionCapGeometryVersion();
         InvalidateTransformSyncTracking();
         DisposeMeshes(oldMeshes);
+        LogBatchPotential(meshes);
+    }
+
+    /// <summary>
+    /// Phase D diagnostic: counts how many distinct (color, double-sided,
+    /// transparency-class) buckets the meshes fall into. The ratio of buckets
+    /// to meshes predicts how much CPU draw-call cost a future batched
+    /// instanced surface pass would save. A 1751-mesh model that buckets into
+    /// ~50 batches means ~35x fewer draws; a model where every mesh has a
+    /// unique color buckets 1:1 and batching wouldn't help.
+    /// </summary>
+    private static void LogBatchPotential(IReadOnlyList<GpuMesh> meshes)
+    {
+        if (meshes.Count == 0)
+            return;
+
+        var buckets = new Dictionary<(uint colorKey, bool doubleSided, bool transparent), int>(64);
+        int totalIndices = 0;
+        int totalVertices = 0;
+        foreach (GpuMesh mesh in meshes)
+        {
+            float[] c = mesh.DiffuseColor;
+            uint colorKey = PackColorKey(
+                c.Length > 0 ? c[0] : 0f,
+                c.Length > 1 ? c[1] : 0f,
+                c.Length > 2 ? c[2] : 0f,
+                c.Length > 3 ? c[3] : 1f);
+            bool transparent = mesh.MaterialAlpha < 0.999f;
+            var key = (colorKey, mesh.DoubleSided, transparent);
+            buckets.TryGetValue(key, out int count);
+            buckets[key] = count + 1;
+            totalIndices += mesh.IndexCount;
+            totalVertices += mesh.VertexCount;
+        }
+
+        int largestBucket = buckets.Values.Max();
+        int singletonBuckets = buckets.Values.Count(v => v == 1);
+        Android.Util.Log.Info(
+            "FA.BatchPotential",
+            $"meshes={meshes.Count} buckets={buckets.Count} largestBucket={largestBucket} singletons={singletonBuckets} totalIndices={totalIndices} totalVertices={totalVertices} estDrawCalls={buckets.Count} reductionRatio={meshes.Count / (double)buckets.Count:0.#}x");
+    }
+
+    private static uint PackColorKey(float r, float g, float b, float a)
+    {
+        byte rb = (byte)System.Math.Clamp((int)System.Math.Round(r * 255f), 0, 255);
+        byte gb = (byte)System.Math.Clamp((int)System.Math.Round(g * 255f), 0, 255);
+        byte bb = (byte)System.Math.Clamp((int)System.Math.Round(b * 255f), 0, 255);
+        byte ab = (byte)System.Math.Clamp((int)System.Math.Round(a * 255f), 0, 255);
+        return ((uint)rb << 24) | ((uint)gb << 16) | ((uint)bb << 8) | ab;
     }
 
     public void RebuildEdges(
