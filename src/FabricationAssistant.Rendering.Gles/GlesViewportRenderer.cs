@@ -811,9 +811,8 @@ public sealed class GlesViewportRenderer : IDisposable
                 {
                     if (!ShouldRenderMesh(m))
                         continue;
-                    // TEMPORARILY DISABLED: matches the surface-pass cull disable above.
-                    // if (!IsAabbInFrustum(m.WorldBounds))
-                    //     continue;
+                    if (!IsAabbInFrustum(m.WorldBounds))
+                        continue;
                     if (m.EdgeSegmentCount == 0) continue;
                     float effectiveAlpha = GetEffectiveMeshAlpha(m, a, clay);
                     float meshEdgeAlpha = edgeA * effectiveAlpha;
@@ -1065,12 +1064,11 @@ public sealed class GlesViewportRenderer : IDisposable
                 continue;
             }
 
-            // TEMPORARILY DISABLED: hover/highlight regression — see Phase C diagnostic.
-            // if (!IsAabbInFrustum(mesh.WorldBounds))
-            // {
-            //     _lastFrustumCulledMeshCount++;
-            //     continue;
-            // }
+            if (!IsAabbInFrustum(mesh.WorldBounds))
+            {
+                _lastFrustumCulledMeshCount++;
+                continue;
+            }
 
             float materialAlpha = GetMeshColorAlpha(mesh);
             float alpha = GetEffectiveMeshAlpha(mesh, appearance, clay);
