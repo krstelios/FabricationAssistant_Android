@@ -15,7 +15,6 @@ public static class CadEdgeBuilder
 
     private const float EdgeFlagBoundary = 1.0f;
     private const float EdgeFlagFeature = 2.0f;
-    private const float EdgeFlagSilhouetteCandidate = 4.0f;
     private const float EdgeFlagImported = 8.0f;
 
     public static float[] BuildImportedEdgeVertices(float[] edgePositions)
@@ -47,7 +46,6 @@ public static class CadEdgeBuilder
         float featureAngleDegrees,
         float coplanarToleranceDegrees,
         float weldToleranceScale,
-        bool silhouetteEnabled,
         bool includeAllTriangleEdges = false)
     {
         if (mesh.Positions.Length < 9 || mesh.Indices.Length < 3)
@@ -64,8 +62,7 @@ public static class CadEdgeBuilder
             ? featureAngleDegrees
             : FeatureEdgeCreaseAngleDegrees;
         double creaseDotThreshold = System.Math.Cos(featureAngle * System.Math.PI / 180.0);
-        double coplanarAngle = System.Math.Max(0.0, coplanarToleranceDegrees);
-        double silhouetteCandidateDotThreshold = System.Math.Cos(coplanarAngle * System.Math.PI / 180.0);
+        _ = coplanarToleranceDegrees; // silhouette candidates moved to a screen-space pass; coplanar tolerance kept on the appearance for the post-process.
 
         var topologyEdges = new Dictionary<TopologyEdgeKey, TopologyEdgeInfo>(
             System.Math.Max(64, mesh.Indices.Length / 6));
@@ -116,16 +113,11 @@ public static class CadEdgeBuilder
             bool isSharpCrease = edge.FaceCount == 2
                 && normalDot < creaseDotThreshold
                 && !isSmoothTessellationEdge;
-            bool isSilhouetteCandidate = silhouetteEnabled
-                && edge.FaceCount == 2
-                && normalDot < silhouetteCandidateDotThreshold
-                && !isSmoothTessellationEdge;
 
             if (!includeAllTriangleEdges
                 && !isBoundaryEdge
                 && !isNonManifold
-                && !isSharpCrease
-                && !isSilhouetteCandidate)
+                && !isSharpCrease)
             {
                 continue;
             }
@@ -139,8 +131,6 @@ public static class CadEdgeBuilder
                 flags += EdgeFlagBoundary;
             if (isNonManifold || isSharpCrease)
                 flags += EdgeFlagFeature;
-            if (isSilhouetteCandidate)
-                flags += EdgeFlagSilhouetteCandidate;
             if (includeAllTriangleEdges && flags == 0.0f)
                 flags = EdgeFlagFeature;
 

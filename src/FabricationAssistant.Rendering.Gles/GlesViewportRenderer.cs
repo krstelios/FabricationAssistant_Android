@@ -34,6 +34,9 @@ public sealed class GlesViewportRenderer : IDisposable
     private GlesGridRenderer? _gridRenderer;
     private GlesNormalDepthRenderer? _normalDepthRenderer;
     private GlesSsaoRenderer? _ssaoRenderer;
+    private ShaderProgram? _silhouetteOverlayProgram;
+    private uint _silhouetteOverlayVao;
+    private uint _silhouetteOverlayVbo;
     private GlesOutlineRenderer? _outlineRenderer;
     private GlesMeasurementOverlay? _measurementOverlay;
     private GlesFaceHighlightOverlay? _faceHighlightOverlay;
@@ -61,7 +64,6 @@ public sealed class GlesViewportRenderer : IDisposable
     private float _edgeFeatureAngle = float.NaN;
     private float _edgeCoplanarTolerance = float.NaN;
     private float _edgeWeldTolerance = float.NaN;
-    private bool _edgeSilhouetteEnabled;
     private int _failedMsaaWidth;
     private int _failedMsaaHeight;
     private int _failedMsaaSamples;
@@ -379,6 +381,13 @@ public sealed class GlesViewportRenderer : IDisposable
         var ssaoFs = LoadEmbeddedShader("ssao.gles.frag");
         var ssaoBlurFs = LoadEmbeddedShader("ssao_blur.gles.frag");
         _ssaoRenderer = new GlesSsaoRenderer(_gl, fsVs, ssaoFs, ssaoBlurFs);
+
+        // Phase C: screen-space silhouette overlay. Replaces the per-mesh
+        // runtime silhouette branch in edge.ribbon.gles.vert with a single
+        // fullscreen post-process driven by the normal-depth pre-pass.
+        var silhouetteFs = LoadEmbeddedShader("silhouette_overlay.gles.frag");
+        _silhouetteOverlayProgram = new ShaderProgram(_gl, "silhouette_overlay", fsVs, silhouetteFs);
+        (_silhouetteOverlayVao, _silhouetteOverlayVbo) = GlesFullscreenTriangle.Create(_gl);
 
         // 1x1 white AO texture - bound when SSAO is off so the mesh shader's
         // AO multiply is identity.
@@ -792,10 +801,8 @@ public sealed class GlesViewportRenderer : IDisposable
                 ? 0.0f
                 : System.Math.Max(0.0f, clayEdges ? a.ClayFeatureEdgeDepthBias : a.EdgeDepthBias);
             SetFloat(_edgeProgram, "uDepthBias", edgeDepthBias);
-            SetBool(_edgeProgram, "uSilhouetteEnabled", !clayEdges && a.CadEdgeSilhouetteEnabled);
             SetSectionUniforms(_edgeProgram);
             int edgeModelLoc = _edgeProgram.UniformLocation("uModel");
-            int edgeNormalLoc = _edgeProgram.UniformLocation("uNormalMatrix");
             int edgeColorLoc = _edgeProgram.UniformLocation("uEdgeColor");
             float lastUploadedEdgeAlpha = float.NaN;
 
@@ -826,10 +833,6 @@ public sealed class GlesViewportRenderer : IDisposable
                     }
                     float[] model = m.WorldTransform ?? identityModel;
                     if (edgeModelLoc >= 0) _gl.UniformMatrix4(edgeModelLoc, true, model);
-                    float[] normalMatrix = identityNormal;
-                    if (m.WorldNormalMatrix is not null)
-                        normalMatrix = m.WorldNormalMatrix;
-                    if (edgeNormalLoc >= 0) _gl.UniformMatrix3(edgeNormalLoc, true, normalMatrix);
                     m.DrawEdges();
                 }
             }
@@ -935,6 +938,20 @@ public sealed class GlesViewportRenderer : IDisposable
         break;
         }
         long afterScene = Stopwatch.GetTimestamp();
+
+        // Phase C: screen-space silhouette overlay. Runs after the MSAA
+        // resolve (so it draws into the resolved single-sampled buffer)
+        // and before the outline post-process. Requires the normal-depth
+        // pre-pass to have run this frame, so silhouettes are only emitted
+        // when SSAO is also active. Skipped in Clay/Wireframe modes (no
+        // CAD-edge concept there).
+        bool silhouetteOverlayActive = ssaoActive
+            && a.CadEdgeSilhouetteEnabled
+            && a.Mode != RenderMode.Clay
+            && a.Mode != RenderMode.Wireframe
+            && !lightweightNavigationActive;
+        if (silhouetteOverlayActive)
+            RenderSilhouetteOverlay(a);
 
         // Selection / hover outline post-process (Phase G).
         // Hover draws first so the selected body's red outline wins when
@@ -1127,6 +1144,71 @@ public sealed class GlesViewportRenderer : IDisposable
 
     private bool ShouldRenderMesh(GpuMesh mesh)
         => mesh.Visible || IsXrayBackgroundMesh(mesh);
+
+    /// <summary>
+    /// Fullscreen pass that emits CAD silhouette edges by reading the
+    /// normal-depth pre-pass texture. Replaces the geometry-based
+    /// silhouette-candidate edges that used to live in the per-mesh edge
+    /// ribbon VBO (constant per-pixel cost, independent of edge count).
+    /// </summary>
+    private void RenderSilhouetteOverlay(SceneAppearance a)
+    {
+        if (_gl is null
+            || _silhouetteOverlayProgram is null
+            || _normalDepthRenderer is null
+            || _normalDepthRenderer.NormalTexture == 0
+            || _width <= 0
+            || _height <= 0)
+        {
+            return;
+        }
+
+        _silhouetteOverlayProgram.Use();
+        _gl.ActiveTexture(TextureUnit.Texture0);
+        _gl.BindTexture(TextureTarget.Texture2D, _normalDepthRenderer.NormalTexture);
+        SetInt(_silhouetteOverlayProgram, "uNormalDepthTexture", 0);
+        SetVec2(_silhouetteOverlayProgram, "uViewportInvSize",
+            1f / _width,
+            1f / _height);
+
+        // Match the geometric edge color so the silhouette overlay reads as
+        // the same visual style as boundary/feature edges.
+        float edgeAlpha = 0.82f;
+        SetVec4(
+            _silhouetteOverlayProgram,
+            "uEdgeColor",
+            a.EdgeColor[0],
+            a.EdgeColor[1],
+            a.EdgeColor[2],
+            edgeAlpha);
+        // Tuning: depth threshold is in packed normalized depth (~0.004 per
+        // 8-bit step); normal threshold is 1 - cos(theta) for the crease
+        // angle the silhouette test should ignore. Starting values work on
+        // the test assembly; expose via AppSettings if user tuning is needed.
+        SetFloat(_silhouetteOverlayProgram, "uDepthEdgeThreshold", 0.003f);
+        SetFloat(_silhouetteOverlayProgram, "uNormalEdgeThreshold", 0.35f);
+
+        _gl.Disable(EnableCap.DepthTest);
+        _gl.Disable(EnableCap.CullFace);
+        _gl.Enable(EnableCap.Blend);
+        _gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+        _gl.DepthMask(false);
+
+        GlesFullscreenTriangle.Draw(_gl, _silhouetteOverlayVao);
+
+        _gl.DepthMask(true);
+        _gl.Enable(EnableCap.DepthTest);
+        _gl.Disable(EnableCap.Blend);
+        _gl.ActiveTexture(TextureUnit.Texture0);
+        _gl.BindTexture(TextureTarget.Texture2D, 0);
+    }
+
+    private void SetVec4(ShaderProgram program, string name, float x, float y, float z, float w)
+    {
+        int loc = program.UniformLocation(name);
+        if (loc >= 0)
+            _gl!.Uniform4(loc, x, y, z, w);
+    }
 
     /// <summary>
     /// Extracts 6 normalized world-space frustum planes from row-major
@@ -2147,15 +2229,13 @@ public sealed class GlesViewportRenderer : IDisposable
             ? appearance.ClayFeatureEdgeCreaseAngleDegrees
             : appearance.CadEdgeFeatureAngleDegrees;
         float coplanarTolerance = clayEdges ? 0.0f : appearance.CadEdgeCoplanarToleranceDegrees;
-        bool silhouetteEnabled = !clayEdges && appearance.CadEdgeSilhouetteEnabled;
 
         bool sceneChanged = !ReferenceEquals(_edgeSettingsScene, Scene);
         bool settingsChanged =
             sceneChanged
             || System.Math.Abs(_edgeFeatureAngle - featureAngle) > 0.0001f
             || System.Math.Abs(_edgeCoplanarTolerance - coplanarTolerance) > 0.0001f
-            || System.Math.Abs(_edgeWeldTolerance - appearance.CadEdgeWeldToleranceScale) > 0.000000001f
-            || _edgeSilhouetteEnabled != silhouetteEnabled;
+            || System.Math.Abs(_edgeWeldTolerance - appearance.CadEdgeWeldToleranceScale) > 0.000000001f;
 
         if (!settingsChanged)
             return;
@@ -2163,14 +2243,12 @@ public sealed class GlesViewportRenderer : IDisposable
         Scene.RebuildEdges(
             featureAngle,
             coplanarTolerance,
-            appearance.CadEdgeWeldToleranceScale,
-            silhouetteEnabled);
+            appearance.CadEdgeWeldToleranceScale);
 
         _edgeSettingsScene = Scene;
         _edgeFeatureAngle = featureAngle;
         _edgeCoplanarTolerance = coplanarTolerance;
         _edgeWeldTolerance = appearance.CadEdgeWeldToleranceScale;
-        _edgeSilhouetteEnabled = silhouetteEnabled;
     }
 
     private bool TryPrepareMsaaFramebuffer(SceneAppearance appearance)
@@ -2570,6 +2648,19 @@ public sealed class GlesViewportRenderer : IDisposable
         TryDispose(_gridRenderer);
         TryDispose(_normalDepthRenderer);
         TryDispose(_ssaoRenderer);
+        TryDispose(_silhouetteOverlayProgram);
+        if (_silhouetteOverlayVbo != 0 && _gl is not null)
+        {
+            try { _gl.DeleteBuffer(_silhouetteOverlayVbo); }
+            catch (Exception ex) { Android.Util.Log.Warn("FA.Renderer", "Failed to delete silhouette overlay VBO: " + ex.Message); }
+        }
+        if (_silhouetteOverlayVao != 0 && _gl is not null)
+        {
+            try { _gl.DeleteVertexArray(_silhouetteOverlayVao); }
+            catch (Exception ex) { Android.Util.Log.Warn("FA.Renderer", "Failed to delete silhouette overlay VAO: " + ex.Message); }
+        }
+        _silhouetteOverlayVbo = 0;
+        _silhouetteOverlayVao = 0;
         TryDispose(_outlineRenderer);
         TryDispose(_measurementOverlay);
         TryDispose(_faceHighlightOverlay);
@@ -2583,6 +2674,7 @@ public sealed class GlesViewportRenderer : IDisposable
         _gridRenderer = null;
         _normalDepthRenderer = null;
         _ssaoRenderer = null;
+        _silhouetteOverlayProgram = null;
         _outlineRenderer = null;
         _measurementOverlay = null;
         _faceHighlightOverlay = null;

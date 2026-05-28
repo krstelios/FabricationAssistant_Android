@@ -89,8 +89,7 @@ public sealed class GpuScene : IDisposable
     public void RebuildEdges(
         float featureAngleDegrees,
         float coplanarToleranceDegrees,
-        float weldToleranceScale,
-        bool silhouetteEnabled)
+        float weldToleranceScale)
     {
         if (_document is null)
             return;
@@ -106,8 +105,7 @@ public sealed class GpuScene : IDisposable
                 _document.Meshes[sourceMeshId],
                 featureAngleDegrees,
                 coplanarToleranceDegrees,
-                weldToleranceScale,
-                silhouetteEnabled);
+                weldToleranceScale);
         }
     }
 

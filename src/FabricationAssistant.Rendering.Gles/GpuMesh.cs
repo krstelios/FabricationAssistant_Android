@@ -12,10 +12,10 @@ namespace FabricationAssistant.Rendering.Gles;
 public sealed class GpuMesh : IDisposable
 {
     private const int EdgeEndpointFloatCount = CadEdgeBuilder.EdgeVertexFloatCount;
-    // Per-instance record: vec3 p0 + vec3 p1 + vec3 normalA + vec3 normalB + float flags.
-    // Cut from the prior 90-float-per-segment ribbon (4 floats per segment * 6 vertices)
-    // to a 13-float-per-instance layout consumed by a static 4-vertex screen-facing quad.
-    private const int EdgeInstanceFloatCount = 13;
+    // Per-instance record: vec3 p0 + vec3 p1. Silhouette-candidate edges were
+    // moved to a screen-space post-process pass, so the normals and flag bits
+    // the VS used for the silhouette branch are no longer needed.
+    private const int EdgeInstanceFloatCount = 6;
     private const int EdgeInstanceStrideBytes = EdgeInstanceFloatCount * sizeof(float);
 
     private static uint _staticEdgeQuadVbo;
@@ -231,16 +231,6 @@ public sealed class GpuMesh : IDisposable
                 instances[output++] = edgeVertices[p1 + 0];
                 instances[output++] = edgeVertices[p1 + 1];
                 instances[output++] = edgeVertices[p1 + 2];
-                // normalA (3..5 of the endpoint record)
-                instances[output++] = edgeVertices[p0 + 3];
-                instances[output++] = edgeVertices[p0 + 4];
-                instances[output++] = edgeVertices[p0 + 5];
-                // normalB (6..8)
-                instances[output++] = edgeVertices[p0 + 6];
-                instances[output++] = edgeVertices[p0 + 7];
-                instances[output++] = edgeVertices[p0 + 8];
-                // flags (9)
-                instances[output++] = edgeVertices[p0 + 9];
             }
 
             EnsureStaticEdgeQuad();
@@ -262,24 +252,15 @@ public sealed class GpuMesh : IDisposable
             _gl.EnableVertexAttribArray(1);
             _gl.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, false, EdgeInstanceStrideBytes, (void*)(3 * sizeof(float)));
             _gl.VertexAttribDivisor(1, 1);
-            _gl.EnableVertexAttribArray(2);
-            _gl.VertexAttribPointer(2, 3, VertexAttribPointerType.Float, false, EdgeInstanceStrideBytes, (void*)(6 * sizeof(float)));
-            _gl.VertexAttribDivisor(2, 1);
-            _gl.EnableVertexAttribArray(3);
-            _gl.VertexAttribPointer(3, 3, VertexAttribPointerType.Float, false, EdgeInstanceStrideBytes, (void*)(9 * sizeof(float)));
-            _gl.VertexAttribDivisor(3, 1);
-            _gl.EnableVertexAttribArray(4);
-            _gl.VertexAttribPointer(4, 1, VertexAttribPointerType.Float, false, EdgeInstanceStrideBytes, (void*)(12 * sizeof(float)));
-            _gl.VertexAttribDivisor(4, 1);
 
-            // Per-vertex attributes from the shared static quad (locations 5, 6, divisor = 0).
+            // Per-vertex attributes from the shared static quad (locations 2, 3, divisor = 0).
             _gl.BindBuffer(BufferTargetARB.ArrayBuffer, _staticEdgeQuadVbo);
-            _gl.EnableVertexAttribArray(5);
-            _gl.VertexAttribPointer(5, 1, VertexAttribPointerType.Float, false, 2 * sizeof(float), (void*)0);
-            _gl.VertexAttribDivisor(5, 0);
-            _gl.EnableVertexAttribArray(6);
-            _gl.VertexAttribPointer(6, 1, VertexAttribPointerType.Float, false, 2 * sizeof(float), (void*)sizeof(float));
-            _gl.VertexAttribDivisor(6, 0);
+            _gl.EnableVertexAttribArray(2);
+            _gl.VertexAttribPointer(2, 1, VertexAttribPointerType.Float, false, 2 * sizeof(float), (void*)0);
+            _gl.VertexAttribDivisor(2, 0);
+            _gl.EnableVertexAttribArray(3);
+            _gl.VertexAttribPointer(3, 1, VertexAttribPointerType.Float, false, 2 * sizeof(float), (void*)sizeof(float));
+            _gl.VertexAttribDivisor(3, 0);
 
             _gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, _staticEdgeQuadIbo);
 
@@ -357,8 +338,7 @@ public sealed class GpuMesh : IDisposable
         FabricationAssistant.Core.SceneGraph.MeshDto mesh,
         float featureAngleDegrees,
         float coplanarToleranceDegrees,
-        float weldToleranceScale,
-        bool silhouetteEnabled)
+        float weldToleranceScale)
     {
         float[] edgeVertices = mesh.EdgePositions.Length > 0
             ? CadEdgeBuilder.BuildImportedEdgeVertices(mesh.EdgePositions)
@@ -366,8 +346,7 @@ public sealed class GpuMesh : IDisposable
                 mesh,
                 featureAngleDegrees,
                 coplanarToleranceDegrees,
-                weldToleranceScale,
-                silhouetteEnabled);
+                weldToleranceScale);
 
         UploadEdges(edgeVertices);
     }

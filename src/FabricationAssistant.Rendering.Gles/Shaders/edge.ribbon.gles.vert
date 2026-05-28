@@ -1,27 +1,25 @@
 #version 310 es
 precision highp float;
 
-// Edge ribbon expansion. Locations 0-4 are per-instance attributes (one record
-// per CAD edge segment, supplied by GpuMesh.EdgeInstanceVbo with divisor=1);
-// locations 5-6 are per-vertex attributes from a shared 4-vertex quad VBO
-// with divisor=0. The host issues glDrawElementsInstanced(TRIANGLES, 6, ...,
-// segmentCount) so each segment becomes one screen-facing ribbon.
+// Edge ribbon expansion. Locations 0-1 are per-instance attributes (the two
+// endpoints of each CAD edge segment, supplied by GpuMesh.EdgeInstanceVbo
+// with divisor=1); locations 2-3 are per-vertex attributes from a shared
+// 4-vertex quad VBO with divisor=0. The host issues
+// glDrawElementsInstanced(TRIANGLES, 6, ..., segmentCount) so each segment
+// becomes one screen-facing ribbon. Silhouette-candidate edges are now
+// produced by a screen-space post-process, so this shader no longer needs
+// normals, flags, or the silhouette-test branch.
 layout(location = 0) in vec3 aPosition0;
 layout(location = 1) in vec3 aPosition1;
-layout(location = 2) in vec3 aNormalA;
-layout(location = 3) in vec3 aNormalB;
-layout(location = 4) in float aFlags;
-layout(location = 5) in float aSegmentT;
-layout(location = 6) in float aSide;
+layout(location = 2) in float aSegmentT;
+layout(location = 3) in float aSide;
 
 uniform mat4 uModel;
 uniform mat4 uView;
 uniform mat4 uProjection;
-uniform mat3 uNormalMatrix;
 uniform vec2 uViewportSize;
 uniform float uLineWidthPixels;
 uniform float uDepthBias;
-uniform bool uSilhouetteEnabled;
 
 out float vDistancePixels;
 out float vHalfWidthPixels;
@@ -30,31 +28,6 @@ out float vVisible;
 out vec3 vWorldPos;
 
 const float NearPlaneClipEpsilon = 0.0;
-
-const float EdgeFlagBoundary = 1.0;
-const float EdgeFlagFeature = 2.0;
-const float EdgeFlagSilhouetteCandidate = 4.0;
-const float EdgeFlagImported = 8.0;
-
-bool HasFlag(float flags, float flag)
-{
-    return mod(floor(flags / flag), 2.0) >= 1.0;
-}
-
-bool ShouldRenderEdge(vec3 viewPos0, vec3 viewPos1, vec3 viewNormalA, vec3 viewNormalB)
-{
-    if (HasFlag(aFlags, EdgeFlagBoundary) || HasFlag(aFlags, EdgeFlagFeature) || HasFlag(aFlags, EdgeFlagImported))
-        return true;
-
-    if (!uSilhouetteEnabled || !HasFlag(aFlags, EdgeFlagSilhouetteCandidate))
-        return false;
-
-    vec3 midPoint = (viewPos0 + viewPos1) * 0.5;
-    vec3 viewDir = normalize(-midPoint);
-    float facingA = dot(viewNormalA, viewDir);
-    float facingB = dot(viewNormalB, viewDir);
-    return facingA * facingB < 0.0;
-}
 
 void HideVertex()
 {
@@ -72,16 +45,6 @@ void main()
     vec4 world1 = uModel * vec4(aPosition1, 1.0);
     vec4 view0 = uView * world0;
     vec4 view1 = uView * world1;
-
-    mat3 viewRotation = mat3(uView);
-    vec3 viewNormalA = normalize(viewRotation * (uNormalMatrix * aNormalA));
-    vec3 viewNormalB = normalize(viewRotation * (uNormalMatrix * aNormalB));
-
-    if (!ShouldRenderEdge(view0.xyz, view1.xyz, viewNormalA, viewNormalB))
-    {
-        HideVertex();
-        return;
-    }
 
     vec4 p0 = uProjection * view0;
     vec4 p1 = uProjection * view1;

@@ -6121,6 +6121,12 @@ public sealed class MainActivity : AppCompatActivity
         renderer.SectionEdgesVisible = _sections?.EdgesVisible ?? true;
         renderer.SectionCurvesVisible = AppSettings.SectionCurvesVisible;
         renderer.SectionCapsVisible = AppSettings.SectionCapsVisible;
+        // Section visibility toggles ("Show section curves", caps, etc.) used
+        // to need a second click to take effect because the renderer is
+        // request-render-on-dirty: the first click updated state but did not
+        // dirty the surface. Request the render explicitly so the new state
+        // appears on the very next vsync.
+        _viewport.RequestRender();
         renderer.SectionPlaneSizeFraction = AppSettings.SectionPlaneSizeFraction;
         renderer.SectionFillColor = new Vector4(
             AppSettings.SectionPlaneR,
