@@ -12,9 +12,7 @@ namespace FabricationAssistant.Rendering.Gles;
 public sealed class GpuMesh : IDisposable
 {
     private const int EdgeEndpointFloatCount = CadEdgeBuilder.EdgeVertexFloatCount;
-    // Per-instance record: vec3 p0 + vec3 p1. Silhouette-candidate edges were
-    // moved to a screen-space post-process pass, so the normals and flag bits
-    // the VS used for the silhouette branch are no longer needed.
+    // Per-instance record: vec3 p0 + vec3 p1.
     private const int EdgeInstanceFloatCount = 6;
     private const int EdgeInstanceStrideBytes = EdgeInstanceFloatCount * sizeof(float);
 
@@ -187,7 +185,7 @@ public sealed class GpuMesh : IDisposable
         _gl.BindVertexArray(0);
     }
 
-    // CAD edges (Plan 2I Phase D).
+    // CAD edges.
 
     public uint EdgeVao { get; private set; }
     public uint EdgeInstanceVbo { get; private set; }
@@ -197,8 +195,7 @@ public sealed class GpuMesh : IDisposable
     /// Uploads CAD edge endpoints as instance attributes for a shared static
     /// 4-vertex quad. The vertex shader (edge.ribbon.gles.vert) expands each
     /// instance into a screen-facing ribbon via gl_VertexID-driven aSegmentT
-    /// + aSide. Replaces the older CPU ribbon expansion (90 floats/segment)
-    /// with a per-instance 13-float record sharing a single static quad.
+    /// + aSide.
     /// </summary>
     public unsafe void UploadEdges(ReadOnlySpan<float> edgeVertices)
     {

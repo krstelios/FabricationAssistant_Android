@@ -372,7 +372,7 @@ public sealed class GlesViewportRenderer : IDisposable
         var gridFs = LoadEmbeddedShader("grid.gles.frag");
         _gridRenderer = new GlesGridRenderer(_gl, gridVs, gridFs);
 
-        // SSAO pipeline (Phase E): normal-depth pass + SSAO + separable blur.
+        // SSAO pipeline: normal-depth pass + SSAO + separable blur.
         var ndVs = LoadEmbeddedShader("normal_depth.gles.vert");
         var ndFs = LoadEmbeddedShader("normal_depth.gles.frag");
         _normalDepthRenderer = new GlesNormalDepthRenderer(_gl, ndVs, ndFs);
@@ -382,9 +382,7 @@ public sealed class GlesViewportRenderer : IDisposable
         var ssaoBlurFs = LoadEmbeddedShader("ssao_blur.gles.frag");
         _ssaoRenderer = new GlesSsaoRenderer(_gl, fsVs, ssaoFs, ssaoBlurFs);
 
-        // Phase C: screen-space silhouette overlay. Replaces the per-mesh
-        // runtime silhouette branch in edge.ribbon.gles.vert with a single
-        // fullscreen post-process driven by the normal-depth pre-pass.
+        // Screen-space silhouette overlay driven by the normal-depth pre-pass.
         var silhouetteFs = LoadEmbeddedShader("silhouette_overlay.gles.frag");
         _silhouetteOverlayProgram = new ShaderProgram(_gl, "silhouette_overlay", fsVs, silhouetteFs);
         (_silhouetteOverlayVao, _silhouetteOverlayVbo) = GlesFullscreenTriangle.Create(_gl);
@@ -393,8 +391,8 @@ public sealed class GlesViewportRenderer : IDisposable
         // AO multiply is identity.
         _whiteAoTexture = CreateWhiteTexture(_gl);
 
-        // Selection outline (Phase G). Reuses pick.gles.vert for the mask
-        // and fullscreen.gles.vert for the Sobel composite.
+        // Selection outline. Reuses pick.gles.vert for the mask and
+        // fullscreen.gles.vert for the Sobel composite.
         var maskFs = LoadEmbeddedShader("mask.gles.frag");
         var outlineFs = LoadEmbeddedShader("outline.gles.frag");
         _outlineRenderer = new GlesOutlineRenderer(_gl, pickVs, maskFs, fsVs, outlineFs);
@@ -939,12 +937,12 @@ public sealed class GlesViewportRenderer : IDisposable
         }
         long afterScene = Stopwatch.GetTimestamp();
 
-        // Phase C: screen-space silhouette overlay. Runs after the MSAA
-        // resolve (so it draws into the resolved single-sampled buffer)
-        // and before the outline post-process. Requires the normal-depth
-        // pre-pass to have run this frame, so silhouettes are only emitted
-        // when SSAO is also active. Skipped in Clay/Wireframe modes (no
-        // CAD-edge concept there).
+        // Screen-space silhouette overlay. Runs after the MSAA resolve (so
+        // it draws into the resolved single-sampled buffer) and before the
+        // outline post-process. Requires the normal-depth pre-pass to have
+        // run this frame, so silhouettes are only emitted when SSAO is also
+        // active. Skipped in Clay/Wireframe modes (no CAD-edge concept
+        // there).
         bool silhouetteOverlayActive = ssaoActive
             && a.CadEdgeSilhouetteEnabled
             && a.Mode != RenderMode.Clay
@@ -953,9 +951,8 @@ public sealed class GlesViewportRenderer : IDisposable
         if (silhouetteOverlayActive)
             RenderSilhouetteOverlay(a);
 
-        // Selection / hover outline post-process (Phase G).
-        // Hover draws first so the selected body's red outline wins when
-        // both targets overlap.
+        // Selection / hover outline post-process. Hover draws first so the
+        // selected body's red outline wins when both targets overlap.
         long outlineStart = afterScene;
         if (!lightweightNavigationActive
             && a.OutlineEnabled
@@ -1147,9 +1144,8 @@ public sealed class GlesViewportRenderer : IDisposable
 
     /// <summary>
     /// Fullscreen pass that emits CAD silhouette edges by reading the
-    /// normal-depth pre-pass texture. Replaces the geometry-based
-    /// silhouette-candidate edges that used to live in the per-mesh edge
-    /// ribbon VBO (constant per-pixel cost, independent of edge count).
+    /// normal-depth pre-pass texture. Constant per-pixel cost, independent
+    /// of edge count.
     /// </summary>
     private void RenderSilhouetteOverlay(SceneAppearance a)
     {
