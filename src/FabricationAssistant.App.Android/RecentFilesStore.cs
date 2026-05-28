@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Android.Content;
 using Android.Provider;
 using AndroidUri = Android.Net.Uri;
@@ -11,12 +10,8 @@ public static class RecentFilesStore
     private const string EntriesKey = "entries_json";
     private const string EntriesPendingKey = "entries_json_pending";
     private const int MaxEntries = 10;
+    private static readonly TimeSpan ReadableAccessProbeTimeout = TimeSpan.FromSeconds(5);
     private static readonly object Gate = new();
-
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNameCaseInsensitive = true,
-    };
 
     public static IReadOnlyList<RecentFileEntry> Load(Context context)
     {
@@ -37,26 +32,28 @@ public static class RecentFilesStore
 
     private static IReadOnlyList<RecentFileEntry> LoadUnsafe(Context context)
     {
-
-        string? json = context
-            .GetSharedPreferences(PreferencesName, FileCreationMode.Private)
-            ?.GetString(EntriesKey, null);
-
-        if (string.IsNullOrWhiteSpace(json))
+        var prefs = context.GetSharedPreferences(PreferencesName, FileCreationMode.Private);
+        if (prefs is null)
             return Array.Empty<RecentFileEntry>();
 
-        try
-        {
-            var entries = JsonSerializer.Deserialize<List<RecentFileEntry>>(json, JsonOptions)
-                ?? new List<RecentFileEntry>();
+        string? pendingJson = prefs.GetString(EntriesPendingKey, null);
+        string? committedJson = prefs.GetString(EntriesKey, null);
+        RecentFilesRecovery recovery = RecentFilesPersistence.Recover(committedJson, pendingJson, MaxEntries);
+        LogDeserializeError(EntriesPendingKey, recovery.PendingError);
+        LogDeserializeError(EntriesKey, recovery.CommittedError);
 
-            return RecentFilesList.Normalize(entries, MaxEntries);
-        }
-        catch (Exception ex)
-        {
-            global::Android.Util.Log.Warn("FA.Recent", "Failed to deserialize entries_json: " + ex.Message);
-            return Array.Empty<RecentFileEntry>();
-        }
+        if (recovery.PromotePending)
+            SaveUnsafe(context, recovery.Entries);
+        else if (recovery.ClearPending)
+            ClearPendingUnsafe(prefs);
+
+        return recovery.Entries;
+    }
+
+    private static void LogDeserializeError(string key, Exception? error)
+    {
+        if (error is not null)
+            global::Android.Util.Log.Warn("FA.Recent", $"Failed to deserialize {key}: {error.Message}");
     }
 
     public static void Add(Context context, AndroidUri uri)
@@ -103,18 +100,33 @@ public static class RecentFilesStore
     }
 
     public static void TryTakePersistableReadPermission(Context context, AndroidUri uri)
+        => TryTakePersistableReadWritePermission(context, uri);
+
+    public static void TryTakePersistableReadWritePermission(Context context, AndroidUri uri)
     {
         try
         {
             context.ContentResolver?.TakePersistableUriPermission(
                 uri,
-                ActivityFlags.GrantReadUriPermission);
+                ActivityFlags.GrantReadUriPermission | ActivityFlags.GrantWriteUriPermission);
         }
         catch (Exception ex)
         {
             global::Android.Util.Log.Warn(
                 "FA.Recent",
-                "Could not persist read access for recent file: " + ex.Message);
+                "Could not persist read/write access for recent file: " + ex.Message);
+            try
+            {
+                context.ContentResolver?.TakePersistableUriPermission(
+                    uri,
+                    ActivityFlags.GrantReadUriPermission);
+            }
+            catch (Exception readEx)
+            {
+                global::Android.Util.Log.Warn(
+                    "FA.Recent",
+                    "Could not persist read access for recent file: " + readEx.Message);
+            }
         }
     }
 
@@ -126,7 +138,7 @@ public static class RecentFilesStore
 
     private static void SaveUnsafe(Context context, IReadOnlyList<RecentFileEntry> entries)
     {
-        string json = JsonSerializer.Serialize(entries.Take(MaxEntries), JsonOptions);
+        string json = RecentFilesPersistence.Serialize(entries, MaxEntries);
         var prefs = context.GetSharedPreferences(PreferencesName, FileCreationMode.Private);
         if (prefs is null)
             return;
@@ -152,6 +164,17 @@ public static class RecentFilesStore
             global::Android.Util.Log.Warn("FA.Recent", "Failed to commit recent files to SharedPreferences.");
     }
 
+    private static void ClearPendingUnsafe(ISharedPreferences prefs)
+    {
+        var editor = prefs.Edit();
+        if (editor is null)
+            return;
+
+        editor.Remove(EntriesPendingKey);
+        if (!editor.Commit())
+            global::Android.Util.Log.Warn("FA.Recent", "Failed to clear staged recent files from SharedPreferences.");
+    }
+
     private static RecentFileAccessStatus ProbeReadableAccess(Context context, string uriText)
     {
         if (string.IsNullOrWhiteSpace(uriText))
@@ -163,11 +186,17 @@ public static class RecentFilesStore
 
         try
         {
-            using var descriptor = context.ContentResolver?.OpenFileDescriptor(uri, "r");
-            if (descriptor is not null)
-                return RecentFileAccessStatus.Accessible;
-
-            global::Android.Util.Log.Warn("FA.Recent", "Could not verify recent file access: descriptor unavailable.");
+            return Task
+                .Run(() => ProbeReadableAccessCore(context, uri))
+                .WaitAsync(ReadableAccessProbeTimeout)
+                .GetAwaiter()
+                .GetResult();
+        }
+        catch (TimeoutException)
+        {
+            global::Android.Util.Log.Warn(
+                "FA.Recent",
+                "Recent file access probe timed out; keeping entry for retry: " + uriText);
             return RecentFileAccessStatus.Unknown;
         }
         catch (Exception ex) when (IsAccessRevoked(ex))
@@ -180,6 +209,16 @@ public static class RecentFilesStore
             global::Android.Util.Log.Warn("FA.Recent", "Could not verify recent file access; keeping entry for retry: " + ex.Message);
             return RecentFileAccessStatus.Unknown;
         }
+    }
+
+    private static RecentFileAccessStatus ProbeReadableAccessCore(Context context, AndroidUri uri)
+    {
+        using var descriptor = context.ContentResolver?.OpenFileDescriptor(uri, "r");
+        if (descriptor is not null)
+            return RecentFileAccessStatus.Accessible;
+
+        global::Android.Util.Log.Warn("FA.Recent", "Could not verify recent file access: descriptor unavailable.");
+        return RecentFileAccessStatus.Unknown;
     }
 
     private static bool IsAccessRevoked(Exception ex)

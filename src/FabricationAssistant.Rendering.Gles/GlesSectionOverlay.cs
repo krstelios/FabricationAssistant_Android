@@ -16,17 +16,6 @@ internal sealed class GlesSectionOverlay : IDisposable
     private const float GizmoArrowLengthScale = 0.18f;
     private const float GizmoArrowWidthScale = 0.07f;
     private const float GizmoArcRadiusScale = 0.56f;
-    private static readonly Vector4 PreviewColor = new(1.00f, 0.85f, 0.20f, 1.00f);
-    private static readonly Vector4 HoverColor = new(1.00f, 0.85f, 0.20f, 0.95f);
-    private static readonly Vector4 GizmoColorX = new(1.00f, 0.25f, 0.25f, 0.95f);
-    private static readonly Vector4 GizmoColorY = new(0.25f, 1.00f, 0.35f, 0.95f);
-    private static readonly Vector4 GizmoColorZ = new(0.30f, 0.60f, 1.00f, 0.95f);
-    private static readonly Vector4 GizmoArcXColor = new(1.00f, 0.35f, 0.35f, 0.40f);
-    private static readonly Vector4 GizmoArcYColor = new(0.35f, 1.00f, 0.40f, 0.40f);
-    private static readonly Vector4 GizmoArcZColor = new(0.40f, 0.65f, 1.00f, 0.40f);
-    private static readonly Vector4 GizmoHoverColor = new(1.00f, 0.90f, 0.20f, 1.00f);
-    private static readonly Vector4 GizmoActiveColor = new(1.00f, 1.00f, 1.00f, 1.00f);
-
     private readonly GL _gl;
     private readonly ShaderProgram _program;
     private readonly GlesPrimitiveLimits _primitiveLimits;
@@ -43,13 +32,33 @@ internal sealed class GlesSectionOverlay : IDisposable
 
     public float PlaneSizeFraction { get; set; } = 0.025f;
 
-    public Vector4 FillColor { get; set; } = new(0.20f, 0.80f, 0.40f, 0.18f);
+    public Vector4 FillColor { get; set; }
 
-    public Vector4 EdgeColor { get; set; } = new(0.20f, 0.80f, 0.40f, 0.80f);
+    public Vector4 EdgeColor { get; set; }
 
-    public Vector4 EdgeHighlightColor { get; set; } = new(1.00f, 0.78f, 0.20f, 1.00f);
+    public Vector4 EdgeHighlightColor { get; set; }
 
-    public Vector4 CapColor { get; set; } = new(0.85f, 0.85f, 0.80f, 1.00f);
+    public Vector4 CapColor { get; set; }
+
+    public Vector4 PlacementPreviewColor { get; set; }
+
+    public Vector4 PlacementHoverColor { get; set; }
+
+    public Vector4 GizmoAxisXColor { get; set; }
+
+    public Vector4 GizmoAxisYColor { get; set; }
+
+    public Vector4 GizmoAxisZColor { get; set; }
+
+    public Vector4 GizmoArcXColor { get; set; }
+
+    public Vector4 GizmoArcYColor { get; set; }
+
+    public Vector4 GizmoArcZColor { get; set; }
+
+    public Vector4 GizmoHoverColor { get; set; }
+
+    public Vector4 GizmoActiveColor { get; set; }
 
     public void Render(
         float[] view,
@@ -82,7 +91,7 @@ internal sealed class GlesSectionOverlay : IDisposable
         if (committedPicks.Count > 0 || hoverPoint is not null)
         {
             _data.Clear();
-            AppendPlacementPreview(_data, committedPicks, hoverPoint);
+            AppendPlacementPreview(_data, committedPicks, hoverPoint, PlacementPreviewColor);
             if (_data.Count > 0)
                 Draw(view, projection, PrimitiveType.Lines, depthTest: false, blend: true, lineWidth: 2.0f, pointSize: 1.0f);
         }
@@ -90,7 +99,7 @@ internal sealed class GlesSectionOverlay : IDisposable
         if (hoverPoint is { } hp)
         {
             _data.Clear();
-            AppendPoint(_data, hp, HoverColor);
+            AppendPoint(_data, hp, PlacementHoverColor);
             Draw(view, projection, PrimitiveType.Points, depthTest: false, blend: true, lineWidth: 1.0f, pointSize: 13.0f, roundPoints: true);
         }
     }
@@ -182,21 +191,21 @@ internal sealed class GlesSectionOverlay : IDisposable
             axisX,
             arrowLength,
             arrowWidth,
-            GizmoColorFor(GlesTransformGizmoHandle.TranslateX, hovered, active, GizmoColorX));
+            GizmoColorFor(GlesTransformGizmoHandle.TranslateX, hovered, active, GizmoAxisXColor));
         AppendGizmoArrowCone(
             _data,
             anchor + axisY * scale,
             axisY,
             arrowLength,
             arrowWidth,
-            GizmoColorFor(GlesTransformGizmoHandle.TranslateY, hovered, active, GizmoColorY));
+            GizmoColorFor(GlesTransformGizmoHandle.TranslateY, hovered, active, GizmoAxisYColor));
         AppendGizmoArrowCone(
             _data,
             anchor + axisZ * scale,
             axisZ,
             arrowLength,
             arrowWidth,
-            GizmoColorFor(GlesTransformGizmoHandle.TranslateZ, hovered, active, GizmoColorZ));
+            GizmoColorFor(GlesTransformGizmoHandle.TranslateZ, hovered, active, GizmoAxisZColor));
         Draw(view, projection, PrimitiveType.Triangles, depthTest: false, blend: true, lineWidth: 1.0f, pointSize: 1.0f);
 
         _data.Clear();
@@ -206,42 +215,42 @@ internal sealed class GlesSectionOverlay : IDisposable
             axisX,
             scale,
             arrowLength,
-            GizmoColorFor(GlesTransformGizmoHandle.TranslateX, hovered, active, GizmoColorX));
+            GizmoColorFor(GlesTransformGizmoHandle.TranslateX, hovered, active, GizmoAxisXColor));
         AppendGizmoAxisShaft(
             _data,
             anchor,
             axisY,
             scale,
             arrowLength,
-            GizmoColorFor(GlesTransformGizmoHandle.TranslateY, hovered, active, GizmoColorY));
+            GizmoColorFor(GlesTransformGizmoHandle.TranslateY, hovered, active, GizmoAxisYColor));
         AppendGizmoAxisShaft(
             _data,
             anchor,
             axisZ,
             scale,
             arrowLength,
-            GizmoColorFor(GlesTransformGizmoHandle.TranslateZ, hovered, active, GizmoColorZ));
+            GizmoColorFor(GlesTransformGizmoHandle.TranslateZ, hovered, active, GizmoAxisZColor));
         AppendGizmoArcOutline(
             _data,
             anchor,
             axisY,
             axisZ,
             arcRadius,
-            GizmoColorFor(GlesTransformGizmoHandle.RotateX, hovered, active, new Vector4(GizmoArcXColor.X, GizmoArcXColor.Y, GizmoArcXColor.Z, 1.0f)));
+            GizmoColorFor(GlesTransformGizmoHandle.RotateX, hovered, active, WithAlpha(GizmoArcXColor, 1.0f)));
         AppendGizmoArcOutline(
             _data,
             anchor,
             axisZ,
             axisX,
             arcRadius,
-            GizmoColorFor(GlesTransformGizmoHandle.RotateY, hovered, active, new Vector4(GizmoArcYColor.X, GizmoArcYColor.Y, GizmoArcYColor.Z, 1.0f)));
+            GizmoColorFor(GlesTransformGizmoHandle.RotateY, hovered, active, WithAlpha(GizmoArcYColor, 1.0f)));
         AppendGizmoArcOutline(
             _data,
             anchor,
             axisX,
             axisY,
             arcRadius,
-            GizmoColorFor(GlesTransformGizmoHandle.RotateZ, hovered, active, new Vector4(GizmoArcZColor.X, GizmoArcZColor.Y, GizmoArcZColor.Z, 1.0f)));
+            GizmoColorFor(GlesTransformGizmoHandle.RotateZ, hovered, active, WithAlpha(GizmoArcZColor, 1.0f)));
         Draw(view, projection, PrimitiveType.Lines, depthTest: false, blend: true, lineWidth: 2.4f, pointSize: 1.0f);
     }
 
@@ -384,13 +393,17 @@ internal sealed class GlesSectionOverlay : IDisposable
         AppendLine(data, c3, c0, color);
     }
 
-    private static void AppendPlacementPreview(List<float> data, IReadOnlyList<Vector3> committedPicks, Vector3? hoverPoint)
+    private static void AppendPlacementPreview(
+        List<float> data,
+        IReadOnlyList<Vector3> committedPicks,
+        Vector3? hoverPoint,
+        Vector4 color)
     {
         for (int i = 0; i + 1 < committedPicks.Count; i++)
-            AppendLine(data, committedPicks[i], committedPicks[i + 1], PreviewColor);
+            AppendLine(data, committedPicks[i], committedPicks[i + 1], color);
 
         if (committedPicks.Count > 0 && hoverPoint is { } hp)
-            AppendLine(data, committedPicks[^1], hp, PreviewColor);
+            AppendLine(data, committedPicks[^1], hp, color);
     }
 
     private static void AppendLine(List<float> data, Vector3 a, Vector3 b, Vector4 color)
@@ -462,7 +475,7 @@ internal sealed class GlesSectionOverlay : IDisposable
         }
     }
 
-    private static Vector4 GizmoColorFor(
+    private Vector4 GizmoColorFor(
         GlesTransformGizmoHandle handle,
         GlesTransformGizmoHandle hovered,
         GlesTransformGizmoHandle active,
@@ -472,6 +485,9 @@ internal sealed class GlesSectionOverlay : IDisposable
             : handle == hovered
                 ? GizmoHoverColor
                 : baseColor;
+
+    private static Vector4 WithAlpha(Vector4 color, float alpha)
+        => new(color.X, color.Y, color.Z, alpha);
 
     private static bool TryNormalize(Vector3 value, out Vector3 normalized)
     {

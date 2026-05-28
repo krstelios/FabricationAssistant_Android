@@ -13,6 +13,7 @@ public static class AndroidRenderModeShim
 
     public static RenderMode Effective(RenderMode requested)
     {
+        RenderMode effective = RenderModeSupport.EffectiveAndroidMode(requested);
         if (requested == RenderMode.Realistic)
         {
             if (!_logged)
@@ -22,10 +23,8 @@ public static class AndroidRenderModeShim
                     "Realistic mode not supported by Rendering.Gles; falling back to Shaded.");
                 _logged = true;
             }
-
-            return RenderMode.Shaded;
         }
 
-        return requested;
+        return effective;
     }
 }

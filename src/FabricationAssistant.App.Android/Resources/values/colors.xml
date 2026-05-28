@@ -29,6 +29,25 @@
     <color name="fa_context_menu_background">#DA1F2024</color>
     <color name="fa_context_menu_border">#8452545E</color>
     <color name="fa_context_menu_row_fill">#362DD4BF</color>
+    <color name="fa_cloud_dialog_icon_fill">#2E2DD4BF</color>
+    <color name="fa_cloud_dialog_icon_stroke">#802DD4BF</color>
+    <color name="fa_cloud_dialog_button_secondary_disabled_fill">#502C2D32</color>
+    <color name="fa_cloud_dialog_button_disabled_stroke">#5035363D</color>
+    <color name="fa_cloud_dialog_button_secondary_pressed_fill">#522DD4BF</color>
+    <color name="fa_cloud_dialog_button_secondary_state_fill">#342DD4BF</color>
+    <color name="fa_section_gizmo_button_pressed_fill">#522DD4BF</color>
+    <color name="fa_section_gizmo_button_state_fill">#342DD4BF</color>
+    <color name="fa_zoom_window_fill">#262DD4BF</color>
+    <color name="fa_section_placement_preview">#FFFFD933</color>
+    <color name="fa_section_placement_hover">#F2FFD933</color>
+    <color name="fa_section_gizmo_axis_x">#F2FF4040</color>
+    <color name="fa_section_gizmo_axis_y">#F240FF59</color>
+    <color name="fa_section_gizmo_axis_z">#F24D99FF</color>
+    <color name="fa_section_gizmo_arc_x">#66FF5959</color>
+    <color name="fa_section_gizmo_arc_y">#6659FF66</color>
+    <color name="fa_section_gizmo_arc_z">#6666A6FF</color>
+    <color name="fa_section_gizmo_hover">#FFFFE633</color>
+    <color name="fa_section_gizmo_active">#FFFFFFFF</color>
 
     <!-- Backwards-compatible aliases used by earlier Android layouts. -->
     <color name="fa_surface_900">#1A1B1E</color>

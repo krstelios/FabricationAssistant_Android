@@ -76,11 +76,15 @@ public static class AppSettings
     private const float DefaultSectionGizmoScale = 1.0845f;
     private const float MinSectionGizmoScale = 0.5f;
     private const float MaxSectionGizmoScale = 4.0f;
+    private const string DefaultCloudServerUrl = "";
+    private const string DefaultCloudUserEmail = "";
+    private const string DefaultCloudProjectName = "";
 
     private static ISharedPreferences? _prefs;
     private static readonly (string Key, float Expected)[] LegacyFloatDefaultsToRemove =
     [
-        // Duplicate keys intentionally cover separate historical schema defaults.
+        // Duplicate keys intentionally cover separate historical schema defaults from schema v9-v15.
+        // Each value is stripped only when a user still has that exact legacy default, so newer defaults apply.
         ("edge_feature_angle", 25.0f),
         ("edge_coplanar_tol", 1.5f),
         ("edge_depth_bias", 0.00005f),
@@ -130,7 +134,8 @@ public static class AppSettings
     ];
     private static readonly (string Key, int Expected)[] LegacyIntDefaultsToRemove =
     [
-        // Duplicate keys intentionally cover separate historical schema defaults.
+        // Duplicate keys intentionally cover separate historical schema defaults from schema v9-v15.
+        // Each value is stripped only when a user still has that exact legacy default, so newer defaults apply.
         ("ao_blur_passes", 2),
         ("ao_sample_count", 32),
         ("ao_blur_radius", 6),
@@ -385,6 +390,12 @@ public static class AppSettings
         set => SectionGizmoScale = value / LegacySectionGizmoSizeFractionBase;
     }
 
+    // FA Cloud
+    public static string CloudServerUrl { get => Get("cloud_server_url", DefaultCloudServerUrl); set => Put("cloud_server_url", value.Trim()); }
+    public static string CloudUserEmail { get => Get("cloud_user_email", DefaultCloudUserEmail); set => Put("cloud_user_email", value.Trim()); }
+    public static string CloudDefaultProjectName { get => Get("cloud_default_project", DefaultCloudProjectName); set => Put("cloud_default_project", value.Trim()); }
+    public static bool CloudRememberCredentials { get => Get("cloud_remember_credentials", false); set => Put("cloud_remember_credentials", value); }
+
     /// <summary>
     /// Populates <paramref name="appearance"/> with every persisted value in
     /// one call. MainActivity.ApplySettingsToScene uses this to refresh the
@@ -392,6 +403,9 @@ public static class AppSettings
     /// Array fields are freshly allocated on each call; treat them as
     /// immutable after assignment so the GL thread never observes in-place
     /// mutations.
+    /// UI-only settings, such as measurement colors and section visibility,
+    /// are read by their owning Android services and intentionally stay out
+    /// of this renderer snapshot.
     /// </summary>
     public static void Apply(ref SceneAppearance appearance)
     {
@@ -472,6 +486,7 @@ public static class AppSettings
     private static float Get(string k, float def) => Prefs.GetFloat(k, def);
     private static bool Get(string k, bool def) => Prefs.GetBoolean(k, def);
     private static int Get(string k, int def) => Prefs.GetInt(k, def);
+    private static string Get(string k, string def) => Prefs.GetString(k, def) ?? def;
     public static void Edit(Action<ISharedPreferencesEditor> edit)
     {
         ArgumentNullException.ThrowIfNull(edit);
@@ -483,6 +498,7 @@ public static class AppSettings
     private static void Put(string k, float v) => Edit(ed => ed.PutFloat(k, float.IsFinite(v) ? v : 0.0f));
     private static void Put(string k, bool v) => Edit(ed => ed.PutBoolean(k, v));
     private static void Put(string k, int v) => Edit(ed => ed.PutInt(k, v));
+    private static void Put(string k, string v) => Edit(ed => ed.PutString(k, v ?? ""));
 
     private static void PutRgb(string rKey, string gKey, string bKey, float r, float g, float b)
     {

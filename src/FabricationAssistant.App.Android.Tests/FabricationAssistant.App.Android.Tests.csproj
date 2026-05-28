@@ -13,6 +13,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="SharpZipLib" Version="1.4.2" />
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
   </ItemGroup>
@@ -34,8 +35,39 @@
              LinkBase="Linked\SceneGraph" />
     <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Sections\SectionPlane.cs"
              LinkBase="Linked\Sections" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Sections\SectionPlaneSnapshot.cs"
+             LinkBase="Linked\Sections" />
     <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Sections\SectionCapGeometry.cs"
              LinkBase="Linked\Sections" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Sections\SectionService.cs"
+             LinkBase="Linked\Sections" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\UndoRedo\ISectionStateAccess.cs"
+             LinkBase="Linked\UndoRedo" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Selection\PackageSessionState.cs"
+             LinkBase="Linked\Selection" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Measurement\Domain\*.cs"
+             LinkBase="Linked\Measurement\Domain" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\AndroidViewerStateSaveService.cs"
+             LinkBase="Linked\Android" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Import.Gltf\Internal\FaArchiveCredential.cs"
+             LinkBase="Linked\Import\Internal" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Import.Gltf\FaArchive.cs"
+             LinkBase="Linked\Import" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Import.Gltf\FaArchiveLimits.cs"
+             LinkBase="Linked\Import" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Import.Gltf\FaArchiveManifest.cs"
+             LinkBase="Linked\Import" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Import.Gltf\FaArchiveManifestMutator.cs"
+             LinkBase="Linked\Import" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Import.Gltf\FaArchiveWriter.cs"
+             LinkBase="Linked\Import" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Import.Gltf\FaViewerStateReader.cs"
+             LinkBase="Linked\Import" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Import.Gltf\FaViewerState\*.cs"
+             LinkBase="Linked\Import\FaViewerState" />
   </ItemGroup>
 
   <!--
@@ -67,9 +99,13 @@
              LinkBase="Linked\Android" />
     <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\ImportFileSignatureValidator.cs"
              LinkBase="Linked\Android" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\ImportCacheFileName.cs"
+             LinkBase="Linked\Android" />
     <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\RecentFileEntry.cs"
              LinkBase="Linked\Android" />
     <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\RecentFilesList.cs"
+             LinkBase="Linked\Android" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\RecentFilesPersistence.cs"
              LinkBase="Linked\Android" />
   </ItemGroup>
 

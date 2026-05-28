@@ -1,5 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <Import Project="FabricationAssistant.App.Android.Local.props" Condition="Exists('FabricationAssistant.App.Android.Local.props')" />
+
   <PropertyGroup>
     <TargetFramework>net8.0-android34.0</TargetFramework>
     <SupportedOSPlatformVersion>24</SupportedOSPlatformVersion>
@@ -30,8 +32,25 @@
     <AndroidUseSharedRuntime>false</AndroidUseSharedRuntime>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <AndroidManifest>Properties\AndroidManifest.Debug.xml</AndroidManifest>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' != 'Debug'">
+    <AndroidManifest>Properties\AndroidManifest.xml</AndroidManifest>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(Configuration)' == 'Debug'">
+    <AndroidResource Remove="Resources\xml\network_security_config_release.xml" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(Configuration)' != 'Debug'">
+    <AndroidResource Remove="Resources\xml\network_security_config_debug.xml" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.1" />
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="8.0.18" />
     <PackageReference Include="Xamarin.AndroidX.AppCompat" Version="1.7.0.5" />
     <PackageReference Include="Xamarin.Google.Android.Material" Version="1.12.0.1" />
     <PackageReference Include="Xamarin.AndroidX.ConstraintLayout" Version="2.2.0.1" />
@@ -62,6 +81,10 @@
   <Target Name="ValidateDracoNativeLibraries" BeforeTargets="Build">
     <Error Condition="!Exists('..\..\deps\prebuilt\arm64-v8a\libdraco_native.so')" Text="Missing deps\prebuilt\arm64-v8a\libdraco_native.so. Run tools\build-libdraco.ps1 or tools\build.ps1 before packaging." />
     <Error Condition="!Exists('..\..\deps\prebuilt\x86_64\libdraco_native.so')" Text="Missing deps\prebuilt\x86_64\libdraco_native.so. Run tools\build-libdraco.ps1 or tools\build.ps1 before packaging." />
+  </Target>
+
+  <Target Name="BlockDebugReleaseKeystore" BeforeTargets="Build" Condition="'$(Configuration)' == 'Debug' and '$(AndroidKeyStore)' == 'true' and '$(AndroidSigningKeyStore)' != '' and $([System.String]::Copy('$(AndroidSigningKeyStore)').ToLowerInvariant().Contains('release')) and '$(FaAllowDebugReleaseKeystore)' != 'true'">
+    <Error Text="Refusing to sign a Debug APK with a keystore path that looks like a release keystore. Set FaAllowDebugReleaseKeystore=true only for an intentional local test." />
   </Target>
 
 </Project>

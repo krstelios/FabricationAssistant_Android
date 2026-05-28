@@ -11,6 +11,7 @@ src/**/native/build-*/
 *.aab
 *.keystore
 local.properties
+*.Local.props
 
 # IDE
 .idea/

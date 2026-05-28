@@ -148,8 +148,6 @@ public sealed class GlesPickRenderer : IDisposable
         // glReadPixels uses bottom-up Y. Tap input is top-down. Flip before
         // rendering so the pick pass can scissor to the one pixel being read.
         int glY = _height - 1 - y;
-        if (glY < 0 || glY >= _height)
-            return null;
 
         _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _fbo);
         _gl.Viewport(0, 0, (uint)_width, (uint)_height);

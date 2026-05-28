@@ -191,7 +191,11 @@ public sealed class GlesNormalDepthRenderer : IDisposable
             }
             GlesRenderUtil.ResetMeshCulling(_gl);
 
-            GlesNormalDepthStats stats = collectDiagnostics ? ReadStats() : default;
+            GlesNormalDepthStats stats = default;
+#if FA_ENABLE_GPU_DIAGNOSTIC_READBACK
+            if (collectDiagnostics)
+                stats = ReadStats();
+#endif
             LastRenderInfo = new GlesNormalDepthRenderInfo(true, _width, _height, renderedMeshes, _linearDepthMin, _linearDepthMax, stats);
         }
         finally
@@ -212,6 +216,7 @@ public sealed class GlesNormalDepthRenderer : IDisposable
     private static float GetMeshColorAlpha(GpuMesh mesh)
         => mesh.MaterialAlpha;
 
+#if FA_ENABLE_GPU_DIAGNOSTIC_READBACK
     private unsafe GlesNormalDepthStats ReadStats()
     {
         if (_fbo == 0 || _width <= 0 || _height <= 0)
@@ -278,6 +283,7 @@ public sealed class GlesNormalDepthRenderer : IDisposable
             centerDepth,
             error);
     }
+#endif
 
     private static float DecodePackedDepth(byte high, byte low)
     {

@@ -19,6 +19,7 @@ public sealed class RecentFilesBottomSheet : BottomSheetDialogFragment, IDisposa
     private const float CompactPanelWidthDp = 240f;
     private int _sheetWidthOverridePx;
     private FrameLayout? _resizeHandle;
+    private LinearLayout? _contentRoot;
     private readonly List<MaterialCardView> _recentCards = [];
     private bool _disposed;
 
@@ -39,6 +40,8 @@ public sealed class RecentFilesBottomSheet : BottomSheetDialogFragment, IDisposa
     public override void OnStart()
     {
         base.OnStart();
+        if (Context is { } ctx)
+            RefreshContent(ctx);
         ApplySheetLayout();
     }
 
@@ -63,7 +66,6 @@ public sealed class RecentFilesBottomSheet : BottomSheetDialogFragment, IDisposa
         _recentCards.Clear();
 
         int pad = Dp(ctx, 16);
-        var entries = RecentFilesStore.Load(ctx).Take(10).ToArray();
 
         var scroll = new NestedScrollView(ctx)
         {
@@ -82,18 +84,33 @@ public sealed class RecentFilesBottomSheet : BottomSheetDialogFragment, IDisposa
                 ViewGroup.LayoutParams.MatchParent,
                 ViewGroup.LayoutParams.WrapContent),
         };
+        _contentRoot = root;
 
-        AddHeader(ctx, root);
-        if (entries.Length == 0)
-            AddEmptyState(ctx, root);
-        else
-        {
-            foreach (RecentFileEntry entry in entries)
-                AddRecentRow(ctx, root, entry);
-        }
+        RefreshContent(ctx);
 
         scroll.AddView(root);
         return scroll;
+    }
+
+    private void RefreshContent(Context ctx)
+    {
+        if (_contentRoot is null)
+            return;
+
+        foreach (MaterialCardView card in _recentCards)
+            card.SetOnClickListener(null);
+        _recentCards.Clear();
+        _contentRoot.RemoveAllViews();
+
+        RecentFileEntry[] entries = RecentFilesStore.Load(ctx).Take(10).ToArray();
+        AddHeader(ctx, _contentRoot);
+        if (entries.Length == 0)
+            AddEmptyState(ctx, _contentRoot);
+        else
+        {
+            foreach (RecentFileEntry entry in entries)
+                AddRecentRow(ctx, _contentRoot, entry);
+        }
     }
 
     private void DisposeManagedContent()
@@ -108,6 +125,7 @@ public sealed class RecentFilesBottomSheet : BottomSheetDialogFragment, IDisposa
         _recentCards.Clear();
         _resizeHandle?.SetOnTouchListener(null);
         _resizeHandle = null;
+        _contentRoot = null;
         OnRecentFileSelected = null;
     }
 

@@ -23,6 +23,21 @@
         app:layout_constraintEnd_toEndOf="parent">
 
         <com.google.android.material.button.MaterialButton
+            android:id="@+id/cloudAccountButton"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_gravity="end|center_vertical"
+            android:layout_marginEnd="@dimen/fa_space_s"
+            android:contentDescription="@string/cd_cloud_account"
+            app:icon="@drawable/ic_account_circle"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="22dp"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.IconButton" />
+
+        <com.google.android.material.button.MaterialButton
             android:id="@+id/propertiesToggle"
             android:layout_width="40dp"
             android:layout_height="40dp"
@@ -30,6 +45,21 @@
             android:layout_marginEnd="@dimen/fa_space_s"
             android:contentDescription="@string/cd_toggle_properties"
             app:icon="@drawable/ic_chevron_right"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="20dp"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.IconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/saveButton"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_gravity="end|center_vertical"
+            android:layout_marginEnd="@dimen/fa_space_s"
+            android:contentDescription="@string/cd_save_model"
+            app:icon="@drawable/ic_save"
             app:iconGravity="textStart"
             app:iconPadding="0dp"
             app:iconSize="20dp"
@@ -80,6 +110,48 @@
             android:layout_marginTop="@dimen/fa_space_xs"
             android:contentDescription="@string/cd_nav_recent"
             app:icon="@drawable/ic_recent"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_nav_rail_item_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.IconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/navCloudButton"
+            android:layout_width="@dimen/fa_nav_rail_item_width"
+            android:layout_height="@dimen/fa_nav_rail_item_height"
+            android:layout_marginTop="@dimen/fa_space_xs"
+            android:contentDescription="@string/cd_nav_cloud"
+            app:icon="@drawable/ic_cloud"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_nav_rail_item_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.IconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/navUndoButton"
+            android:layout_width="@dimen/fa_nav_rail_item_width"
+            android:layout_height="@dimen/fa_nav_rail_item_height"
+            android:layout_marginTop="@dimen/fa_space_xs"
+            android:contentDescription="@string/cd_nav_undo"
+            app:icon="@drawable/ic_undo"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_nav_rail_item_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.IconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/navRedoButton"
+            android:layout_width="@dimen/fa_nav_rail_item_width"
+            android:layout_height="@dimen/fa_nav_rail_item_height"
+            android:layout_marginTop="@dimen/fa_space_xs"
+            android:contentDescription="@string/cd_nav_redo"
+            app:icon="@drawable/ic_redo"
             app:iconGravity="textStart"
             app:iconPadding="0dp"
             app:iconSize="@dimen/fa_nav_rail_item_icon_size"

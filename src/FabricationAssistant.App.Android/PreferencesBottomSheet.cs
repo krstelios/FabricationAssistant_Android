@@ -62,6 +62,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
     public override void OnStart()
     {
         base.OnStart();
+        RefreshVisibleSettingsView();
         ApplySheetLayout();
     }
 
@@ -267,6 +268,17 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
             AppSettings.SetSectionCapColor);
         AddFloatSlider(ctx, sections, "Plane size", 0.005f, 0.20f, AppSettings.SectionPlaneSizeFraction, v => AppSettings.SectionPlaneSizeFraction = v);
 
+        var cloud = AddSection(ctx, root, "FA Cloud", "Server, login, and project");
+        var cloudSecureStore = new CloudSecureStore(ctx.ApplicationContext ?? ctx);
+        AddTextField(ctx, cloud, "Server", AppSettings.CloudServerUrl, value => AppSettings.CloudServerUrl = value);
+        AddTextField(ctx, cloud, "User / email", AppSettings.CloudUserEmail, value => AppSettings.CloudUserEmail = value);
+        AddTextField(ctx, cloud, "Default project", AppSettings.CloudDefaultProjectName, value => AppSettings.CloudDefaultProjectName = value);
+        AddSwitch(ctx, cloud, "Keep me signed in", AppSettings.CloudRememberCredentials, remember =>
+        {
+            AppSettings.CloudRememberCredentials = remember;
+            cloudSecureStore.ClearRememberedPassword();
+        });
+
         // ── Navigation ─────────────────────────────────────────────────
         var nav = AddSection(ctx, root, "Navigation", "Orbit, pan, zoom");
         AddSwitch(ctx, nav, "Lightweight camera navigation", AppSettings.LightweightNavigationEnabled, v => AppSettings.LightweightNavigationEnabled = v);
@@ -298,6 +310,14 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         View replacement = CreateEmbeddedView(ctx);
         parent.AddView(replacement, index, layoutParams);
         replacement.Post(() => ReanchorSheetAfterContentChange(replacement));
+    }
+
+    private void RefreshVisibleSettingsView()
+    {
+        if (_disposed || Context is not { } ctx || View is not { } view)
+            return;
+
+        ReplaceVisibleSettingsView(ctx, view);
     }
 
     private void ApplySheetLayout()
@@ -721,13 +741,53 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
     private void AddSwitch(Context ctx, ViewGroup parent, string label, bool initial, Action<bool> save)
     {
         var sw = new MaterialSwitch(ctx) { Text = label, Checked = initial };
-        sw.ContentDescription = label;
+        sw.ContentDescription = FormatSwitchContentDescription(label, initial);
         sw.SetTextColor(GetColor(ctx, Resource.Color.fa_text_primary));
         var lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MatchParent, LinearLayout.LayoutParams.WrapContent);
         lp.BottomMargin = Dp(ctx, 6);
         sw.LayoutParameters = lp;
-        sw.CheckedChange += (_, e) => { save(e.IsChecked); NotifySettingsChanged(); };
+        sw.CheckedChange += (_, e) =>
+        {
+            sw.ContentDescription = FormatSwitchContentDescription(label, e.IsChecked);
+            save(e.IsChecked);
+            NotifySettingsChanged();
+        };
         parent.AddView(sw);
+    }
+
+    private static string FormatSwitchContentDescription(string label, bool isChecked)
+        => label + (isChecked ? ", on" : ", off");
+
+    private EditText AddTextField(Context ctx, ViewGroup parent, string label, string initial, Action<string> save, bool isPassword = false)
+    {
+        var row = new LinearLayout(ctx) { Orientation = Orientation.Vertical };
+        var lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MatchParent, LinearLayout.LayoutParams.WrapContent);
+        lp.BottomMargin = Dp(ctx, 8);
+        row.LayoutParameters = lp;
+
+        var labelTv = new TextView(ctx) { Text = label };
+        labelTv.SetTextColor(GetColor(ctx, Resource.Color.fa_text_secondary));
+        labelTv.SetTextSize(ComplexUnitType.Px, Dp(ctx, 12));
+        row.AddView(labelTv);
+
+        var input = new EditText(ctx)
+        {
+            Text = initial ?? "",
+        };
+        input.SetSingleLine(true);
+        input.SetTextColor(GetColor(ctx, Resource.Color.fa_text_primary));
+        input.SetHintTextColor(GetColor(ctx, Resource.Color.fa_text_secondary));
+        input.InputType = isPassword
+            ? InputTypes.ClassText | InputTypes.TextVariationPassword
+            : InputTypes.ClassText | InputTypes.TextVariationUri;
+        input.ContentDescription = label;
+        input.TextChanged += (_, _) => save(input.Text ?? "");
+        row.AddView(input, new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MatchParent,
+            Dp(ctx, 44)));
+
+        parent.AddView(row);
+        return input;
     }
 
     private void AddFloatSlider(Context ctx, ViewGroup parent, string label, float min, float max, float initial, Action<float> save)

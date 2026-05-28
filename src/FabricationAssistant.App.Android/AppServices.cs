@@ -33,6 +33,9 @@ public static class AppServices
         services.AddSingleton<IDispatcher, AndroidDispatcher>();
         services.AddSingleton<IPlatformPaths>(platformPaths);
         services.AddSingleton<ImportPipeline>();
+        services.AddSingleton<CloudSecureStore>();
+        services.AddSingleton<CloudApiClient>();
+        services.AddSingleton<CloudNotificationClient>();
         services.AddSingleton<CameraState>();
         services.AddSingleton<SectionService>();
         services.AddSingleton<PackageSessionState>();

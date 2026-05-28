@@ -68,7 +68,7 @@ public sealed class SafFilePicker : IDisposable
         intent.AddCategory(Intent.CategoryOpenable);
         intent.SetType("*/*");
         intent.PutExtra(Intent.ExtraMimeTypes, mimeTypes);
-        intent.AddFlags(ActivityFlags.GrantReadUriPermission | ActivityFlags.GrantPersistableUriPermission);
+        intent.AddFlags(ActivityFlags.GrantReadUriPermission | ActivityFlags.GrantWriteUriPermission | ActivityFlags.GrantPersistableUriPermission);
         return intent;
     }
 

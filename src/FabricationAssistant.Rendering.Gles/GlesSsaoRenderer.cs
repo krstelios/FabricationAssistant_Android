@@ -212,7 +212,11 @@ public sealed class GlesSsaoRenderer : IDisposable
 
         DrawFullscreen();
         GLEnum renderError = _gl.GetError();
-        GlesSsaoTextureStats rawStats = collectDiagnostics ? ReadAoStats(_ssaoFbo) : default;
+        GlesSsaoTextureStats rawStats = default;
+#if FA_ENABLE_GPU_DIAGNOSTIC_READBACK
+        if (collectDiagnostics)
+            rawStats = ReadAoStats(_ssaoFbo);
+#endif
 
         if (!appearance.AoBlurEnabled || blurRadius <= 0 || blurPassCount <= 0 || _blurFboA == 0 || _blurFboB == 0)
         {
@@ -295,7 +299,11 @@ public sealed class GlesSsaoRenderer : IDisposable
         uint finalFbo = srcTex == _blurTexA ? _blurFboA : _blurFboB;
         if (renderError == GLEnum.NoError)
             renderError = _gl.GetError();
-        GlesSsaoTextureStats finalStats = collectDiagnostics ? ReadAoStats(finalFbo) : default;
+        GlesSsaoTextureStats finalStats = default;
+#if FA_ENABLE_GPU_DIAGNOSTIC_READBACK
+        if (collectDiagnostics)
+            finalStats = ReadAoStats(finalFbo);
+#endif
         LastRenderInfo = new GlesSsaoRenderInfo(
             true,
             _width,
@@ -324,6 +332,7 @@ public sealed class GlesSsaoRenderer : IDisposable
         _gl.ActiveTexture(TextureUnit.Texture0);
     }
 
+#if FA_ENABLE_GPU_DIAGNOSTIC_READBACK
     private unsafe GlesSsaoTextureStats ReadAoStats(uint fbo)
     {
         if (fbo == 0 || _width <= 0 || _height <= 0)
@@ -375,6 +384,7 @@ public sealed class GlesSsaoRenderer : IDisposable
             _gl.ActiveTexture(TextureUnit.Texture0);
         }
     }
+#endif
 
     private void DrawFullscreen()
     {

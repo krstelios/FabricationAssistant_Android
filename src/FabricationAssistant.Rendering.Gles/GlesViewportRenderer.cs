@@ -86,7 +86,9 @@ public sealed class GlesViewportRenderer : IDisposable
     private int _lastSurfaceTransparentMeshCount;
     private int _lastSurfaceHiddenMeshCount;
     private SsaoStateKey _lastLoggedSsaoState;
+#if DEBUG || FA_RENDER_DIAGNOSTICS
     private SsaoDiagnosticsKey _lastSsaoDiagnostics;
+#endif
     private TransparencyStateKey _lastLoggedTransparencyState;
     private int _interactiveNavigationActive;
     private GpuScene? _scene;
@@ -208,6 +210,26 @@ public sealed class GlesViewportRenderer : IDisposable
     public Vector4 SectionEdgeHighlightColor { get; set; } = new(1.00f, 0.5019608f, 0.2509804f, 1.00f);
 
     public Vector4 SectionCapColor { get; set; } = new(0.85f, 0.85f, 0.80f, 1.00f);
+
+    public Vector4 SectionPlacementPreviewColor { get; set; } = new(1.00f, 0.85f, 0.20f, 1.00f);
+
+    public Vector4 SectionPlacementHoverColor { get; set; } = new(1.00f, 0.85f, 0.20f, 0.95f);
+
+    public Vector4 SectionGizmoAxisXColor { get; set; } = new(1.00f, 0.25f, 0.25f, 0.95f);
+
+    public Vector4 SectionGizmoAxisYColor { get; set; } = new(0.25f, 1.00f, 0.35f, 0.95f);
+
+    public Vector4 SectionGizmoAxisZColor { get; set; } = new(0.30f, 0.60f, 1.00f, 0.95f);
+
+    public Vector4 SectionGizmoArcXColor { get; set; } = new(1.00f, 0.35f, 0.35f, 0.40f);
+
+    public Vector4 SectionGizmoArcYColor { get; set; } = new(0.35f, 1.00f, 0.40f, 0.40f);
+
+    public Vector4 SectionGizmoArcZColor { get; set; } = new(0.40f, 0.65f, 1.00f, 0.40f);
+
+    public Vector4 SectionGizmoHoverColor { get; set; } = new(1.00f, 0.90f, 0.20f, 1.00f);
+
+    public Vector4 SectionGizmoActiveColor { get; set; } = new(1.00f, 1.00f, 1.00f, 1.00f);
 
     public IReadOnlyList<int> XrayOpaqueNodeIds
     {
@@ -388,7 +410,9 @@ public sealed class GlesViewportRenderer : IDisposable
         _lastLoggedMsaaEffective = int.MinValue;
         _lastLoggedMsaaMaxSamples = int.MinValue;
         _lastLoggedSsaoState = default;
+#if DEBUG || FA_RENDER_DIAGNOSTICS
         _lastSsaoDiagnostics = default;
+#endif
         _lastLoggedTransparencyState = default;
 
         bool hadSceneFromPreviousContext = Scene is not null;
@@ -442,7 +466,9 @@ public sealed class GlesViewportRenderer : IDisposable
         _ssaoRenderer?.TrimFramebuffers();
         _outlineRenderer?.TrimFramebuffers();
         _msaaFbo?.Destroy();
+#if DEBUG || FA_RENDER_DIAGNOSTICS
         _lastSsaoDiagnostics = default;
+#endif
         Android.Util.Log.Info("FA.Renderer", "Trimmed transient GPU framebuffers under memory pressure.");
     }
 
@@ -828,6 +854,7 @@ public sealed class GlesViewportRenderer : IDisposable
 
         if (SectionGizmoScale > 0f)
         {
+            ApplySectionOverlaySettings();
             _sectionOverlay?.RenderGizmo(
                 view,
                 proj,
@@ -843,6 +870,7 @@ public sealed class GlesViewportRenderer : IDisposable
 
         if (BodyMoveGizmoScale > 0f)
         {
+            ApplySectionOverlaySettings();
             _sectionOverlay?.RenderGizmo(
                 view,
                 proj,
@@ -1219,6 +1247,16 @@ public sealed class GlesViewportRenderer : IDisposable
         _sectionOverlay.EdgeColor = SectionEdgeColor;
         _sectionOverlay.EdgeHighlightColor = SectionEdgeHighlightColor;
         _sectionOverlay.CapColor = SectionCapColor;
+        _sectionOverlay.PlacementPreviewColor = SectionPlacementPreviewColor;
+        _sectionOverlay.PlacementHoverColor = SectionPlacementHoverColor;
+        _sectionOverlay.GizmoAxisXColor = SectionGizmoAxisXColor;
+        _sectionOverlay.GizmoAxisYColor = SectionGizmoAxisYColor;
+        _sectionOverlay.GizmoAxisZColor = SectionGizmoAxisZColor;
+        _sectionOverlay.GizmoArcXColor = SectionGizmoArcXColor;
+        _sectionOverlay.GizmoArcYColor = SectionGizmoArcYColor;
+        _sectionOverlay.GizmoArcZColor = SectionGizmoArcZColor;
+        _sectionOverlay.GizmoHoverColor = SectionGizmoHoverColor;
+        _sectionOverlay.GizmoActiveColor = SectionGizmoActiveColor;
     }
 
     private SectionCapGeometry[] GetSectionCapGeometries(GpuScene scene)
@@ -2136,6 +2174,9 @@ public sealed class GlesViewportRenderer : IDisposable
 
     private bool ShouldCollectSsaoDiagnostics(SceneAppearance appearance, bool active, string reason)
     {
+#if !(DEBUG || FA_RENDER_DIAGNOSTICS)
+        return false;
+#else
         if (!active)
             return false;
 
@@ -2164,6 +2205,7 @@ public sealed class GlesViewportRenderer : IDisposable
 
         _lastSsaoDiagnostics = key;
         return true;
+#endif
     }
 
     private void LogSsaoState(SceneAppearance appearance, bool active, string reason, uint aoTexture)
@@ -2438,7 +2480,9 @@ public sealed class GlesViewportRenderer : IDisposable
         _opaqueSurfaceMeshes.Clear();
         _transparentSurfaceMeshes.Clear();
         _lastLoggedSsaoState = default;
+#if DEBUG || FA_RENDER_DIAGNOSTICS
         _lastSsaoDiagnostics = default;
+#endif
         _lastLoggedTransparencyState = default;
         ResetSlowFrameLogThrottle();
         _gl = null;

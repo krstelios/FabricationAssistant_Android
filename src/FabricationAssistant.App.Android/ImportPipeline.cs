@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Text.RegularExpressions;
 using Android.Content;
 using Android.Provider;
 using FabricationAssistant.Core.SceneGraph;
@@ -23,8 +24,12 @@ public sealed class ImportPipeline
     private const int ImportCacheKeepCount = 10;
     private const long MaxImportBytes = 2L * 1024L * 1024L * 1024L;
     private const int CopyBufferBytes = 64 * 1024;
+    private const string CloudImportCachePrefix = "cloud-";
     private static readonly TimeSpan StaleTempFileAge = TimeSpan.FromHours(1);
     private static readonly TimeSpan CopyTimeout = TimeSpan.FromMinutes(15);
+    private static readonly Regex LegacyCloudImportCacheFileName = new(
+        @"^\d+-.+_\d{2}_\d{2}(?:-[0-9a-f]+-[0-9a-f]{32})+\.fa$",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private readonly Context _context;
     private readonly IPlatformPaths _paths;
@@ -41,12 +46,15 @@ public sealed class ImportPipeline
     public async Task<DocumentDto> ImportAsync(
         AndroidUri contentUri,
         IProgress<string>? progress,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool copyToImportCache = true)
     {
         ArgumentNullException.ThrowIfNull(contentUri);
 
         string fileName = ResolveFileNameWithMimeFallback(contentUri, ResolveFileName(contentUri));
-        string localPath = await CopyToLocalAsync(contentUri, fileName, progress, ct).ConfigureAwait(false);
+        string localPath = !copyToImportCache && TryResolveExistingFilePath(contentUri) is { } existingFilePath
+            ? existingFilePath
+            : await CopyToLocalAsync(contentUri, fileName, progress, ct).ConfigureAwait(false);
         string ext = Path.GetExtension(localPath).ToLowerInvariant();
         if (ShouldSniffFileType(ext)
             && await TryResolveExtensionFromSignatureAsync(localPath, ct).ConfigureAwait(false) is { } sniffedExtension)
@@ -83,6 +91,46 @@ public sealed class ImportPipeline
             $"Unsupported file type: {ext}. Supported: .gltf, .glb, .fa");
     }
 
+    public void DeleteImportCacheFilesContaining(string fileNameToken)
+    {
+        if (string.IsNullOrWhiteSpace(fileNameToken))
+            return;
+
+        string token = SanitizeImportCacheToken(fileNameToken);
+        if (string.IsNullOrWhiteSpace(token))
+            return;
+
+        DeleteImportCacheFiles(file => file.Name.Contains(token, StringComparison.OrdinalIgnoreCase));
+    }
+
+    public void DeleteCloudImportCacheFiles()
+        => DeleteImportCacheFiles(file => IsCloudImportCacheFileName(file.Name));
+
+    private static bool IsCloudImportCacheFileName(string fileName)
+        => fileName.StartsWith(CloudImportCachePrefix, StringComparison.OrdinalIgnoreCase)
+           || LegacyCloudImportCacheFileName.IsMatch(fileName);
+
+    private void DeleteImportCacheFiles(Func<FileInfo, bool> shouldDelete)
+    {
+        string importCacheRoot = Path.Combine(_paths.AppDataRoot, "import-cache");
+        try
+        {
+            var root = new DirectoryInfo(importCacheRoot);
+            if (!root.Exists)
+                return;
+
+            foreach (FileInfo file in root.GetFiles())
+            {
+                if (shouldDelete(file))
+                    TryDeleteFile(file.FullName);
+            }
+        }
+        catch
+        {
+            // Cache cleanup must not interrupt close/signout.
+        }
+    }
+
     public void PruneImportCache()
         => PruneImportCache(_paths.AppDataRoot);
 
@@ -102,7 +150,7 @@ public sealed class ImportPipeline
     {
         string importCacheRoot = Path.Combine(_paths.AppDataRoot, "import-cache");
         Directory.CreateDirectory(importCacheRoot);
-        string localPath = Path.Combine(importCacheRoot, CreateCacheFileName(fileName));
+        string localPath = Path.Combine(importCacheRoot, ImportCacheFileName.Create(fileName));
         string tempPath = localPath + ".part";
 
         progress?.Report("Copying file...");
@@ -188,33 +236,27 @@ public sealed class ImportPipeline
         }
     }
 
-    private static string CreateCacheFileName(string fileName)
-    {
-        string safeName = Path.GetFileName(fileName);
-        if (string.IsNullOrWhiteSpace(safeName))
-            safeName = "model.bin";
-
-        string extension = Path.GetExtension(safeName);
-        if (string.IsNullOrWhiteSpace(extension))
-            extension = ".bin";
-
-        string stem = Path.GetFileNameWithoutExtension(safeName);
-        if (string.IsNullOrWhiteSpace(stem))
-            stem = "model";
-
-        foreach (char invalid in Path.GetInvalidFileNameChars())
-            stem = stem.Replace(invalid, '_');
-
-        if (stem.Length > 80)
-            stem = stem[..80];
-
-        return $"{stem}-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds():x}-{Guid.NewGuid():N}{extension}";
-    }
-
     private string ResolveFileNameWithMimeFallback(AndroidUri uri, string? displayName)
         => ImportFileTypeResolver.ResolveFileNameWithMimeFallback(
             string.IsNullOrWhiteSpace(displayName) ? uri.LastPathSegment : displayName,
             _context.ContentResolver?.GetType(uri));
+
+    private static string? TryResolveExistingFilePath(AndroidUri uri)
+    {
+        if (!string.Equals(uri.Scheme, "file", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        string? path = uri.Path;
+        return string.IsNullOrWhiteSpace(path) || !File.Exists(path) ? null : path;
+    }
+
+    private static string SanitizeImportCacheToken(string token)
+    {
+        string safe = token.Trim();
+        foreach (char invalid in Path.GetInvalidFileNameChars())
+            safe = safe.Replace(invalid, '_');
+        return safe;
+    }
 
     private static bool ShouldSniffFileType(string extension)
         => extension is not (".gltf" or ".glb" or ".fa");
@@ -346,6 +388,7 @@ public sealed class ImportPipeline
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            global::Android.Util.Log.Warn("FA.Import", "Invalid .fa archive details: " + ex);
             throw new InvalidDataException("The selected .fa file is not a valid Fabrication Assistant archive.", ex);
         }
     }

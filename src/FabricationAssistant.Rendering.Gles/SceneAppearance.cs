@@ -182,6 +182,12 @@ public static class SceneAppearanceDefaults
     };
 }
 
+public static class RenderModeSupport
+{
+    public static RenderMode EffectiveAndroidMode(RenderMode requested)
+        => requested == RenderMode.Realistic ? RenderMode.Shaded : requested;
+}
+
 /// <summary>
 /// Per-frame appearance state for the viewport renderer. Mirrors the desktop
 /// SceneAppearanceViewModel so user-tunable settings (lighting, edges, clay

@@ -103,6 +103,8 @@ public sealed class ViewportSurfaceView : GLSurfaceView
     {
         Volatile.Write(ref _paused, 1);
         ClearPendingRenderCallbacks();
+        // Intentional: queued GL work is tied to the current Activity/Surface.
+        // In-flight commands re-check CanScheduleRendering before invoking UI continuations.
         ClearPendingRendererCommands("pause");
         RemoveVsyncRenderCallback("pause");
         base.OnPause();
@@ -231,6 +233,9 @@ public sealed class ViewportSurfaceView : GLSurfaceView
             tcs.TrySetCanceled(cancellationToken);
         }
 
+        // Subscribe before queueing the marker. QueueRendererCommand schedules
+        // a render; the marker arms completion on the GL thread before the
+        // next FrameRendered callback is raised.
         _renderer.FrameRendered += Complete;
         if (cancellationToken.CanBeCanceled)
             registration = cancellationToken.Register(Cancel);

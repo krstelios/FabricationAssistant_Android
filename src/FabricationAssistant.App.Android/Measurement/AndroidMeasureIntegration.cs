@@ -5,6 +5,7 @@ using FabricationAssistant.Core.Measurement.Engine;
 using FabricationAssistant.Core.Measurement.Presentation;
 using FabricationAssistant.Core.SceneGraph;
 using FabricationAssistant.Core.Sections;
+using FabricationAssistant.Core.UndoRedo;
 
 namespace FabricationAssistant.App.Android.Measurement;
 
@@ -34,12 +35,13 @@ internal sealed class AndroidMeasureIntegration : IDisposable
     public AndroidMeasureIntegration(
         Func<Scene?> sceneAccessor,
         Action invalidate,
-        Func<IReadOnlyList<SectionPlane>>? sectionPlanesAccessor = null)
+        Func<IReadOnlyList<SectionPlane>>? sectionPlanesAccessor = null,
+        IUndoService? undoService = null)
     {
         _sceneAccessor = sceneAccessor ?? throw new ArgumentNullException(nameof(sceneAccessor));
         _invalidate = invalidate ?? throw new ArgumentNullException(nameof(invalidate));
 
-        _session = new MeasurementSession(_store, _units, MeasurementTolerances.Default);
+        _session = new MeasurementSession(_store, _units, MeasurementTolerances.Default, undoService);
         _raycaster = new AndroidMeasureRaycaster(sceneAccessor, sectionPlanesAccessor);
         var picker = new MeshMeasurePicker(
             _raycaster,
@@ -70,6 +72,8 @@ internal sealed class AndroidMeasureIntegration : IDisposable
     public MeasurementId? SelectedMeasurementId => _store.SelectedId;
 
     public MeasurementId? HoveredMeasurementId => _store.HoveredId;
+
+    internal IMeasurementStore Store => _store;
 
     public void ApplySettings(bool multiMeasureEnabled, bool showDeltaBreakdown, BoundingBoxMode boundingBoxMode)
     {

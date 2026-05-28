@@ -6,6 +6,11 @@
     <!-- Navigation rail / toolbar content descriptions -->
     <string name="cd_nav_open">Open file</string>
     <string name="cd_nav_recent">Recent files</string>
+    <string name="cd_nav_cloud">Cloud files</string>
+    <string name="cd_cloud_account">FA Cloud account</string>
+    <string name="cd_save_model">Save model</string>
+    <string name="cd_nav_undo">Undo</string>
+    <string name="cd_nav_redo">Redo</string>
     <string name="cd_nav_model_explorer">Model Explorer</string>
     <string name="cd_nav_bom">Bill of materials</string>
     <string name="cd_nav_bom_flat">Consolidated bill of materials</string>
@@ -73,6 +78,7 @@
     <string name="measure_bounding_box_select_body_message">Select a part or assembly first.\n\nThe Bounding Box measure draws a tight box around the active selection.</string>
     <string name="body_move_select_prompt">Select a body to move.</string>
     <string name="zoom_window_hint">Drag a rectangle to zoom in</string>
+    <string name="zoom_window_hint_accessibility">Zoom window mode active. Drag a rectangle to zoom in. This hint will dismiss automatically.</string>
     <string name="section_place_geometry_hint">Tap geometry to place the section.</string>
     <string name="context_properties">Properties</string>
     <string name="context_undo">Undo</string>
