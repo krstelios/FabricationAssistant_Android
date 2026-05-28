@@ -91,7 +91,6 @@ public static class SceneAppearanceDefaults
     public const int AoBlurRadius = 24;
     public const float AoBlurSharpness = 8.96f;
     public const int AoBlurPasses = 1;
-    public const float AoNoiseScale = 2.52075f;
     public const float ContourStrength = 0.20040001f;
     public const float ContourPower = 4.4105f;
     public const int MsaaSamples = 4;
@@ -168,7 +167,6 @@ public static class SceneAppearanceDefaults
         AoBlurRadius = AoBlurRadius,
         AoBlurSharpness = AoBlurSharpness,
         AoBlurPasses = AoBlurPasses,
-        AoNoiseScale = AoNoiseScale,
         ContourStrength = ContourStrength,
         ContourPower = ContourPower,
         MsaaSamples = MsaaSamples,
@@ -265,7 +263,6 @@ public struct SceneAppearance
     public int AoBlurRadius;
     public float AoBlurSharpness;
     public int AoBlurPasses;
-    public float AoNoiseScale;
     public float ContourStrength;
     public float ContourPower;
     public int MsaaSamples;             // 0 / 2 / 4 / 8

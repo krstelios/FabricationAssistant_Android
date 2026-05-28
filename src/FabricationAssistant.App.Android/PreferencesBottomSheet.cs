@@ -215,7 +215,6 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         AddIntSlider(ctx, aa, "AO blur radius", 0, 24, AppSettings.AoBlurRadius, v => AppSettings.AoBlurRadius = v);
         AddFloatSlider(ctx, aa, "AO blur sharpness", 0f, 32f, AppSettings.AoBlurSharpness, v => AppSettings.AoBlurSharpness = v);
         AddIntSlider(ctx, aa, "AO blur passes", 0, 8, AppSettings.AoBlurPasses, v => AppSettings.AoBlurPasses = v);
-        AddFloatSlider(ctx, aa, "AO noise scale", 0.25f, 8f, AppSettings.AoNoiseScale, v => AppSettings.AoNoiseScale = v);
 
         // ── Selection ──────────────────────────────────────────────────
         var sel = AddSection(ctx, root, "Selection", "Highlight and outline");

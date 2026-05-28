@@ -12,8 +12,14 @@ namespace FabricationAssistant.Rendering.Gles;
 public sealed class GpuMesh : IDisposable
 {
     private const int EdgeEndpointFloatCount = CadEdgeBuilder.EdgeVertexFloatCount;
-    private const int EdgeRibbonFloatCount = 15;
-    private const int EdgeRibbonStrideBytes = EdgeRibbonFloatCount * sizeof(float);
+    // Per-instance record: vec3 p0 + vec3 p1 + vec3 normalA + vec3 normalB + float flags.
+    // Cut from the prior 90-float-per-segment ribbon (4 floats per segment * 6 vertices)
+    // to a 13-float-per-instance layout consumed by a static 4-vertex screen-facing quad.
+    private const int EdgeInstanceFloatCount = 13;
+    private const int EdgeInstanceStrideBytes = EdgeInstanceFloatCount * sizeof(float);
+
+    private static uint _staticEdgeQuadVbo;
+    private static uint _staticEdgeQuadIbo;
 
     private readonly GL _gl;
     private float[] _diffuseColor = new[] { 0.7f, 0.7f, 0.7f, 1.0f };
@@ -184,84 +190,144 @@ public sealed class GpuMesh : IDisposable
     // CAD edges (Plan 2I Phase D).
 
     public uint EdgeVao { get; private set; }
-    public uint EdgeVbo { get; private set; }
-    public int EdgeVertexCount { get; private set; }
+    public uint EdgeInstanceVbo { get; private set; }
     public int EdgeSegmentCount { get; private set; }
 
     /// <summary>
-    /// Uploads desktop-compatible edge endpoint vertices as GLES ribbon
-    /// triangles. GLES has no geometry shader, so each line segment expands
-    /// to two screen-facing triangles in edge.ribbon.gles.vert.
+    /// Uploads CAD edge endpoints as instance attributes for a shared static
+    /// 4-vertex quad. The vertex shader (edge.ribbon.gles.vert) expands each
+    /// instance into a screen-facing ribbon via gl_VertexID-driven aSegmentT
+    /// + aSide. Replaces the older CPU ribbon expansion (90 floats/segment)
+    /// with a per-instance 13-float record sharing a single static quad.
     /// </summary>
     public unsafe void UploadEdges(ReadOnlySpan<float> edgeVertices)
     {
         ClearEdgeResources();
 
         if (edgeVertices.Length == 0)
-        {
-            EdgeVertexCount = 0;
-            EdgeSegmentCount = 0;
             return;
-        }
 
         int endpointPairFloatCount = EdgeEndpointFloatCount * 2;
         if (edgeVertices.Length % endpointPairFloatCount != 0)
             throw new ArgumentException("Edge endpoint buffer must contain pairs of 10-float vertices.", nameof(edgeVertices));
 
         int segmentCount = edgeVertices.Length / endpointPairFloatCount;
-        int ribbonLength = checked(segmentCount * 6 * EdgeRibbonFloatCount);
-        float[] ribbon = ArrayPool<float>.Shared.Rent(ribbonLength);
+        int instanceLength = checked(segmentCount * EdgeInstanceFloatCount);
+        float[] instances = ArrayPool<float>.Shared.Rent(instanceLength);
         int output = 0;
 
         try
         {
-        for (int segment = 0; segment < segmentCount; segment++)
-        {
-            int p0 = segment * endpointPairFloatCount;
-            int p1 = p0 + EdgeEndpointFloatCount;
+            for (int segment = 0; segment < segmentCount; segment++)
+            {
+                int p0 = segment * endpointPairFloatCount;
+                int p1 = p0 + EdgeEndpointFloatCount;
 
-            AddRibbonVertex(edgeVertices, p0, p1, 0.0f, 1.0f, ribbon, ref output);
-            AddRibbonVertex(edgeVertices, p0, p1, 0.0f, -1.0f, ribbon, ref output);
-            AddRibbonVertex(edgeVertices, p0, p1, 1.0f, 1.0f, ribbon, ref output);
+                // p0.xyz
+                instances[output++] = edgeVertices[p0 + 0];
+                instances[output++] = edgeVertices[p0 + 1];
+                instances[output++] = edgeVertices[p0 + 2];
+                // p1.xyz
+                instances[output++] = edgeVertices[p1 + 0];
+                instances[output++] = edgeVertices[p1 + 1];
+                instances[output++] = edgeVertices[p1 + 2];
+                // normalA (3..5 of the endpoint record)
+                instances[output++] = edgeVertices[p0 + 3];
+                instances[output++] = edgeVertices[p0 + 4];
+                instances[output++] = edgeVertices[p0 + 5];
+                // normalB (6..8)
+                instances[output++] = edgeVertices[p0 + 6];
+                instances[output++] = edgeVertices[p0 + 7];
+                instances[output++] = edgeVertices[p0 + 8];
+                // flags (9)
+                instances[output++] = edgeVertices[p0 + 9];
+            }
 
-            AddRibbonVertex(edgeVertices, p0, p1, 1.0f, 1.0f, ribbon, ref output);
-            AddRibbonVertex(edgeVertices, p0, p1, 0.0f, -1.0f, ribbon, ref output);
-            AddRibbonVertex(edgeVertices, p0, p1, 1.0f, -1.0f, ribbon, ref output);
-        }
+            EnsureStaticEdgeQuad();
 
-        EdgeVao = _gl.GenVertexArray();
-        EdgeVbo = _gl.GenBuffer();
+            EdgeVao = _gl.GenVertexArray();
+            EdgeInstanceVbo = _gl.GenBuffer();
 
-        _gl.BindVertexArray(EdgeVao);
+            _gl.BindVertexArray(EdgeVao);
 
-        _gl.BindBuffer(BufferTargetARB.ArrayBuffer, EdgeVbo);
-        fixed (float* p = ribbon)
-            _gl.BufferData(BufferTargetARB.ArrayBuffer,
-                (nuint)(output * sizeof(float)), p, BufferUsageARB.StaticDraw);
+            // Per-instance attributes (locations 0-4, divisor = 1).
+            _gl.BindBuffer(BufferTargetARB.ArrayBuffer, EdgeInstanceVbo);
+            fixed (float* p = instances)
+                _gl.BufferData(BufferTargetARB.ArrayBuffer,
+                    (nuint)(output * sizeof(float)), p, BufferUsageARB.StaticDraw);
 
-        _gl.EnableVertexAttribArray(0);
-        _gl.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, EdgeRibbonStrideBytes, (void*)0);
-        _gl.EnableVertexAttribArray(1);
-        _gl.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, false, EdgeRibbonStrideBytes, (void*)(3 * sizeof(float)));
-        _gl.EnableVertexAttribArray(2);
-        _gl.VertexAttribPointer(2, 3, VertexAttribPointerType.Float, false, EdgeRibbonStrideBytes, (void*)(6 * sizeof(float)));
-        _gl.EnableVertexAttribArray(3);
-        _gl.VertexAttribPointer(3, 3, VertexAttribPointerType.Float, false, EdgeRibbonStrideBytes, (void*)(9 * sizeof(float)));
-        _gl.EnableVertexAttribArray(4);
-        _gl.VertexAttribPointer(4, 1, VertexAttribPointerType.Float, false, EdgeRibbonStrideBytes, (void*)(12 * sizeof(float)));
-        _gl.EnableVertexAttribArray(5);
-        _gl.VertexAttribPointer(5, 1, VertexAttribPointerType.Float, false, EdgeRibbonStrideBytes, (void*)(13 * sizeof(float)));
-        _gl.EnableVertexAttribArray(6);
-        _gl.VertexAttribPointer(6, 1, VertexAttribPointerType.Float, false, EdgeRibbonStrideBytes, (void*)(14 * sizeof(float)));
+            _gl.EnableVertexAttribArray(0);
+            _gl.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, EdgeInstanceStrideBytes, (void*)0);
+            _gl.VertexAttribDivisor(0, 1);
+            _gl.EnableVertexAttribArray(1);
+            _gl.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, false, EdgeInstanceStrideBytes, (void*)(3 * sizeof(float)));
+            _gl.VertexAttribDivisor(1, 1);
+            _gl.EnableVertexAttribArray(2);
+            _gl.VertexAttribPointer(2, 3, VertexAttribPointerType.Float, false, EdgeInstanceStrideBytes, (void*)(6 * sizeof(float)));
+            _gl.VertexAttribDivisor(2, 1);
+            _gl.EnableVertexAttribArray(3);
+            _gl.VertexAttribPointer(3, 3, VertexAttribPointerType.Float, false, EdgeInstanceStrideBytes, (void*)(9 * sizeof(float)));
+            _gl.VertexAttribDivisor(3, 1);
+            _gl.EnableVertexAttribArray(4);
+            _gl.VertexAttribPointer(4, 1, VertexAttribPointerType.Float, false, EdgeInstanceStrideBytes, (void*)(12 * sizeof(float)));
+            _gl.VertexAttribDivisor(4, 1);
 
-        _gl.BindVertexArray(0);
-        EdgeSegmentCount = segmentCount;
-        EdgeVertexCount = output / EdgeRibbonFloatCount;
+            // Per-vertex attributes from the shared static quad (locations 5, 6, divisor = 0).
+            _gl.BindBuffer(BufferTargetARB.ArrayBuffer, _staticEdgeQuadVbo);
+            _gl.EnableVertexAttribArray(5);
+            _gl.VertexAttribPointer(5, 1, VertexAttribPointerType.Float, false, 2 * sizeof(float), (void*)0);
+            _gl.VertexAttribDivisor(5, 0);
+            _gl.EnableVertexAttribArray(6);
+            _gl.VertexAttribPointer(6, 1, VertexAttribPointerType.Float, false, 2 * sizeof(float), (void*)sizeof(float));
+            _gl.VertexAttribDivisor(6, 0);
+
+            _gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, _staticEdgeQuadIbo);
+
+            _gl.BindVertexArray(0);
+            _gl.BindBuffer(BufferTargetARB.ArrayBuffer, 0);
+            _gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, 0);
+
+            EdgeSegmentCount = segmentCount;
         }
         finally
         {
-            ArrayPool<float>.Shared.Return(ribbon);
+            ArrayPool<float>.Shared.Return(instances);
         }
+    }
+
+    /// <summary>
+    /// Lazily creates the per-process static quad geometry shared by every
+    /// mesh's edge VAO: 4 vertices of (aSegmentT, aSide) and 6 indices for
+    /// the two triangles that span them.
+    /// </summary>
+    private unsafe void EnsureStaticEdgeQuad()
+    {
+        if (_staticEdgeQuadVbo != 0 && _staticEdgeQuadIbo != 0)
+            return;
+
+        float[] quad =
+        {
+            0.0f,  1.0f, // segment start, +side
+            0.0f, -1.0f, // segment start, -side
+            1.0f,  1.0f, // segment end, +side
+            1.0f, -1.0f, // segment end, -side
+        };
+        ushort[] indices = { 0, 1, 2, 2, 1, 3 };
+
+        _staticEdgeQuadVbo = _gl.GenBuffer();
+        _gl.BindBuffer(BufferTargetARB.ArrayBuffer, _staticEdgeQuadVbo);
+        fixed (float* p = quad)
+            _gl.BufferData(BufferTargetARB.ArrayBuffer,
+                (nuint)(quad.Length * sizeof(float)), p, BufferUsageARB.StaticDraw);
+
+        _staticEdgeQuadIbo = _gl.GenBuffer();
+        _gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, _staticEdgeQuadIbo);
+        fixed (ushort* p = indices)
+            _gl.BufferData(BufferTargetARB.ElementArrayBuffer,
+                (nuint)(indices.Length * sizeof(ushort)), p, BufferUsageARB.StaticDraw);
+
+        _gl.BindBuffer(BufferTargetARB.ArrayBuffer, 0);
+        _gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, 0);
     }
 
     private void EnsureSurfaceResources()
@@ -274,11 +340,16 @@ public sealed class GpuMesh : IDisposable
             Ebo = _gl.GenBuffer();
     }
 
-    public void DrawEdges()
+    public unsafe void DrawEdges()
     {
-        if (EdgeVertexCount == 0 || EdgeVao == 0) return;
+        if (EdgeSegmentCount == 0 || EdgeVao == 0) return;
         _gl.BindVertexArray(EdgeVao);
-        _gl.DrawArrays(PrimitiveType.Triangles, 0, (uint)EdgeVertexCount);
+        _gl.DrawElementsInstanced(
+            PrimitiveType.Triangles,
+            6,
+            DrawElementsType.UnsignedShort,
+            (void*)0,
+            (uint)EdgeSegmentCount);
         _gl.BindVertexArray(0);
     }
 
@@ -301,37 +372,10 @@ public sealed class GpuMesh : IDisposable
         UploadEdges(edgeVertices);
     }
 
-    private static void AddRibbonVertex(
-        ReadOnlySpan<float> source,
-        int endpoint0,
-        int endpoint1,
-        float segmentT,
-        float side,
-        float[] destination,
-        ref int output)
-    {
-        destination[output++] = source[endpoint0 + 0];
-        destination[output++] = source[endpoint0 + 1];
-        destination[output++] = source[endpoint0 + 2];
-        destination[output++] = source[endpoint1 + 0];
-        destination[output++] = source[endpoint1 + 1];
-        destination[output++] = source[endpoint1 + 2];
-        destination[output++] = source[endpoint0 + 3];
-        destination[output++] = source[endpoint0 + 4];
-        destination[output++] = source[endpoint0 + 5];
-        destination[output++] = source[endpoint0 + 6];
-        destination[output++] = source[endpoint0 + 7];
-        destination[output++] = source[endpoint0 + 8];
-        destination[output++] = source[endpoint0 + 9];
-        destination[output++] = segmentT;
-        destination[output++] = side;
-    }
-
     private void ClearEdgeResources()
     {
         if (EdgeVao != 0) { _gl.DeleteVertexArray(EdgeVao); EdgeVao = 0; }
-        if (EdgeVbo != 0) { _gl.DeleteBuffer(EdgeVbo); EdgeVbo = 0; }
-        EdgeVertexCount = 0;
+        if (EdgeInstanceVbo != 0) { _gl.DeleteBuffer(EdgeInstanceVbo); EdgeInstanceVbo = 0; }
         EdgeSegmentCount = 0;
     }
 

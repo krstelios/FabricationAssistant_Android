@@ -22,7 +22,6 @@ public sealed class SceneAppearanceTests
         Assert.Equal(SceneAppearanceDefaults.AoFadeEnd, appearance.AoFadeEnd);
         Assert.Equal(SceneAppearanceDefaults.AoBlurRadius, appearance.AoBlurRadius);
         Assert.Equal(SceneAppearanceDefaults.AoBlurSharpness, appearance.AoBlurSharpness);
-        Assert.Equal(SceneAppearanceDefaults.AoNoiseScale, appearance.AoNoiseScale);
         Assert.Equal(SceneAppearanceDefaults.ContourStrength, appearance.ContourStrength);
         Assert.Equal(SceneAppearanceDefaults.MsaaSamples, appearance.MsaaSamples);
     }

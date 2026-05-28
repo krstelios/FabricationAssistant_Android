@@ -1,6 +1,11 @@
 #version 310 es
 precision highp float;
 
+// Edge ribbon expansion. Locations 0-4 are per-instance attributes (one record
+// per CAD edge segment, supplied by GpuMesh.EdgeInstanceVbo with divisor=1);
+// locations 5-6 are per-vertex attributes from a shared 4-vertex quad VBO
+// with divisor=0. The host issues glDrawElementsInstanced(TRIANGLES, 6, ...,
+// segmentCount) so each segment becomes one screen-facing ribbon.
 layout(location = 0) in vec3 aPosition0;
 layout(location = 1) in vec3 aPosition1;
 layout(location = 2) in vec3 aNormalA;

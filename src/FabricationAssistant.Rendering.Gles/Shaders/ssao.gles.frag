@@ -8,18 +8,23 @@ precision highp int;
 // pipeline match the desktop. Perspective views sample the depth attachment
 // directly like OpenTK; packed linear depth in uNormalTexture.ba remains the
 // orthographic fallback.
+//
+// Per-pixel rotation comes from Jorge Jimenez's Interleaved Gradient Noise
+// (Call of Duty: Advanced Warfare, 2014) -- one fract() evaluation, no
+// texture fetch, and the apparent spatial pattern is much finer than the
+// classic 4x4 tile noise it replaces. Combined with the Hammersley-built
+// uSamples kernel (CPU side), this lets 16 samples integrate smoothly enough
+// that a high-radius bilateral blur is no longer required to hide tile bands.
 
 in vec2 vTexCoord;
 
 uniform sampler2D uNormalTexture;
-uniform sampler2D uNoiseTexture;
 uniform sampler2D uDepthTexture;
 uniform vec2 uProjectionOffset;
 uniform vec2 uProjectionDepth;       // (proj[2][2], proj[2][3]) of perspective
 uniform vec2 uInvProjectionScale;    // (1/scaleX, 1/scaleY)
 uniform vec2 uProjectionUvScale;     // (-scaleX/2, -scaleY/2) for forward proj
 uniform vec2 uProjectionUvBias;      // (0.5 - offsetX/2, 0.5 - offsetY/2)
-uniform vec2 uNoiseScaleClamped;     // viewport / 4 (tile the 4x4 noise)
 uniform vec2 uLinearDepthRange;
 uniform bool uIsPerspective;
 uniform vec4 uSamples[96];
@@ -82,6 +87,12 @@ vec3 ReconstructPerspectiveViewPosition(vec2 uv, float depth)
     return vec3(viewX, viewY, viewZ);
 }
 
+// Jimenez 2014. Constants are hand-tuned; do not "simplify" them.
+float InterleavedGradientNoise(vec2 pixelCoord)
+{
+    return fract(52.9829189 * fract(dot(pixelCoord, vec2(0.06711056, 0.00583715))));
+}
+
 vec2 ProjectViewPositionToUv(vec3 viewPos)
 {
     if (!uIsPerspective)
@@ -123,15 +134,10 @@ void main()
         distanceFade *= 1.0 - smoothstep(uMaxDistance, uMaxDistance + max(uRadius, 0.0001), viewDistance);
     }
 
-    vec3 randomVec = texture(uNoiseTexture, vTexCoord * uNoiseScaleClamped).xyz * 2.0 - 1.0;
-    if (dot(randomVec, randomVec) < 0.00001)
-    {
-        randomVec = vec3(1.0, 0.0, 0.0);
-    }
-    else
-    {
-        randomVec = normalize(randomVec);
-    }
+    // Per-pixel rotation in the tangent plane around the surface normal.
+    // IGN gives a finely interleaved pattern; cos/sin gives a unit vector.
+    float ignAngle = InterleavedGradientNoise(gl_FragCoord.xy) * 6.2831853;
+    vec3 randomVec = vec3(cos(ignAngle), sin(ignAngle), 0.0);
     vec3 tangent = randomVec - centerNormal * dot(randomVec, centerNormal);
     if (dot(tangent, tangent) < 0.00001)
     {

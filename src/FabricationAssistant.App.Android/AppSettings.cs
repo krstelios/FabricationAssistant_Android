@@ -12,7 +12,7 @@ namespace FabricationAssistant.App.Android;
 public static class AppSettings
 {
     private const string FileName = "fa_settings";
-    private const int SettingsSchemaVersion = 15;
+    private const int SettingsSchemaVersion = 16;
 
     private const int DefaultAoSampleCount = SceneAppearanceDefaults.AoSampleCount;
     private const int MinAoSampleCount = 1;
@@ -49,9 +49,6 @@ public static class AppSettings
     private const int DefaultAoBlurPasses = SceneAppearanceDefaults.AoBlurPasses;
     private const int MinAoBlurPasses = 0;
     private const int MaxAoBlurPasses = 8;
-    private const float DefaultAoNoiseScale = SceneAppearanceDefaults.AoNoiseScale;
-    private const float MinAoNoiseScale = 0.25f;
-    private const float MaxAoNoiseScale = 8.0f;
     private const int ModeShadedWithEdges = (int)FabricationAssistant.Rendering.Gles.RenderMode.ShadedWithEdges;
     private const int ModeShaded = (int)FabricationAssistant.Rendering.Gles.RenderMode.Shaded;
     private const int ModeWireframe = (int)FabricationAssistant.Rendering.Gles.RenderMode.Wireframe;
@@ -96,7 +93,6 @@ public static class AppSettings
         ("ao_intensity", 1.45f),
         ("ao_power", 1.33f),
         ("ao_blur_sharpness", 10.9f),
-        ("ao_noise_scale", 8.0f),
         ("grid_spacing_mm", 10.0f),
         ("grid_r", 0.28f),
         ("grid_g", 0.30f),
@@ -152,7 +148,6 @@ public static class AppSettings
         ("ao_fade_start", MinAoFade, MaxAoFade),
         ("ao_fade_end", MinAoFade, MaxAoFade),
         ("ao_blur_sharpness", MinAoBlurSharpness, MaxAoBlurSharpness),
-        ("ao_noise_scale", MinAoNoiseScale, MaxAoNoiseScale),
         ("dimension_text_scale", MinDimensionTextScale, MaxDimensionTextScale),
         ("section_gizmo_scale", MinSectionGizmoScale, MaxSectionGizmoScale),
     ];
@@ -325,7 +320,6 @@ public static class AppSettings
     public static int AoBlurRadius { get => GetIntInRange("ao_blur_radius", DefaultAoBlurRadius, MinAoBlurRadius, MaxAoBlurRadius); set => Put("ao_blur_radius", System.Math.Clamp(value, MinAoBlurRadius, MaxAoBlurRadius)); }
     public static float AoBlurSharpness { get => GetFloatInRange("ao_blur_sharpness", DefaultAoBlurSharpness, MinAoBlurSharpness, MaxAoBlurSharpness); set => Put("ao_blur_sharpness", System.Math.Clamp(value, MinAoBlurSharpness, MaxAoBlurSharpness)); }
     public static int AoBlurPasses { get => GetIntInRange("ao_blur_passes", DefaultAoBlurPasses, MinAoBlurPasses, MaxAoBlurPasses); set => Put("ao_blur_passes", System.Math.Clamp(value, MinAoBlurPasses, MaxAoBlurPasses)); }
-    public static float AoNoiseScale { get => GetFloatInRange("ao_noise_scale", DefaultAoNoiseScale, MinAoNoiseScale, MaxAoNoiseScale); set => Put("ao_noise_scale", System.Math.Clamp(value, MinAoNoiseScale, MaxAoNoiseScale)); }
     public static float ContourStrength { get => GetFloatInRange("contour_strength", 0.20040001f, 0.0f, 1.2f); set => Put("contour_strength", System.Math.Clamp(value, 0.0f, 1.2f)); }
     public static float ContourPower { get => GetFloatInRange("contour_power", 4.4105f, 0.5f, 6.0f); set => Put("contour_power", System.Math.Clamp(value, 0.5f, 6.0f)); }
     // Read-side clamp remains defence-in-depth; schema migration removes invalid persisted values.
@@ -470,7 +464,6 @@ public static class AppSettings
         appearance.AoBlurRadius = AoBlurRadius;
         appearance.AoBlurSharpness = AoBlurSharpness;
         appearance.AoBlurPasses = AoBlurPasses;
-        appearance.AoNoiseScale = AoNoiseScale;
         appearance.ContourStrength = ContourStrength;
         appearance.ContourPower = ContourPower;
         appearance.MsaaSamples = MsaaSamples;
@@ -536,6 +529,9 @@ public static class AppSettings
 
         if (previousSchema < 14)
             ConvertSectionGizmoSizeToScale(editor);
+
+        if (previousSchema < 16)
+            editor.Remove("ao_noise_scale"); // setting removed: noise texture replaced with IGN in the SSAO shader.
 
         RemoveLegacyDefaultValues(editor);
         RemoveFloatIfBelow(editor, "edge_width", MinimumVisibleEdgeWidth);
@@ -640,7 +636,6 @@ public static class AppSettings
         editor.Remove("ao_blur_radius");
         editor.Remove("ao_blur_sharpness");
         editor.Remove("ao_blur_passes");
-        editor.Remove("ao_noise_scale");
     }
 
     private static void DoubleSectionGizmoSize(ISharedPreferencesEditor editor)

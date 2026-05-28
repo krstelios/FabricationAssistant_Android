@@ -2038,10 +2038,6 @@ public sealed class MainActivity : AppCompatActivity
         if (_cloudClient is null || IsImportUiBusy())
             return;
 
-        await CloseActiveCloudSessionAsync("opening cloud model");
-        if (_cloudClient is null || IsImportUiBusy())
-            return;
-
         var cts = new CancellationTokenSource();
         CancellationTokenSource? previousCloudOpen = Interlocked.Exchange(ref _cloudOpenCts, cts);
         previousCloudOpen?.Cancel();
@@ -2053,6 +2049,12 @@ public sealed class MainActivity : AppCompatActivity
         ShowLoading("Preparing cloud model...");
         try
         {
+            await PresentLoadingOverlayBeforeWorkAsync(cts.Token);
+            await CloseActiveCloudSessionAsync("opening cloud model");
+            cts.Token.ThrowIfCancellationRequested();
+            if (_cloudClient is null || _isDestroyed)
+                return;
+
             var progress = new Progress<string>(UpdateLoadingDetail);
             downloaded = counter is null
                 ? await _cloudClient.DownloadForOpenAsync(package, progress, cts.Token)
@@ -2071,7 +2073,8 @@ public sealed class MainActivity : AppCompatActivity
                 replaceActiveLoad: true,
                 addToRecent: false,
                 displayNameOverride: downloaded.DisplayName,
-                persistForRestore: false);
+                persistForRestore: false,
+                presentationFrameCount: 3);
 
             if (!loaded)
             {
@@ -9391,7 +9394,8 @@ public sealed class MainActivity : AppCompatActivity
         bool addToRecent = true,
         string? displayNameOverride = null,
         bool persistForRestore = true,
-        bool copyToImportCache = true)
+        bool copyToImportCache = true,
+        int presentationFrameCount = 1)
     {
         if (_import is null || _viewport is null || _camera is null)
             return false;
@@ -9461,19 +9465,7 @@ public sealed class MainActivity : AppCompatActivity
             RestorePendingSelectionState(runtimeScene);
             RestorePendingExplodeState();
             ApplySettingsToScene();
-            UpdateLoadingDetail("Rendering first frame...");
-            using (var firstFrameTimeout = CancellationTokenSource.CreateLinkedTokenSource(cts.Token))
-            {
-                firstFrameTimeout.CancelAfter(TimeSpan.FromSeconds(3));
-                try
-                {
-                    await _viewport.WaitForNextRenderedFrameAsync(firstFrameTimeout.Token);
-                }
-                catch (System.OperationCanceledException) when (!cts.IsCancellationRequested && firstFrameTimeout.IsCancellationRequested)
-                {
-                    global::Android.Util.Log.Warn("FA.Import", "Timed out waiting for the first rendered frame; continuing because the model load completed.");
-                }
-            }
+            await WaitForPresentedModelFramesAsync(Math.Max(1, presentationFrameCount), cts.Token);
             cts.Token.ThrowIfCancellationRequested();
             if (!IsCurrentLoad(loadVersion, cts)) return false;
 
@@ -9519,6 +9511,45 @@ public sealed class MainActivity : AppCompatActivity
             ShowError("Import failed", errorMessage);
 
         return loaded;
+    }
+
+    private async Task WaitForPresentedModelFramesAsync(int frameCount, CancellationToken ct)
+    {
+        if (_viewport is null)
+            return;
+
+        UpdateLoadingDetail(frameCount > 1 ? "Rendering model..." : "Rendering first frame...");
+        using var firstFrameTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        firstFrameTimeout.CancelAfter(TimeSpan.FromSeconds(frameCount > 1 ? 45 : 3));
+        try
+        {
+            for (int i = 0; i < frameCount; i++)
+                await _viewport.WaitForNextRenderedFrameAsync(firstFrameTimeout.Token);
+        }
+        catch (System.OperationCanceledException) when (!ct.IsCancellationRequested && firstFrameTimeout.IsCancellationRequested)
+        {
+            global::Android.Util.Log.Warn(
+                "FA.Import",
+                frameCount > 1
+                    ? "Timed out waiting for model presentation frames; continuing because the model load completed."
+                    : "Timed out waiting for the first rendered frame; continuing because the model load completed.");
+        }
+    }
+
+    private async Task PresentLoadingOverlayBeforeWorkAsync(CancellationToken ct)
+    {
+        await RunOnUiThreadAsync(() =>
+        {
+            if (_loadingOverlay is null)
+                return;
+
+            _loadingOverlay.BringToFront();
+            _loadingOverlay.Invalidate();
+        }).ConfigureAwait(true);
+
+        // Give the Android UI/compositor one short turn to draw the overlay
+        // before cloud close/download/import work starts.
+        await Task.Delay(120, ct).ConfigureAwait(true);
     }
 
     private Task<BoundingBox> LoadDocumentOnRendererAsync(DocumentDto document, CancellationToken ct, Func<bool>? shouldAttach = null)
@@ -11997,6 +12028,7 @@ public sealed class MainActivity : AppCompatActivity
         if (_loadingOverlay is null) return;
         _loadingOverlay.Animate()?.Cancel();
         _loadingOverlay.Visibility = ViewStates.Visible;
+        _loadingOverlay.BringToFront();
         _loadingOverlay.Alpha = 0f;
         _loadingOverlay.Animate()?.Alpha(1f)?.SetDuration(140)?.Start();
     }

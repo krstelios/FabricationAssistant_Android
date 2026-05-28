@@ -31,7 +31,8 @@ uniform float uContourPower;
 uniform vec3 uTintColor;
 uniform float uTintStrength;
 uniform bool uAmbientOcclusionEnabled;
-uniform sampler2D uAmbientOcclusionTexture;
+uniform sampler2D uAmbientOcclusionTexture;     // R8, rendered at half resolution
+uniform sampler2D uAmbientOcclusionDepthTexture; // packed view-space depth (BA) from the normal-depth prepass
 uniform vec2 uViewportInvSize;
 
 // Plan 2E inline selection highlight - kept while the post-process outline
@@ -98,7 +99,39 @@ void main()
     if (uAmbientOcclusionEnabled)
     {
         vec2 aoUv = gl_FragCoord.xy * uViewportInvSize;
-        ao = clamp(texture(uAmbientOcclusionTexture, aoUv).r, 0.0, 1.0);
+
+        // Depth-aware bilateral upsample of the half-resolution AO texture.
+        // textureGather collapses the 4 nearest texels into 1 fetch (GLES 3.1
+        // core); we also gather their depths (high byte, .b) to reject samples
+        // whose surface differs from this pixel - prevents the silhouette halo
+        // that a plain bilinear upsample would produce around object edges.
+        vec4 ao4 = textureGather(uAmbientOcclusionTexture, aoUv, 0);
+        vec4 depth4 = textureGather(uAmbientOcclusionDepthTexture, aoUv, 2);
+        float refDepth = texture(uAmbientOcclusionDepthTexture, aoUv).b;
+
+        // textureGather order: .x=(i0,j1), .y=(i1,j1), .z=(i1,j0), .w=(i0,j0).
+        // Compute the 4 bilinear weights from the fractional sub-texel position.
+        vec2 aoSize = vec2(textureSize(uAmbientOcclusionTexture, 0));
+        vec2 f = fract(aoUv * aoSize - 0.5);
+        vec4 bilinearWeight = vec4(
+            (1.0 - f.x) * f.y,         // top-left
+            f.x * f.y,                 // top-right
+            f.x * (1.0 - f.y),         // bottom-right
+            (1.0 - f.x) * (1.0 - f.y)  // bottom-left
+        );
+
+        // Rational depth-similarity falloff. 8-bit depth precision is enough
+        // to separate foreground from background; exact tuning isn't critical.
+        const float depthRejectK = 100.0;
+        vec4 depthDelta = abs(depth4 - refDepth) * depthRejectK;
+        vec4 depthWeight = 1.0 / (1.0 + depthDelta * depthDelta);
+
+        vec4 weights = bilinearWeight * depthWeight;
+        float weightSum = weights.x + weights.y + weights.z + weights.w;
+        ao = weightSum > 1e-5
+            ? dot(ao4, weights) / weightSum
+            : dot(ao4, vec4(0.25));
+        ao = clamp(ao, 0.0, 1.0);
     }
 
     float ambientIndirect =

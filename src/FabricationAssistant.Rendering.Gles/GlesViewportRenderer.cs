@@ -554,6 +554,8 @@ public sealed class GlesViewportRenderer : IDisposable
         bool useMsaaFbo = !msaaBypassedForNavigation && TryPrepareMsaaFramebuffer(a);
         bool drawEdgesThisFrame = false;
         long sceneStart = afterSsao;
+        long beforeEdges = afterSsao;
+        long afterEdges = afterSsao;
         bool retriedWithoutMsaa = false;
 
         while (true)
@@ -667,12 +669,22 @@ public sealed class GlesViewportRenderer : IDisposable
         // AO binding: matches desktop's texture-unit-4 convention.
         // uAmbientOcclusionEnabled gates the sample; uViewportInvSize is the
         // reciprocal of the viewport for gl_FragCoord -> UV math.
+        //
+        // The AO texture is rendered at half resolution; the mesh shader
+        // performs a depth-aware bilateral upsample using uAmbientOcclusionDepthTexture
+        // (the normal+depth pre-pass output, sampled at the same UV).
         bool useAo = ssaoActive
                      && a.AmbientOcclusionEnabled
                      && a.Mode != RenderMode.Wireframe;
         _gl.ActiveTexture(TextureUnit.Texture4);
         _gl.BindTexture(TextureTarget.Texture2D, aoTextureToBind);
         SetInt(activeProgram, "uAmbientOcclusionTexture", 4);
+        _gl.ActiveTexture(TextureUnit.Texture5);
+        uint aoDepthTextureToBind = useAo && _normalDepthRenderer is not null
+            ? _normalDepthRenderer.NormalTexture
+            : _whiteAoTexture;
+        _gl.BindTexture(TextureTarget.Texture2D, aoDepthTextureToBind);
+        SetInt(activeProgram, "uAmbientOcclusionDepthTexture", 5);
         SetBool(activeProgram, "uAmbientOcclusionEnabled", useAo);
         SetVec2(activeProgram, "uViewportInvSize",
             _width > 0 ? 1f / _width : 0f,
@@ -755,6 +767,7 @@ public sealed class GlesViewportRenderer : IDisposable
         }
 
         // Edge pass.
+        beforeEdges = Stopwatch.GetTimestamp();
         if (drawEdgesThisFrame && _edgeProgram is not null)
         {
             _edgeProgram.Use();
@@ -793,7 +806,7 @@ public sealed class GlesViewportRenderer : IDisposable
                 {
                     if (!ShouldRenderMesh(m))
                         continue;
-                    if (m.EdgeVertexCount == 0) continue;
+                    if (m.EdgeSegmentCount == 0) continue;
                     float effectiveAlpha = GetEffectiveMeshAlpha(m, a, clay);
                     float meshEdgeAlpha = edgeA * effectiveAlpha;
                     if (meshEdgeAlpha <= HiddenAlphaThreshold) continue;
@@ -821,6 +834,7 @@ public sealed class GlesViewportRenderer : IDisposable
                 _gl.Disable(EnableCap.Blend);
             }
         }
+        afterEdges = Stopwatch.GetTimestamp();
 
         if (SectionVisualPlanes.Count > 0)
         {
@@ -959,6 +973,8 @@ public sealed class GlesViewportRenderer : IDisposable
             afterSsao,
             sceneStart,
             afterScene,
+            beforeEdges,
+            afterEdges,
             outlineStart,
             afterOutline,
             a,
@@ -1868,6 +1884,8 @@ public sealed class GlesViewportRenderer : IDisposable
         long afterSsaoTicks,
         long sceneStartTicks,
         long afterSceneTicks,
+        long beforeEdgesTicks,
+        long afterEdgesTicks,
         long outlineStartTicks,
         long afterOutlineTicks,
         SceneAppearance appearance,
@@ -1882,6 +1900,7 @@ public sealed class GlesViewportRenderer : IDisposable
             TicksToMilliseconds(frameStartTicks, afterQueueTicks),
             TicksToMilliseconds(ssaoStartTicks, afterSsaoTicks),
             TicksToMilliseconds(sceneStartTicks, afterSceneTicks),
+            TicksToMilliseconds(beforeEdgesTicks, afterEdgesTicks),
             TicksToMilliseconds(outlineStartTicks, afterOutlineTicks),
             appearance,
             ssaoActive,
@@ -2198,8 +2217,7 @@ public sealed class GlesViewportRenderer : IDisposable
             appearance.AoBlurEnabled,
             appearance.AoBlurRadius,
             appearance.AoBlurSharpness,
-            appearance.AoBlurPasses,
-            appearance.AoNoiseScale);
+            appearance.AoBlurPasses);
         if (key == _lastSsaoDiagnostics)
             return false;
 
@@ -2232,8 +2250,7 @@ public sealed class GlesViewportRenderer : IDisposable
             appearance.AoBlurEnabled,
             appearance.AoBlurRadius,
             appearance.AoBlurSharpness,
-            appearance.AoBlurPasses,
-            appearance.AoNoiseScale);
+            appearance.AoBlurPasses);
         if (key == _lastLoggedSsaoState)
             return;
 
@@ -2320,6 +2337,8 @@ public sealed class GlesViewportRenderer : IDisposable
         _gl.CullFace(TriangleFace.Back);
         _gl.FrontFace(FrontFaceDirection.Ccw);
         _gl.ActiveTexture(TextureUnit.Texture4);
+        _gl.BindTexture(TextureTarget.Texture2D, 0);
+        _gl.ActiveTexture(TextureUnit.Texture5);
         _gl.BindTexture(TextureTarget.Texture2D, 0);
         _gl.ActiveTexture(TextureUnit.Texture0);
     }
@@ -2531,8 +2550,7 @@ internal readonly record struct SsaoStateKey(
     bool BlurEnabled,
     int BlurRadius,
     float BlurSharpness,
-    int BlurPasses,
-    float NoiseScale);
+    int BlurPasses);
 
 internal readonly record struct SsaoDiagnosticsKey(
     bool Valid,
@@ -2552,8 +2570,7 @@ internal readonly record struct SsaoDiagnosticsKey(
     bool BlurEnabled,
     int BlurRadius,
     float BlurSharpness,
-    int BlurPasses,
-    float NoiseScale);
+    int BlurPasses);
 
 internal sealed record SectionCapGeometryCache(
     GpuScene Scene,
@@ -2616,6 +2633,7 @@ internal sealed class FrameTimingAccumulator
     private double _queueMs;
     private double _ssaoMs;
     private double _sceneMs;
+    private double _edgeMs;
     private double _outlineMs;
     private double _maxMs;
     private int _queueCommands;
@@ -2625,6 +2643,7 @@ internal sealed class FrameTimingAccumulator
         double queueMs,
         double ssaoMs,
         double sceneMs,
+        double edgeMs,
         double outlineMs,
         SceneAppearance appearance,
         bool ssaoActive,
@@ -2662,6 +2681,7 @@ internal sealed class FrameTimingAccumulator
         _queueMs += queueMs;
         _ssaoMs += ssaoMs;
         _sceneMs += sceneMs;
+        _edgeMs += edgeMs;
         _outlineMs += outlineMs;
         _queueCommands += queueCommandCount;
         _maxMs = System.Math.Max(_maxMs, totalMs);
@@ -2677,7 +2697,7 @@ internal sealed class FrameTimingAccumulator
             : appearance.MsaaSamples <= 1 ? "Off" : appearance.MsaaSamples + "x";
         Android.Util.Log.Info(
             "FA.FrameTiming",
-            $"Render timing over {_frames} frames: avg={_totalMs / _frames:0.0}ms, max={_maxMs:0.0}ms, over16={_over16}, over33={_over33}, over50={_over50}, queue={_queueMs / _frames:0.0}ms, queueCommands={_queueCommands}, ssao={_ssaoMs / _frames:0.0}ms, scene={_sceneMs / _frames:0.0}ms, outline={_outlineMs / _frames:0.0}ms, mode={appearance.Mode}, interactive={interactive}, lightweight={lightweightNavigationActive}, ssaoActive={ssaoActive}, edges={edgesDrawn}, edgeWidth={appearance.EdgeWidth:0.###}, outline={outlineEnabled}, meshes={meshCount}, transparent={transparentMeshCount}, hiddenAlpha={hiddenAlphaMeshCount}, msaa={msaaState}, viewport={width}x{height}.");
+            $"Render timing over {_frames} frames: avg={_totalMs / _frames:0.0}ms, max={_maxMs:0.0}ms, over16={_over16}, over33={_over33}, over50={_over50}, queue={_queueMs / _frames:0.0}ms, queueCommands={_queueCommands}, ssao={_ssaoMs / _frames:0.0}ms, scene={_sceneMs / _frames:0.0}ms, edges={_edgeMs / _frames:0.0}ms, outline={_outlineMs / _frames:0.0}ms, mode={appearance.Mode}, interactive={interactive}, lightweight={lightweightNavigationActive}, ssaoActive={ssaoActive}, edgesDrawn={edgesDrawn}, edgeWidth={appearance.EdgeWidth:0.###}, outline={outlineEnabled}, meshes={meshCount}, transparent={transparentMeshCount}, hiddenAlpha={hiddenAlphaMeshCount}, msaa={msaaState}, viewport={width}x{height}.");
         Reset();
         _stateKey = stateKey;
     }
@@ -2692,6 +2712,7 @@ internal sealed class FrameTimingAccumulator
         _queueMs = 0;
         _ssaoMs = 0;
         _sceneMs = 0;
+        _edgeMs = 0;
         _outlineMs = 0;
         _maxMs = 0;
         _queueCommands = 0;
