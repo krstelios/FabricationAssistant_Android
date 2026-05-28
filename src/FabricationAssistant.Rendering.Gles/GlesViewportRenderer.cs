@@ -85,6 +85,9 @@ public sealed class GlesViewportRenderer : IDisposable
     private HashSet<int> _xrayBackgroundNodeIdLookup = new();
     private int _lastSurfaceTransparentMeshCount;
     private int _lastSurfaceHiddenMeshCount;
+    private int _lastFrustumCulledMeshCount;
+    private readonly float[] _frustumPlanes = new float[24]; // 6 planes x (a,b,c,d), normalized
+    private readonly float[] _frustumViewProjScratch = new float[16];
     private SsaoStateKey _lastLoggedSsaoState;
 #if DEBUG || FA_RENDER_DIAGNOSTICS
     private SsaoDiagnosticsKey _lastSsaoDiagnostics;
@@ -615,6 +618,8 @@ public sealed class GlesViewportRenderer : IDisposable
         ViewportCameraMath.FillProjectionMatrix(camera, aspect, _projectionMatrixScratch);
         var view = _viewMatrixScratch;
         var proj = _projectionMatrixScratch;
+        BuildFrustumPlanes(view, proj);
+        _lastFrustumCulledMeshCount = 0;
 
         // Build a stable camera basis (forward / right / up) and derive the
         // key / fill / bounce light directions from it - matches the desktop
@@ -805,6 +810,8 @@ public sealed class GlesViewportRenderer : IDisposable
                 foreach (var m in Scene.Meshes)
                 {
                     if (!ShouldRenderMesh(m))
+                        continue;
+                    if (!IsAabbInFrustum(m.WorldBounds))
                         continue;
                     if (m.EdgeSegmentCount == 0) continue;
                     float effectiveAlpha = GetEffectiveMeshAlpha(m, a, clay);
@@ -1057,6 +1064,12 @@ public sealed class GlesViewportRenderer : IDisposable
                 continue;
             }
 
+            if (!IsAabbInFrustum(mesh.WorldBounds))
+            {
+                _lastFrustumCulledMeshCount++;
+                continue;
+            }
+
             float materialAlpha = GetMeshColorAlpha(mesh);
             float alpha = GetEffectiveMeshAlpha(mesh, appearance, clay);
             if (materialAlpha < minMaterialAlpha)
@@ -1114,6 +1127,94 @@ public sealed class GlesViewportRenderer : IDisposable
 
     private bool ShouldRenderMesh(GpuMesh mesh)
         => mesh.Visible || IsXrayBackgroundMesh(mesh);
+
+    /// <summary>
+    /// Extracts 6 normalized world-space frustum planes from row-major
+    /// view + projection matrices. Order: left, right, bottom, top, near,
+    /// far. The planes face inward; a point is inside the frustum when
+    /// (a*x + b*y + c*z + d) >= 0 for every plane.
+    /// </summary>
+    private void BuildFrustumPlanes(float[] viewMat, float[] projMat)
+    {
+        // viewProj = proj * view, row-major (matches how the mesh shader
+        // multiplies clipPos = proj * view * worldPos via column vectors).
+        float[] vp = _frustumViewProjScratch;
+        for (int r = 0; r < 4; r++)
+        {
+            for (int c = 0; c < 4; c++)
+            {
+                float sum = 0f;
+                for (int k = 0; k < 4; k++)
+                    sum += projMat[r * 4 + k] * viewMat[k * 4 + c];
+                vp[r * 4 + c] = sum;
+            }
+        }
+
+        // Left:   row3 + row0       Right: row3 - row0
+        SetFrustumPlane(0, vp[12] + vp[0], vp[13] + vp[1], vp[14] + vp[2], vp[15] + vp[3]);
+        SetFrustumPlane(1, vp[12] - vp[0], vp[13] - vp[1], vp[14] - vp[2], vp[15] - vp[3]);
+        // Bottom: row3 + row1       Top:   row3 - row1
+        SetFrustumPlane(2, vp[12] + vp[4], vp[13] + vp[5], vp[14] + vp[6], vp[15] + vp[7]);
+        SetFrustumPlane(3, vp[12] - vp[4], vp[13] - vp[5], vp[14] - vp[6], vp[15] - vp[7]);
+        // Near:   row3 + row2       Far:   row3 - row2
+        SetFrustumPlane(4, vp[12] + vp[8], vp[13] + vp[9], vp[14] + vp[10], vp[15] + vp[11]);
+        SetFrustumPlane(5, vp[12] - vp[8], vp[13] - vp[9], vp[14] - vp[10], vp[15] - vp[11]);
+    }
+
+    private void SetFrustumPlane(int index, float a, float b, float c, float d)
+    {
+        float len = MathF.Sqrt(a * a + b * b + c * c);
+        int baseIdx = index * 4;
+        if (len < 1e-6f)
+        {
+            // Degenerate plane (e.g. zero-determinant projection); treat as a
+            // pass-through so the AABB test always succeeds for it.
+            _frustumPlanes[baseIdx + 0] = 0f;
+            _frustumPlanes[baseIdx + 1] = 0f;
+            _frustumPlanes[baseIdx + 2] = 0f;
+            _frustumPlanes[baseIdx + 3] = float.PositiveInfinity;
+            return;
+        }
+        float inv = 1f / len;
+        _frustumPlanes[baseIdx + 0] = a * inv;
+        _frustumPlanes[baseIdx + 1] = b * inv;
+        _frustumPlanes[baseIdx + 2] = c * inv;
+        _frustumPlanes[baseIdx + 3] = d * inv;
+    }
+
+    /// <summary>
+    /// Tests an AABB against the currently built frustum planes. Returns true
+    /// if any part of the box may be visible; false if the box is fully outside
+    /// at least one plane. Uses the standard center+half-extent positive-radius
+    /// test (Akenine-Moller, Real-Time Rendering, sec. 22.10).
+    /// </summary>
+    private bool IsAabbInFrustum(in BoundingBox bounds)
+    {
+        if (!bounds.IsValid)
+            return true; // unknown bounds -> fail open, never cull
+
+        double cx = (bounds.Min.X + bounds.Max.X) * 0.5;
+        double cy = (bounds.Min.Y + bounds.Max.Y) * 0.5;
+        double cz = (bounds.Min.Z + bounds.Max.Z) * 0.5;
+        double hx = (bounds.Max.X - bounds.Min.X) * 0.5;
+        double hy = (bounds.Max.Y - bounds.Min.Y) * 0.5;
+        double hz = (bounds.Max.Z - bounds.Min.Z) * 0.5;
+
+        for (int i = 0; i < 6; i++)
+        {
+            int baseIdx = i * 4;
+            float a = _frustumPlanes[baseIdx + 0];
+            float b = _frustumPlanes[baseIdx + 1];
+            float c = _frustumPlanes[baseIdx + 2];
+            float d = _frustumPlanes[baseIdx + 3];
+
+            double dist = a * cx + b * cy + c * cz + d;
+            double radius = hx * System.Math.Abs(a) + hy * System.Math.Abs(b) + hz * System.Math.Abs(c);
+            if (dist + radius < 0)
+                return false;
+        }
+        return true;
+    }
 
     private bool HasXrayIsolation
         => _xrayOpaqueNodeIdLookup.Count > 0 || _xrayBackgroundNodeIdLookup.Count > 0;
@@ -1912,6 +2013,7 @@ public sealed class GlesViewportRenderer : IDisposable
             Scene?.Meshes.Count ?? 0,
             _lastSurfaceTransparentMeshCount,
             _lastSurfaceHiddenMeshCount,
+            _lastFrustumCulledMeshCount,
             _width,
             _height);
     }
@@ -2637,6 +2739,7 @@ internal sealed class FrameTimingAccumulator
     private double _outlineMs;
     private double _maxMs;
     private int _queueCommands;
+    private long _frustumCulledSum;
 
     public void Add(
         double totalMs,
@@ -2655,6 +2758,7 @@ internal sealed class FrameTimingAccumulator
         int meshCount,
         int transparentMeshCount,
         int hiddenAlphaMeshCount,
+        int frustumCulledMeshCount,
         int width,
         int height)
     {
@@ -2684,6 +2788,7 @@ internal sealed class FrameTimingAccumulator
         _edgeMs += edgeMs;
         _outlineMs += outlineMs;
         _queueCommands += queueCommandCount;
+        _frustumCulledSum += frustumCulledMeshCount;
         _maxMs = System.Math.Max(_maxMs, totalMs);
         if (totalMs > 16.67) _over16++;
         if (totalMs > 33.33) _over33++;
@@ -2697,7 +2802,7 @@ internal sealed class FrameTimingAccumulator
             : appearance.MsaaSamples <= 1 ? "Off" : appearance.MsaaSamples + "x";
         Android.Util.Log.Info(
             "FA.FrameTiming",
-            $"Render timing over {_frames} frames: avg={_totalMs / _frames:0.0}ms, max={_maxMs:0.0}ms, over16={_over16}, over33={_over33}, over50={_over50}, queue={_queueMs / _frames:0.0}ms, queueCommands={_queueCommands}, ssao={_ssaoMs / _frames:0.0}ms, scene={_sceneMs / _frames:0.0}ms, edges={_edgeMs / _frames:0.0}ms, outline={_outlineMs / _frames:0.0}ms, mode={appearance.Mode}, interactive={interactive}, lightweight={lightweightNavigationActive}, ssaoActive={ssaoActive}, edgesDrawn={edgesDrawn}, edgeWidth={appearance.EdgeWidth:0.###}, outline={outlineEnabled}, meshes={meshCount}, transparent={transparentMeshCount}, hiddenAlpha={hiddenAlphaMeshCount}, msaa={msaaState}, viewport={width}x{height}.");
+            $"Render timing over {_frames} frames: avg={_totalMs / _frames:0.0}ms, max={_maxMs:0.0}ms, over16={_over16}, over33={_over33}, over50={_over50}, queue={_queueMs / _frames:0.0}ms, queueCommands={_queueCommands}, ssao={_ssaoMs / _frames:0.0}ms, scene={_sceneMs / _frames:0.0}ms, edges={_edgeMs / _frames:0.0}ms, outline={_outlineMs / _frames:0.0}ms, mode={appearance.Mode}, interactive={interactive}, lightweight={lightweightNavigationActive}, ssaoActive={ssaoActive}, edgesDrawn={edgesDrawn}, edgeWidth={appearance.EdgeWidth:0.###}, outline={outlineEnabled}, meshes={meshCount}, transparent={transparentMeshCount}, hiddenAlpha={hiddenAlphaMeshCount}, culledFrustum={_frustumCulledSum / _frames}/{meshCount}, msaa={msaaState}, viewport={width}x{height}.");
         Reset();
         _stateKey = stateKey;
     }
@@ -2716,6 +2821,7 @@ internal sealed class FrameTimingAccumulator
         _outlineMs = 0;
         _maxMs = 0;
         _queueCommands = 0;
+        _frustumCulledSum = 0;
     }
 }
 
