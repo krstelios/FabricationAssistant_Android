@@ -1024,16 +1024,31 @@ public sealed class CloudApiClient : IDisposable
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(OperationPollTimeout);
-        while (true)
+        try
         {
-            timeoutCts.Token.ThrowIfCancellationRequested();
-            progress?.Report("Validating saved model...");
-            await Task.Delay(TimeSpan.FromSeconds(2), timeoutCts.Token).ConfigureAwait(false);
-            CloudOperationResponse operation = await GetAuthorizedJsonAsync<CloudOperationResponse>(
-                "/api/v1/operations/" + Uri.EscapeDataString(operationId),
-                timeoutCts.Token).ConfigureAwait(false);
-            if (IsTerminalOperationStatus(operation.Status))
-                return operation;
+            while (true)
+            {
+                timeoutCts.Token.ThrowIfCancellationRequested();
+                progress?.Report("Validating saved model...");
+                await Task.Delay(TimeSpan.FromSeconds(2), timeoutCts.Token).ConfigureAwait(false);
+                CloudOperationResponse operation = await GetAuthorizedJsonAsync<CloudOperationResponse>(
+                    "/api/v1/operations/" + Uri.EscapeDataString(operationId),
+                    timeoutCts.Token).ConfigureAwait(false);
+                if (IsTerminalOperationStatus(operation.Status))
+                    return operation;
+            }
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // S22#2: the only non-user cancellation here is OperationPollTimeout
+            // firing on timeoutCts. Surface a clear, actionable error instead of
+            // a bare OperationCanceledException, which the caller's guarded catch
+            // (when ex is not OperationCanceledException) skips - leaving no
+            // recovery copy and a degraded reader session. Genuine user
+            // cancellation (ct) still propagates.
+            throw new CloudApiException(
+                "Cloud validation is taking longer than expected. The save may still complete on the server; refresh before saving again.",
+                code: "operation_poll_timeout");
         }
     }
 
