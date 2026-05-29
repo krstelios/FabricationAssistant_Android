@@ -484,7 +484,13 @@ public sealed class ViewportInteractionAdapter
 
         if (System.Math.Abs(pinchScale - 1.0) > 1e-9)
         {
-            _camera.DollyZoomAroundPivot(anchor, pinchScale);
+            // S12#1: apply the zoom sensitivity here - this anchored path is the
+            // one taken on real devices, so it must honor the slider. The
+            // exponent on the pinch ratio matches the fallback branch;
+            // Pow(scale, 1.0) == scale, so the default multiplier preserves the
+            // raw finger-scale, world-locked zoom.
+            double adjustedPinchScale = System.Math.Pow(pinchScale, ZoomSensitivityMultiplier);
+            _camera.DollyZoomAroundPivot(anchor, adjustedPinchScale);
             cameraChanged = true;
         }
 
@@ -494,6 +500,13 @@ public sealed class ViewportInteractionAdapter
         Vector3d correction = anchor - worldUnderCentroid;
         if (correction.LengthSquared <= 1e-18)
             return cameraChanged;
+
+        // S12#1: scale the pan correction by the pan sensitivity multiplier. At
+        // the default 1.0 this is identity (the world point stays locked under
+        // the centroid); other values let the Pan slider speed up or slow down
+        // two-finger panning, which previously did nothing because the
+        // multiplier was only consulted in the effectively-never-hit fallback.
+        correction *= PanSensitivityMultiplier;
 
         _camera.Position = _camera.Position + correction;
         _camera.Target = _camera.Target + correction;

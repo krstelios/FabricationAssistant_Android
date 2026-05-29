@@ -338,6 +338,57 @@ public sealed class ViewportInteractionAdapterTests
     }
 
     [Fact]
+    public void AnchoredPan_AppliesPanSensitivityMultiplier()
+    {
+        var camera = OrthographicCamera(distance: 1000.0, orthoWidth: 100.0);
+
+        var adapter = new ViewportInteractionAdapter(
+            camera,
+            boundsAccessor: () => new BoundingBox(new Vector3d(-50, -50, -50), new Vector3d(50, 50, 50)),
+            aspectAccessor: () => 1.0,
+            requestRender: () => { },
+            viewportWidthDipAccessor: () => 500.0,
+            pivotPicker: _ => Vector3d.Zero)
+        {
+            PanSensitivityMultiplier = 2.0,
+        };
+
+        adapter.OnGesture(new TouchGestureEvent(TouchGestureKind.PanZoomBegin, new Point2D(100, 100), Vector2D.Zero, 1.0));
+        adapter.OnGesture(new TouchGestureEvent(TouchGestureKind.PanZoomDelta, new Point2D(120, 100), new Vector2D(20, 0), 1.0));
+
+        // Same gesture as OrthographicPan_UsesViewportWorldUnitsPerDip (Target.X == -4.0
+        // at the default multiplier); doubling the pan sensitivity doubles the move.
+        Assert.Equal(-8.0, camera.Target.X, precision: 9);
+        Assert.Equal(0.0, camera.Target.Y, precision: 9);
+    }
+
+    [Fact]
+    public void AnchoredPinch_AppliesZoomSensitivityExponent()
+    {
+        var camera = OrthographicCamera(distance: 100.0, orthoWidth: 100.0);
+
+        var adapter = new ViewportInteractionAdapter(
+            camera,
+            boundsAccessor: () => new BoundingBox(new Vector3d(-50, -50, -50), new Vector3d(50, 50, 50)),
+            aspectAccessor: () => 1.0,
+            requestRender: () => { },
+            viewportWidthDipAccessor: () => 400.0,
+            pivotPicker: _ => Vector3d.Zero)
+        {
+            ZoomSensitivityMultiplier = 2.0,
+        };
+
+        adapter.OnGesture(new TouchGestureEvent(TouchGestureKind.PanZoomBegin, new Point2D(200, 200), Vector2D.Zero, 1.0));
+        adapter.OnGesture(new TouchGestureEvent(TouchGestureKind.PanZoomDelta, new Point2D(200, 200), Vector2D.Zero, 2.0));
+
+        // Raw pinch 2.0 with the sensitivity exponent 2.0 -> effective scale 4.0,
+        // so orthoWidth goes 100 -> 25 instead of the default 100 -> 50.
+        Assert.Equal(25.0, camera.OrthoWidth, precision: 9);
+        Assert.Equal(0.0, camera.Target.X, precision: 9);
+        Assert.Equal(0.0, camera.Target.Z, precision: 9);
+    }
+
+    [Fact]
     public void OrthographicPinch_KeepsForwardDistanceStable()
     {
         var camera = OrthographicCamera(distance: 100.0, orthoWidth: 100.0);
