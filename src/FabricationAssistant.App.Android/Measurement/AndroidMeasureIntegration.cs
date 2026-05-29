@@ -11,7 +11,6 @@ namespace FabricationAssistant.App.Android.Measurement;
 
 internal sealed class AndroidMeasureIntegration : IDisposable
 {
-    private const int MaxVertsPerMesh = 4096;
     internal const double AndroidEdgeSnapAngularTolerance = MeshMeasurePicker.DefaultEdgeSnapAngularTolerance * 1.0;
     internal const double AndroidEndpointSnapAngularTolerance = MeshMeasurePicker.DefaultEndpointSnapAngularTolerance * 1.0;
 
@@ -323,23 +322,65 @@ internal sealed class AndroidMeasureIntegration : IDisposable
             return false;
         }
 
+        BoundingBoxMode mode = _boundingBoxMode;
         List<Vector3d> points = await Task.Run(() =>
         {
-            var pts = new List<Vector3d>(meshSnapshots.Count * MaxVertsPerMesh);
+            // S17#1: never subsample for extents - dropping vertices silently
+            // under-reports the box dimensions (a wrong number in a quantitative
+            // tool). AxisAligned only needs the exact world AABB, so compute a
+            // running min/max over ALL transformed vertices (O(1) memory) and
+            // feed its 8 corners. BestFit's oriented-box solver re-measures
+            // extents along its chosen basis, so it needs the full transformed
+            // vertex cloud to be exact.
+            if (mode == BoundingBoxMode.AxisAligned)
+            {
+                double minX = double.PositiveInfinity, minY = double.PositiveInfinity, minZ = double.PositiveInfinity;
+                double maxX = double.NegativeInfinity, maxY = double.NegativeInfinity, maxZ = double.NegativeInfinity;
+                bool any = false;
+                foreach (MeshSnapshot snap in meshSnapshots)
+                {
+                    float[] positions = snap.Positions;
+                    int count = Math.Min(snap.VertexCount, positions.Length / 3);
+                    for (int i = 0; i < count; i++)
+                    {
+                        int o = i * 3;
+                        Vector3d p = snap.Transform.TransformPoint(new Vector3d(
+                            positions[o], positions[o + 1], positions[o + 2]));
+                        if (p.X < minX) minX = p.X;
+                        if (p.X > maxX) maxX = p.X;
+                        if (p.Y < minY) minY = p.Y;
+                        if (p.Y > maxY) maxY = p.Y;
+                        if (p.Z < minZ) minZ = p.Z;
+                        if (p.Z > maxZ) maxZ = p.Z;
+                        any = true;
+                    }
+                }
+
+                if (!any)
+                    return new List<Vector3d>();
+
+                return new List<Vector3d>(8)
+                {
+                    new(minX, minY, minZ), new(maxX, minY, minZ),
+                    new(minX, maxY, minZ), new(maxX, maxY, minZ),
+                    new(minX, minY, maxZ), new(maxX, minY, maxZ),
+                    new(minX, maxY, maxZ), new(maxX, maxY, maxZ),
+                };
+            }
+
+            long total = 0;
+            foreach (MeshSnapshot snap in meshSnapshots)
+                total += Math.Min(snap.VertexCount, snap.Positions.Length / 3);
+            var pts = new List<Vector3d>((int)Math.Min(total, 1_000_000));
             foreach (MeshSnapshot snap in meshSnapshots)
             {
-                int stride = Math.Max(1, snap.VertexCount / MaxVertsPerMesh);
                 float[] positions = snap.Positions;
-                for (int i = 0; i < snap.VertexCount; i += stride)
+                int count = Math.Min(snap.VertexCount, positions.Length / 3);
+                for (int i = 0; i < count; i++)
                 {
                     int o = i * 3;
-                    if (o + 2 >= positions.Length)
-                        break;
-
                     pts.Add(snap.Transform.TransformPoint(new Vector3d(
-                        positions[o],
-                        positions[o + 1],
-                        positions[o + 2])));
+                        positions[o], positions[o + 1], positions[o + 2])));
                 }
             }
 
