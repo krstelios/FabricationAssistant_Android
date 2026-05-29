@@ -39,6 +39,8 @@
     <string name="cd_measure_face_to_point">Face to point measurement</string>
     <string name="cd_measure_face_to_face">Face to face measurement</string>
     <string name="cd_measure_bounding_box">Bounding box measurement</string>
+    <string name="cd_measure_snap_endpoint">Endpoint snap</string>
+    <string name="cd_measure_snap_midpoint">Midpoint snap</string>
     <string name="cd_measure_clear">Clear measurements</string>
     <string name="cd_measure_delete_selected">Delete selected measurement</string>
     <string name="cd_view_preset_return">Return to main tools</string>

@@ -22,7 +22,10 @@ internal sealed class AndroidMeasureIntegration : IDisposable
     private readonly AndroidMeasureRaycaster _raycaster;
     private readonly MeasureTool _tool;
     private readonly MeasurementPresenter _presenter;
+    private readonly EdgeSnapService _snapWarmup = new();
+    private readonly FeatureEdgeExtractor _snapWarmupFeatureEdges = new();
     private readonly Func<EdgeSnapVisibilityRequest, bool> _snapVisibilityFilter;
+    private readonly Action<string> _snapDiagnosticsLog;
     private readonly EventHandler _measurementsChangedHandler;
     private readonly EventHandler _sessionStateChangedHandler;
     private string _lastStateLogKey = "";
@@ -34,6 +37,7 @@ internal sealed class AndroidMeasureIntegration : IDisposable
     private double _snapOcclusionToleranceFactor = 1.0;
     private bool _showDeltaBreakdown;
     private BoundingBoxMode _boundingBoxMode = BoundingBoxMode.BestFit;
+    private CancellationTokenSource? _snapWarmupCts;
 
     public AndroidMeasureIntegration(
         Func<Scene?> sceneAccessor,
@@ -47,7 +51,10 @@ internal sealed class AndroidMeasureIntegration : IDisposable
         _session = new MeasurementSession(_store, _units, MeasurementTolerances.Default, undoService);
         _raycaster = new AndroidMeasureRaycaster(sceneAccessor, sectionPlanesAccessor);
         _snapVisibilityFilter = IsSnapTargetVisible;
+        _snapDiagnosticsLog = message => Log.Debug("FA.MeasureSnap", message);
         EdgeSnapService.VisibilityFilter = _snapVisibilityFilter;
+        EdgeSnapService.DiagnosticsLog = _snapDiagnosticsLog;
+        MeshMeasurePicker.DiagnosticsLog = _snapDiagnosticsLog;
         var picker = new MeshMeasurePicker(
             _raycaster,
             MeasurementTolerances.Default,
@@ -85,8 +92,11 @@ internal sealed class AndroidMeasureIntegration : IDisposable
         bool showDeltaBreakdown,
         BoundingBoxMode boundingBoxMode,
         bool pointSnapEnabled,
+        bool endpointSnapEnabled,
+        bool midpointSnapEnabled,
         double edgeSnapFactor,
         double endpointSnapFactor,
+        double weldToleranceScale,
         bool snapVisibleEdgesOnly,
         double snapVisibilityProbe,
         double snapOcclusionToleranceFactor)
@@ -104,17 +114,101 @@ internal sealed class AndroidMeasureIntegration : IDisposable
             ? Math.Clamp(snapOcclusionToleranceFactor, 0.1, 10.0)
             : 1.0;
         EdgeSnapService.SnapEnabled = pointSnapEnabled;
+        EdgeSnapService.EndpointSnapEnabled = endpointSnapEnabled;
+        EdgeSnapService.MidpointSnapEnabled = midpointSnapEnabled;
         EdgeSnapService.EdgeSnapToleranceFactor = edgeSnapFactor;
         EdgeSnapService.EndpointSnapToleranceFactor = endpointSnapFactor;
+        EdgeSnapService.WeldToleranceScale = weldToleranceScale;
+    }
+
+    public void ApplySectionVisibility(bool sectionCurvesVisible, bool sectionCapsVisible)
+    {
+        _raycaster.SectionCurveSnapEnabled = sectionCurvesVisible;
+        _raycaster.SectionCapRaycastEnabled = sectionCapsVisible;
     }
 
     public void ClearRaycastAccelerationCache(string reason)
         => _raycaster.ClearAccelerationCache(reason);
 
+    private void BeginSnapWarmup(string reason)
+    {
+        if (!EdgeSnapService.SnapEnabled)
+            return;
+
+        Scene? scene = _sceneAccessor();
+        if (scene is null)
+            return;
+
+        var snapshots = new List<SnapWarmupMesh>();
+        var seenMeshIds = new HashSet<int>();
+        foreach (SceneNode node in scene.GetVisibleNodes())
+        {
+            if (node.MeshId is not int meshId || !seenMeshIds.Add(meshId))
+                continue;
+
+            MeshDto? mesh = scene.GetMesh(meshId);
+            if (mesh is null)
+                continue;
+
+            snapshots.Add(new SnapWarmupMesh(mesh.EdgePositions, mesh.Positions, mesh.Indices));
+        }
+
+        if (snapshots.Count == 0)
+            return;
+
+        _snapWarmupCts?.Cancel();
+        var cts = new CancellationTokenSource();
+        _snapWarmupCts = cts;
+        _ = Task.Run(() => WarmSnapModels(snapshots, reason, cts.Token), cts.Token);
+    }
+
+    private void WarmSnapModels(IReadOnlyList<SnapWarmupMesh> snapshots, string reason, CancellationToken token)
+    {
+        long segmentCount = 0;
+        int warmedMeshes = 0;
+        long start = Environment.TickCount64;
+        try
+        {
+            foreach (SnapWarmupMesh snapshot in snapshots)
+            {
+                token.ThrowIfCancellationRequested();
+
+                float[] edges = snapshot.EdgePositions.Length >= 6
+                    ? snapshot.EdgePositions
+                    : _snapWarmupFeatureEdges.Extract(snapshot.Positions, snapshot.Indices);
+                if (edges.Length < 6)
+                    continue;
+
+                _snapWarmup.Prepare(edges);
+                segmentCount += edges.Length / 6;
+                warmedMeshes++;
+            }
+
+            Log.Debug(
+                "FA.MeasureSnap",
+                $"Warmup complete: reason={reason}, meshes={warmedMeshes}, segments={segmentCount}, elapsedMs={Environment.TickCount64 - start}.");
+        }
+        catch (OperationCanceledException)
+        {
+            Log.Debug("FA.MeasureSnap", $"Warmup canceled: reason={reason}, elapsedMs={Environment.TickCount64 - start}.");
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("FA.MeasureSnap", $"Warmup failed: reason={reason}, error={ex.Message}");
+        }
+    }
+
     public void Dispose()
     {
+        _snapWarmupCts?.Cancel();
+        _snapWarmupCts?.Dispose();
+
         if (ReferenceEquals(EdgeSnapService.VisibilityFilter, _snapVisibilityFilter))
             EdgeSnapService.VisibilityFilter = null;
+        if (ReferenceEquals(EdgeSnapService.DiagnosticsLog, _snapDiagnosticsLog))
+            EdgeSnapService.DiagnosticsLog = null;
+        if (ReferenceEquals(MeshMeasurePicker.DiagnosticsLog, _snapDiagnosticsLog))
+            MeshMeasurePicker.DiagnosticsLog = null;
 
         _store.MeasurementsChanged -= _measurementsChangedHandler;
         _session.StateChanged -= _sessionStateChangedHandler;
@@ -131,6 +225,7 @@ internal sealed class AndroidMeasureIntegration : IDisposable
         _store.Clear();
         _session.SelectTool(MeasureToolMode.None);
         _raycaster.ResetDiagnostics();
+        BeginSnapWarmup("scene attached");
         LogState("scene attached", force: true);
     }
 
@@ -139,6 +234,8 @@ internal sealed class AndroidMeasureIntegration : IDisposable
         MeasureToolMode previous = _tool.ActiveMode;
         _tool.SetMode(mode);
         Log.Info("FA.Measure", $"Mode changed: {previous} -> {_tool.ActiveMode}.");
+        if (_tool.ActiveMode is MeasureToolMode.PointToPoint or MeasureToolMode.FaceToPoint)
+            BeginSnapWarmup("measure mode");
         LogState("mode changed", force: true);
     }
 
@@ -576,16 +673,33 @@ internal sealed class AndroidMeasureIntegration : IDisposable
             return true;
 
         double hitDistance = Vector3d.Distance(rayOrigin, hit.Value.WorldPoint);
-        return hitDistance + ResolveSnapVisibilityTolerance(targetDistance) >= targetDistance;
+        double occlusionTolerance = ResolveSnapVisibilityTolerance(targetDistance);
+        if (Vector3d.Distance(hit.Value.WorldPoint, sample) <= ResolveSnapSurfaceCoincidenceTolerance(targetDistance))
+            return true;
+
+        return hitDistance + occlusionTolerance >= targetDistance;
     }
 
     private double ResolveSnapVisibilityTolerance(double targetDistance)
     {
+        double referenceLength = ResolveSnapVisibilityReferenceLength(targetDistance);
+        return Math.Max(1.0e-6, referenceLength * 5.0e-5 * _snapOcclusionToleranceFactor);
+    }
+
+    private double ResolveSnapSurfaceCoincidenceTolerance(double targetDistance)
+    {
+        double referenceLength = ResolveSnapVisibilityReferenceLength(targetDistance);
+        return Math.Max(
+            ResolveSnapVisibilityTolerance(targetDistance) * 4.0,
+            referenceLength * 1.0e-4 * _snapOcclusionToleranceFactor);
+    }
+
+    private double ResolveSnapVisibilityReferenceLength(double targetDistance)
+    {
         double sceneDiagonal = _raycaster.SceneDiagonal;
-        double referenceLength = Math.Max(
+        return Math.Max(
             double.IsFinite(sceneDiagonal) && sceneDiagonal > 0.0 ? sceneDiagonal : 1.0,
             targetDistance);
-        return Math.Max(1.0e-6, referenceLength * 1.0e-6 * _snapOcclusionToleranceFactor);
     }
 
     private static bool IsFinite(Vector3d value)
@@ -597,6 +711,8 @@ internal sealed class AndroidMeasureIntegration : IDisposable
         => $"({value.X:0.###},{value.Y:0.###},{value.Z:0.###})";
 
     private readonly record struct MeshSnapshot(Matrix4d Transform, float[] Positions, int VertexCount);
+
+    private readonly record struct SnapWarmupMesh(float[] EdgePositions, float[] Positions, int[] Indices);
 
     private static void CollectMeshSnapshots(Scene scene, SceneNode node, List<MeshSnapshot> sink)
     {

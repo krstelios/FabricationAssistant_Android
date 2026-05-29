@@ -1,4 +1,0 @@
-768:            _propertiesPanelBinder.ShowSelection(null, _runtimeScene);
-3024:        _propertiesPanelBinder?.ShowSelection(selectedNode, scene);
-9106:        _propertiesPanelBinder?.ShowSelection(selectedNode, scene);
-13415:            bool highlightSelection = AppSettings.ShowSelectionHighlight;

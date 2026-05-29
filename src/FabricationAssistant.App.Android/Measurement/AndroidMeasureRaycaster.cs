@@ -6,11 +6,17 @@ using FabricationAssistant.Core.Sections;
 
 namespace FabricationAssistant.App.Android.Measurement;
 
-internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster
+internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster, IMeasureSupplementalPointSnapProvider
 {
+    private const int MaxSupplementalEdgeMeshes = 8;
+
     private readonly Func<Scene?> _sceneAccessor;
     private readonly Func<IReadOnlyList<SectionPlane>>? _sectionPlanesAccessor;
     private readonly SectionMeasureGeometryProvider _sectionGeometry = new();
+    private readonly EdgeSnapService _sectionEdgeSnap = new();
+    private readonly EdgeSnapService _sceneEdgeSnap = new();
+    private readonly FeatureEdgeExtractor _sceneFeatureEdges = new();
+    private readonly SupplementalMeshCandidate[] _supplementalMeshCandidates = new SupplementalMeshCandidate[MaxSupplementalEdgeMeshes];
     private readonly Dictionary<int, AccelerationEntry> _accelerations = new();
     private Scene? _cachedScene;
     private long _cachedVisibilityVersion = -1;
@@ -18,7 +24,12 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster
     private long _cachedMoveTransformVersion = -1;
     private string _lastRaycastLogKey = "";
     private long _lastRaycastLogMs;
+    private readonly Dictionary<string, long> _supplementalSnapLogTimes = new();
     private int? _preferredNodeId;
+
+    public bool SectionCurveSnapEnabled { get; set; } = true;
+
+    public bool SectionCapRaycastEnabled { get; set; } = true;
 
     public AndroidMeasureRaycaster(
         Func<Scene?> sceneAccessor,
@@ -62,6 +73,7 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster
     {
         _lastRaycastLogKey = "";
         _lastRaycastLogMs = 0;
+        _supplementalSnapLogTimes.Clear();
     }
 
     public void ClearAccelerationCache(string reason)
@@ -125,11 +137,13 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster
 
         List<RaycastCandidate> candidates = CollectCandidates(scene, origin, rayDir);
         IReadOnlyList<SectionPlane> sectionPlanes = GetActiveSectionPlanes();
-        SectionMeasureRaycastResult? sectionHit = _sectionGeometry.Raycast(
-            scene,
-            sectionPlanes,
-            origin,
-            rayDir);
+        SectionMeasureRaycastResult? sectionHit = SectionCapRaycastEnabled
+            ? _sectionGeometry.Raycast(
+                scene,
+                sectionPlanes,
+                origin,
+                rayDir)
+            : null;
         if (_preferredNodeId is int preferredNodeId)
         {
             foreach (RaycastCandidate candidate in candidates)
@@ -199,6 +213,280 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster
         if (collectDiagnostics)
             LogRaycast("miss", "no triangle hit", candidates.Count, origin, rayDir, null);
         return null;
+    }
+
+    public bool TrySnapPoint(
+        Vector3d rayOrigin,
+        Vector3d rayDirection,
+        double edgeAngularTolerance,
+        double endpointAngularTolerance,
+        out Vector3d worldPoint)
+    {
+        worldPoint = default;
+
+        long start = Environment.TickCount64;
+        EdgeSnapResult? sceneSnap = TrySnapVisibleModelEdges(
+            rayOrigin,
+            rayDirection,
+            edgeAngularTolerance,
+            endpointAngularTolerance,
+            out SupplementalSnapStats sceneStats);
+        EdgeSnapResult? sectionSnap = TrySnapSectionCurves(
+            rayOrigin,
+            rayDirection,
+            edgeAngularTolerance,
+            endpointAngularTolerance,
+            out bool sectionAvailable);
+
+        EdgeSnapResult? best = null;
+        string source = "none";
+        if (sceneSnap is { } model)
+        {
+            best = model;
+            source = "model";
+        }
+
+        if (sectionSnap is { } section
+            && (best is null || IsBetterSupplementalSnap(section, best.Value)))
+        {
+            best = section;
+            source = "section";
+        }
+
+        if (best is not { } snap)
+        {
+            LogSupplementalSnap(
+                "miss",
+                $"source=none, nodes={sceneStats.VisibleNodes}, boundsCandidates={sceneStats.BoundsCandidates}, edgeMeshes={sceneStats.EdgeMeshes}, meshHits={sceneStats.MeshHits}, section={(sectionAvailable ? "available" : "none")}, elapsedMs={Environment.TickCount64 - start}",
+                $"miss|bounds={sceneStats.BoundsCandidates}|edgeMeshes={sceneStats.EdgeMeshes}|section={sectionAvailable}");
+            return false;
+        }
+
+        worldPoint = snap.WorldPoint;
+        LogSupplementalSnap(
+            "hit",
+            $"source={source}, nodes={sceneStats.VisibleNodes}, boundsCandidates={sceneStats.BoundsCandidates}, edgeMeshes={sceneStats.EdgeMeshes}, meshHits={sceneStats.MeshHits}, depth={snap.RayDepth:0.###}, perp={snap.PerpendicularDistance:0.######}, elapsedMs={Environment.TickCount64 - start}",
+            $"hit|source={source}|bounds={sceneStats.BoundsCandidates}|edgeMeshes={sceneStats.EdgeMeshes}|meshHits={sceneStats.MeshHits}");
+        return true;
+    }
+
+    private EdgeSnapResult? TrySnapSectionCurves(
+        Vector3d rayOrigin,
+        Vector3d rayDirection,
+        double edgeAngularTolerance,
+        double endpointAngularTolerance,
+        out bool sectionAvailable)
+    {
+        sectionAvailable = false;
+        if (!SectionCurveSnapEnabled)
+            return null;
+
+        Scene? scene = _sceneAccessor();
+        IReadOnlyList<SectionPlane> sectionPlanes = GetActiveSectionPlanes();
+        if (scene is null || sectionPlanes.Count == 0)
+            return null;
+
+        MeshDto? mesh = _sectionGeometry.GetMesh(scene, sectionPlanes);
+        if (mesh is null || mesh.EdgePositions.Length < 6)
+            return null;
+
+        sectionAvailable = true;
+
+        return _sectionEdgeSnap.TrySnap(
+            mesh.EdgePositions,
+            Matrix4d.Identity,
+            rayOrigin,
+            rayDirection,
+            edgeAngularTolerance,
+            endpointAngularTolerance);
+    }
+
+    private EdgeSnapResult? TrySnapVisibleModelEdges(
+        Vector3d rayOrigin,
+        Vector3d rayDirection,
+        double edgeAngularTolerance,
+        double endpointAngularTolerance,
+        out SupplementalSnapStats stats)
+    {
+        stats = default;
+        Scene? scene = _sceneAccessor();
+        if (scene is null || !TryNormalize(rayDirection, out Vector3d rayDir))
+            return null;
+
+        double maxTanTolerance = ResolveSupplementalSnapTanTolerance(edgeAngularTolerance, endpointAngularTolerance);
+        if (maxTanTolerance <= 0.0)
+            return null;
+        if (!BoundsMayContainSnapCandidate(scene.Bounds, rayOrigin, rayDir, maxTanTolerance))
+            return null;
+
+        Span<SupplementalMeshCandidate> meshCandidates = _supplementalMeshCandidates;
+        int meshCandidateCount = 0;
+        IReadOnlyList<SceneNode> visibleNodes = scene.GetVisibleNodes();
+        stats.VisibleNodes = visibleNodes.Count;
+        foreach (SceneNode node in visibleNodes)
+        {
+            if (node.MeshId is not int meshId)
+                continue;
+
+            MeshDto? mesh = scene.GetMesh(meshId);
+            if (mesh is null)
+                continue;
+
+            Matrix4d world = node.EffectiveWorldTransform;
+            BoundingBox worldBounds = SceneBoundsUtilities.TransformBounds(mesh.Bounds, world);
+            if (!TryComputeBoundsSnapScore(worldBounds, rayOrigin, rayDir, maxTanTolerance, out double boundsScore))
+                continue;
+
+            stats.BoundsCandidates++;
+            AddSupplementalMeshCandidate(
+                meshCandidates,
+                ref meshCandidateCount,
+                new SupplementalMeshCandidate(node, mesh, world, boundsScore));
+        }
+
+        EdgeSnapResult? best = null;
+        for (int i = 0; i < meshCandidateCount; i++)
+        {
+            SupplementalMeshCandidate candidate = meshCandidates[i];
+            MeshDto mesh = candidate.Mesh;
+            float[] edges = mesh.EdgePositions.Length >= 6
+                ? mesh.EdgePositions
+                : _sceneFeatureEdges.Extract(mesh.Positions, mesh.Indices);
+            if (edges.Length < 6)
+                continue;
+
+            stats.EdgeMeshes++;
+            EdgeSnapResult? snap = _sceneEdgeSnap.TrySnap(
+                edges,
+                candidate.WorldTransform,
+                rayOrigin,
+                rayDir,
+                edgeAngularTolerance,
+                endpointAngularTolerance);
+            if (snap is null)
+                continue;
+
+            stats.MeshHits++;
+            if (best is null || IsBetterSupplementalSnap(snap.Value, best.Value))
+                best = snap;
+        }
+
+        return best;
+    }
+
+    private static void AddSupplementalMeshCandidate(
+        Span<SupplementalMeshCandidate> candidates,
+        ref int count,
+        SupplementalMeshCandidate candidate)
+    {
+        int insert = 0;
+        while (insert < count && candidate.Score >= candidates[insert].Score)
+            insert++;
+
+        if (insert >= candidates.Length)
+            return;
+
+        if (count < candidates.Length)
+            count++;
+
+        for (int i = count - 1; i > insert; i--)
+            candidates[i] = candidates[i - 1];
+
+        candidates[insert] = candidate;
+    }
+
+    private static bool IsBetterSupplementalSnap(EdgeSnapResult candidate, EdgeSnapResult current)
+    {
+        double candidateScore = candidate.RayDepth > 0.0
+            ? candidate.PerpendicularDistance / candidate.RayDepth
+            : double.PositiveInfinity;
+        double currentScore = current.RayDepth > 0.0
+            ? current.PerpendicularDistance / current.RayDepth
+            : double.PositiveInfinity;
+
+        if (candidateScore < currentScore - 1.0e-10)
+            return true;
+        if (candidateScore > currentScore + 1.0e-10)
+            return false;
+
+        return candidate.RayDepth < current.RayDepth;
+    }
+
+    private static double ResolveSupplementalSnapTanTolerance(double edgeAngularTolerance, double endpointAngularTolerance)
+    {
+        double maxAngle = 0.0;
+        if (EdgeSnapService.EndpointSnapEnabled)
+            maxAngle = System.Math.Max(maxAngle, ResolveSnapAngle(endpointAngularTolerance, EdgeSnapService.EndpointSnapToleranceFactor));
+        if (EdgeSnapService.MidpointSnapEnabled)
+            maxAngle = System.Math.Max(maxAngle, ResolveSnapAngle(edgeAngularTolerance, EdgeSnapService.EdgeSnapToleranceFactor));
+
+        return maxAngle > 0.0 ? System.Math.Tan(maxAngle) : 0.0;
+    }
+
+    private static double ResolveSnapAngle(double angularTolerance, double factor)
+    {
+        if (!double.IsFinite(angularTolerance) || angularTolerance <= 0.0)
+            return 0.0;
+        if (!double.IsFinite(factor) || factor <= 0.0)
+            return 0.0;
+
+        return angularTolerance * System.Math.Clamp(factor, 0.0, 16.0);
+    }
+
+    private static bool BoundsMayContainSnapCandidate(
+        BoundingBox bounds,
+        Vector3d rayOrigin,
+        Vector3d rayDirection,
+        double tanTolerance)
+        => TryComputeBoundsSnapScore(bounds, rayOrigin, rayDirection, tanTolerance, out _);
+
+    private static bool TryComputeBoundsSnapScore(
+        BoundingBox bounds,
+        Vector3d rayOrigin,
+        Vector3d rayDirection,
+        double tanTolerance,
+        out double score)
+    {
+        score = double.PositiveInfinity;
+        if (!bounds.IsValid || tanTolerance <= 0.0)
+            return false;
+
+        Vector3d center = bounds.Center;
+        double radius = bounds.Diagonal * 0.5;
+        if (!IsFinite(center) || !double.IsFinite(radius) || radius < 0.0)
+            return false;
+
+        Vector3d toCenter = center - rayOrigin;
+        double depth = Vector3d.Dot(toCenter, rayDirection);
+        if (!double.IsFinite(depth) || depth + radius <= 0.0)
+            return false;
+
+        Vector3d perpendicular = toCenter - rayDirection * depth;
+        double perp = perpendicular.Length;
+        if (!double.IsFinite(perp))
+            return false;
+
+        double effectiveDepth = System.Math.Max(0.0, depth) + radius;
+        double maxPerp = radius + effectiveDepth * tanTolerance;
+        if (perp > maxPerp)
+            return false;
+
+        score = System.Math.Max(0.0, perp - radius) / System.Math.Max(effectiveDepth, 1.0e-9);
+        return double.IsFinite(score);
+    }
+
+    private void LogSupplementalSnap(string result, string detail, string? throttleKey = null)
+    {
+        long now = Environment.TickCount64;
+        string key = $"{result}|{throttleKey ?? detail}";
+        if (_supplementalSnapLogTimes.TryGetValue(key, out long last) && now - last < 750)
+            return;
+
+        if (_supplementalSnapLogTimes.Count > 256)
+            _supplementalSnapLogTimes.Clear();
+
+        _supplementalSnapLogTimes[key] = now;
+        Log.Debug("FA.MeasureSnap", $"Supplemental snap {result}: {detail}.");
     }
 
     private List<RaycastCandidate> CollectCandidates(Scene scene, Vector3d rayOrigin, Vector3d rayDir)
@@ -460,10 +748,24 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster
         Matrix4d WorldTransform,
         double EntryDistance);
 
+    private readonly record struct SupplementalMeshCandidate(
+        SceneNode Node,
+        MeshDto Mesh,
+        Matrix4d WorldTransform,
+        double Score);
+
     private readonly record struct RaycastResult(
         int NodeId,
         int MeshId,
         int TriangleIndexOffset,
         Vector3d WorldPoint,
         double Distance);
+
+    private struct SupplementalSnapStats
+    {
+        public int VisibleNodes;
+        public int BoundsCandidates;
+        public int EdgeMeshes;
+        public int MeshHits;
+    }
 }

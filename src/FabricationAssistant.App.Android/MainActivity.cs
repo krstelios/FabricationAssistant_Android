@@ -35,7 +35,6 @@ using FabricationAssistant.Rendering.Gles;
 using Google.Android.Material.AppBar;
 using Google.Android.Material.Button;
 using Google.Android.Material.Card;
-using Google.Android.Material.Snackbar;
 using Google.Android.Material.SwitchMaterial;
 using Microsoft.Extensions.DependencyInjection;
 using ZXing;
@@ -206,6 +205,8 @@ public sealed class MainActivity : AppCompatActivity
     private MaterialButton? _measureFaceToPointButton;
     private MaterialButton? _measureFaceToFaceButton;
     private MaterialButton? _measureBoundingBoxButton;
+    private SwitchMaterial? _measureEndpointSnapSwitch;
+    private SwitchMaterial? _measureMidpointSnapSwitch;
     private MaterialButton? _measureClearButton;
     private MaterialButton? _viewPresetReturnButton;
     private MaterialButton? _viewIsoButton;
@@ -297,6 +298,7 @@ public sealed class MainActivity : AppCompatActivity
     private bool _bodyMoveGizmoInputOpen;
     private long _lastBodyMovePromptToastMs;
     private bool _sectionSwitchUpdating;
+    private bool _measureSnapSwitchUpdating;
     private AndroidViewportExplodeLayout? _explodeLayout;
     private Scene? _explodeLayoutScene;
     private double _explodeAmount;
@@ -909,10 +911,10 @@ public sealed class MainActivity : AppCompatActivity
         int version = ++_interactiveNavigationVersion;
         viewport.PostDelayed(() =>
         {
-            if (_interactiveNavigationVersion != version)
+            if (_isDestroyed || _interactiveNavigationVersion != version)
             {
                 LogSectionCapUiDiagnostic(
-                    $"interactive navigation deactivation skipped: staleVersion={version}, currentVersion={_interactiveNavigationVersion}, source={source}");
+                    $"interactive navigation deactivation skipped: staleVersion={version}, currentVersion={_interactiveNavigationVersion}, destroyed={_isDestroyed}, source={source}");
                 return;
             }
             ApplyInteractiveNavigationActive(viewport, false, source);
@@ -4331,6 +4333,8 @@ public sealed class MainActivity : AppCompatActivity
         _measureFaceToPointButton = FindViewById<MaterialButton>(Resource.Id.measureFaceToPoint);
         _measureFaceToFaceButton = FindViewById<MaterialButton>(Resource.Id.measureFaceToFace);
         _measureBoundingBoxButton = FindViewById<MaterialButton>(Resource.Id.measureBoundingBox);
+        _measureEndpointSnapSwitch = FindViewById<SwitchMaterial>(Resource.Id.measureEndpointSnap);
+        _measureMidpointSnapSwitch = FindViewById<SwitchMaterial>(Resource.Id.measureMidpointSnap);
         _measureClearButton = FindViewById<MaterialButton>(Resource.Id.measureClear);
         _viewPresetReturnButton = FindViewById<MaterialButton>(Resource.Id.viewPresetReturn);
         _viewIsoButton = FindViewById<MaterialButton>(Resource.Id.viewIso);
@@ -4408,6 +4412,10 @@ public sealed class MainActivity : AppCompatActivity
             _measureFaceToFaceButton.Click += OnMeasureFaceToFaceClicked;
         if (_measureBoundingBoxButton is not null)
             _measureBoundingBoxButton.Click += OnBoundingBoxMeasureClicked;
+        if (_measureEndpointSnapSwitch is not null)
+            _measureEndpointSnapSwitch.CheckedChange += OnMeasureEndpointSnapCheckedChanged;
+        if (_measureMidpointSnapSwitch is not null)
+            _measureMidpointSnapSwitch.CheckedChange += OnMeasureMidpointSnapCheckedChanged;
         if (_measureClearButton is not null)
             _measureClearButton.Click += OnMeasureClearClicked;
         if (_viewPresetReturnButton is not null)
@@ -4509,6 +4517,34 @@ public sealed class MainActivity : AppCompatActivity
     private void OnMeasureFaceToPointClicked(object? sender, EventArgs e) => SetMeasureMode(MeasureToolMode.FaceToPoint);
 
     private void OnMeasureFaceToFaceClicked(object? sender, EventArgs e) => SetMeasureMode(MeasureToolMode.FaceToFace);
+
+    private void OnMeasureEndpointSnapCheckedChanged(object? sender, CompoundButton.CheckedChangeEventArgs e)
+    {
+        if (_measureSnapSwitchUpdating)
+            return;
+
+        AppSettings.MeasureEndpointSnapEnabled = e.IsChecked;
+        if (e.IsChecked)
+            AppSettings.MeasurePointSnapEnabled = true;
+        ApplyMeasurementSettings();
+        _measure?.ClearHover();
+        UpdateMeasureButtonStates();
+        RefreshMeasurementOverlays();
+    }
+
+    private void OnMeasureMidpointSnapCheckedChanged(object? sender, CompoundButton.CheckedChangeEventArgs e)
+    {
+        if (_measureSnapSwitchUpdating)
+            return;
+
+        AppSettings.MeasureMidpointSnapEnabled = e.IsChecked;
+        if (e.IsChecked)
+            AppSettings.MeasurePointSnapEnabled = true;
+        ApplyMeasurementSettings();
+        _measure?.ClearHover();
+        UpdateMeasureButtonStates();
+        RefreshMeasurementOverlays();
+    }
 
     private void OnMeasureClearClicked(object? sender, EventArgs e)
     {
@@ -4805,6 +4841,8 @@ public sealed class MainActivity : AppCompatActivity
         SetVisibility(_measureFaceToPointButton, measureVisibility);
         SetVisibility(_measureFaceToFaceButton, measureVisibility);
         SetVisibility(_measureBoundingBoxButton, measureVisibility);
+        SetVisibility(_measureEndpointSnapSwitch, measureVisibility);
+        SetVisibility(_measureMidpointSnapSwitch, measureVisibility);
         SetVisibility(_measureClearButton, measureVisibility);
 
         SetVisibility(_viewPresetReturnButton, viewPresetVisibility);
@@ -5083,6 +5121,18 @@ public sealed class MainActivity : AppCompatActivity
         SetSelected(_measureFaceToPointButton, activeMode == MeasureToolMode.FaceToPoint);
         SetSelected(_measureFaceToFaceButton, activeMode == MeasureToolMode.FaceToFace);
         SetSelected(_measureBoundingBoxButton, _measureBoundingBoxAwaitingSelection && !_measureBoundingBoxBusy);
+        if (_measureEndpointSnapSwitch is not null)
+        {
+            _measureSnapSwitchUpdating = true;
+            _measureEndpointSnapSwitch.Checked = AppSettings.MeasurePointSnapEnabled && AppSettings.MeasureEndpointSnapEnabled;
+            _measureSnapSwitchUpdating = false;
+        }
+        if (_measureMidpointSnapSwitch is not null)
+        {
+            _measureSnapSwitchUpdating = true;
+            _measureMidpointSnapSwitch.Checked = AppSettings.MeasurePointSnapEnabled && AppSettings.MeasureMidpointSnapEnabled;
+            _measureSnapSwitchUpdating = false;
+        }
         if (_measureBoundingBoxButton is not null)
             _measureBoundingBoxButton.Enabled = !_measureBoundingBoxBusy;
     }
@@ -5256,15 +5306,25 @@ public sealed class MainActivity : AppCompatActivity
             return;
 
         EnterToolbarMode(BottomToolbarMode.Main, AndroidModalTool.ZoomWindow);
-        if (_viewport is not null)
-        {
-            View anchor = FindViewById<View>(global::Android.Resource.Id.Content) ?? _viewport;
-            Snackbar? snackbar = Snackbar.Make(anchor, Resource.String.zoom_window_hint, Snackbar.LengthShort);
-            snackbar?.Show();
-            snackbar?.View?.Post(() =>
-                snackbar.View.AnnounceForAccessibility(GetString(Resource.String.zoom_window_hint_accessibility)));
-        }
+        ShowZoomWindowHintTooltip();
         global::Android.Util.Log.Info("FA.ZoomWindow", "Zoom Window active.");
+    }
+
+    private void ShowZoomWindowHintTooltip()
+    {
+        string? hint = GetString(Resource.String.zoom_window_hint);
+        if (string.IsNullOrWhiteSpace(hint))
+            return;
+
+        string? accessibilityHint = GetString(Resource.String.zoom_window_hint_accessibility);
+        if (_toolZoomWindowButton is not null
+            && _styledTooltips.TryGetValue(_toolZoomWindowButton, out StyledTooltipController? tooltip))
+        {
+            tooltip.ShowNow(hint, accessibilityHint);
+            return;
+        }
+
+        (_toolZoomWindowButton as View ?? _viewport as View)?.AnnounceForAccessibility(accessibilityHint ?? hint);
     }
 
     private void OnGestureForNavigation(TouchGestureEvent ev)
@@ -9306,6 +9366,8 @@ public sealed class MainActivity : AppCompatActivity
         SetTooltip(_measureFaceToPointButton, Resource.String.cd_measure_face_to_point);
         SetTooltip(_measureFaceToFaceButton, Resource.String.cd_measure_face_to_face);
         SetTooltip(_measureBoundingBoxButton, Resource.String.cd_measure_bounding_box);
+        SetTooltip(_measureEndpointSnapSwitch, Resource.String.cd_measure_snap_endpoint);
+        SetTooltip(_measureMidpointSnapSwitch, Resource.String.cd_measure_snap_midpoint);
         SetTooltip(_measureClearButton, Resource.String.cd_measure_clear);
     }
 
@@ -14000,6 +14062,16 @@ public sealed class MainActivity : AppCompatActivity
         DetachClick(_measureFaceToFaceButton, OnMeasureFaceToFaceClicked);
         DetachClick(_measureBoundingBoxButton, OnBoundingBoxMeasureClicked);
         DetachClick(_measureClearButton, OnMeasureClearClicked);
+        if (_measureEndpointSnapSwitch is not null)
+        {
+            _measureEndpointSnapSwitch.CheckedChange -= OnMeasureEndpointSnapCheckedChanged;
+            _measureEndpointSnapSwitch.SetOnCheckedChangeListener(null);
+        }
+        if (_measureMidpointSnapSwitch is not null)
+        {
+            _measureMidpointSnapSwitch.CheckedChange -= OnMeasureMidpointSnapCheckedChanged;
+            _measureMidpointSnapSwitch.SetOnCheckedChangeListener(null);
+        }
         DetachClick(_viewPresetReturnButton, OnViewPresetReturnClicked);
         DetachClick(_viewIsoButton, OnViewIsoClicked);
         DetachClick(_viewFrontButton, OnViewFrontClicked);
@@ -14146,7 +14218,7 @@ public sealed class MainActivity : AppCompatActivity
         ClearAndroidViewListeners();
         if (_pointerSource is not null)
             _pointerSource.GestureRecognized -= OnGestureForToolbarTools;
-        if (_pointerSource is not null && _interaction is not null)
+        if (_pointerSource is not null)
             _pointerSource.GestureRecognized -= OnGestureForNavigation;
         if (_pointerSource is not null)
             _pointerSource.GestureRecognized -= OnGestureForSelection;
@@ -14184,6 +14256,14 @@ public sealed class MainActivity : AppCompatActivity
         if (_services is IDisposable disposableServices)
             disposableServices.Dispose();
         _services = null;
+
+        // S2#2: dispose the long-lived synchronization primitives (readonly
+        // fields that were only Cancel()'d above, never disposed) so the
+        // activity does not leak a CancellationTokenSource + two SemaphoreSlim
+        // handles on each recreation.
+        _activityDestroyCts.Dispose();
+        _loadSemaphore.Dispose();
+        _cloudSessionGate.Dispose();
 
         base.OnDestroy();
     }
@@ -14264,6 +14344,11 @@ public sealed class MainActivity : AppCompatActivity
         }
         if (_pointerSource is not null)
             _pointerSource.MouseClickDragThresholdDip = AppSettings.MouseDragThresholdDip;
+
+        // S11#1: preferences may have changed the render mode / edges, so refresh
+        // the render-mode toolbar selected-state to match (it otherwise only
+        // updated on an explicit toolbar click).
+        UpdateRenderModeButtonStates();
     }
 
     private void ApplySectionSettings()
@@ -14294,11 +14379,17 @@ public sealed class MainActivity : AppCompatActivity
             AppSettings.MeasureShowDeltaBreakdown,
             MeasureBoxModeFromSettings(),
             AppSettings.MeasurePointSnapEnabled,
+            AppSettings.MeasureEndpointSnapEnabled,
+            AppSettings.MeasureMidpointSnapEnabled,
             AppSettings.MeasureSnapEdgeFactor,
             AppSettings.MeasureSnapEndpointFactor,
+            AppSettings.CadEdgeWeldToleranceScale,
             AppSettings.MeasureSnapVisibleEdgesOnly,
             AppSettings.MeasureSnapVisibilityProbe,
             AppSettings.MeasureSnapOcclusionToleranceFactor);
+        _measure?.ApplySectionVisibility(
+            AppSettings.SectionCurvesVisible,
+            AppSettings.SectionCapsVisible);
 
         if (_measure is null || !_measure.IsActive)
             _lastInteractiveMeasureMode = MeasureModeFromSettings();

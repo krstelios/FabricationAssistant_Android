@@ -90,6 +90,16 @@ internal sealed class StyledTooltipController : Java.Lang.Object, View.IOnHoverL
         DismissPopupOnly();
     }
 
+    public void ShowNow(string? textOverride = null, string? accessibilityAnnouncement = null)
+    {
+        if (_disposed)
+            return;
+
+        CancelPendingShow();
+        int generation = Interlocked.Increment(ref _showGeneration);
+        Show(generation, textOverride, accessibilityAnnouncement);
+    }
+
     private void DismissPopupOnly()
     {
         if (_popup is null)
@@ -136,16 +146,20 @@ internal sealed class StyledTooltipController : Java.Lang.Object, View.IOnHoverL
     }
 
     private void Show()
-        => Show(Volatile.Read(ref _showGeneration));
+        => Show(Volatile.Read(ref _showGeneration), textOverride: null, accessibilityAnnouncement: null);
 
     private void Show(int generation)
+        => Show(generation, textOverride: null, accessibilityAnnouncement: null);
+
+    private void Show(int generation, string? textOverride, string? accessibilityAnnouncement)
     {
+        string displayText = string.IsNullOrWhiteSpace(textOverride) ? _text : textOverride!;
         if (_disposed
             || generation != Volatile.Read(ref _showGeneration)
             || !_anchor.TryGetTarget(out View? anchor)
             || !anchor.IsShown
             || !anchor.Enabled
-            || string.IsNullOrWhiteSpace(_text))
+            || string.IsNullOrWhiteSpace(displayText))
         {
             return;
         }
@@ -161,7 +175,7 @@ internal sealed class StyledTooltipController : Java.Lang.Object, View.IOnHoverL
         }
         DismissPopupOnly();
 
-        TextView label = CreateLabel();
+        TextView label = CreateLabel(displayText);
         int maxWidth = Dp(MaxWidthDp);
         label.Measure(
             View.MeasureSpec.MakeMeasureSpec(maxWidth, MeasureSpecMode.AtMost),
@@ -186,6 +200,8 @@ internal sealed class StyledTooltipController : Java.Lang.Object, View.IOnHoverL
         try
         {
             popup.ShowAtLocation(anchor.RootView, GravityFlags.NoGravity, x, y);
+            if (!string.IsNullOrWhiteSpace(accessibilityAnnouncement))
+                label.Post(() => label.AnnounceForAccessibility(accessibilityAnnouncement));
             _handler.PostDelayed(() =>
             {
                 if (generation == Volatile.Read(ref _showGeneration))
@@ -199,11 +215,11 @@ internal sealed class StyledTooltipController : Java.Lang.Object, View.IOnHoverL
         }
     }
 
-    private TextView CreateLabel()
+    private TextView CreateLabel(string text)
     {
         var label = new TextView(_context)
         {
-            Text = _text,
+            Text = text,
             TextSize = 12.5f,
             Gravity = GravityFlags.Center,
             Ellipsize = TextUtils.TruncateAt.End,

@@ -251,6 +251,8 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
 
         var snap = AddSection(ctx, root, "Point Snap", "Distance and visibility");
         AddSwitch(ctx, snap, "Enable point snap", AppSettings.MeasurePointSnapEnabled, v => AppSettings.MeasurePointSnapEnabled = v);
+        AddSwitch(ctx, snap, "Endpoint snap", AppSettings.MeasureEndpointSnapEnabled, v => AppSettings.MeasureEndpointSnapEnabled = v);
+        AddSwitch(ctx, snap, "Midpoint snap", AppSettings.MeasureMidpointSnapEnabled, v => AppSettings.MeasureMidpointSnapEnabled = v);
         AddFloatSlider(ctx, snap, "Edge snap distance", 0.1f, 4f, AppSettings.MeasureSnapEdgeFactor, v => AppSettings.MeasureSnapEdgeFactor = v);
         AddFloatSlider(ctx, snap, "Endpoint snap distance", 0.1f, 4f, AppSettings.MeasureSnapEndpointFactor, v => AppSettings.MeasureSnapEndpointFactor = v);
         AddSwitch(ctx, snap, "Visible edges only", AppSettings.MeasureSnapVisibleEdgesOnly, v => AppSettings.MeasureSnapVisibleEdgesOnly = v);

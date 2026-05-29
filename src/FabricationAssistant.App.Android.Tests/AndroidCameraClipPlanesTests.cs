@@ -24,9 +24,31 @@ public sealed class AndroidCameraClipPlanesTests
 
         AndroidCameraClipPlanes.Update(camera, bounds);
 
-        Assert.True(camera.NearPlane >= bounds.Diagonal * 0.0005);
+        Assert.InRange(camera.NearPlane, 0.0001, 0.0002);
         Assert.InRange(camera.FarPlane, 1.0, 2.0);
-        Assert.True(camera.FarPlane / camera.NearPlane < 1000.0);
+        Assert.True(camera.FarPlane / camera.NearPlane < 20_000.0);
+    }
+
+    [Fact]
+    public void Update_PerspectiveCloseToLargeBounds_KeepsNearPlaneBeforeFrontFace()
+    {
+        var camera = new CameraState
+        {
+            Position = new Vector3d(0, -0.05, 0),
+            Target = new Vector3d(0, 1, 0),
+            UpDirection = Vector3d.UnitZ,
+            WorldUpDirection = Vector3d.UnitZ,
+            IsPerspective = true,
+            NearPlane = 1.0,
+            FarPlane = 1_000_000,
+        };
+        var bounds = new BoundingBox(new Vector3d(-5_000, 0, -5_000), new Vector3d(5_000, 10_000, 5_000));
+
+        AndroidCameraClipPlanes.Update(camera, bounds);
+
+        Assert.True(camera.NearPlane > 0.0);
+        Assert.True(camera.NearPlane < 0.05);
+        Assert.True(camera.FarPlane > 10_000.0);
     }
 
     [Fact]

@@ -11,8 +11,9 @@ public static class AndroidCameraClipPlanes
     private const double GroundGridExtentScale = 8.0;
     private const double GroundGridZOffsetScale = 0.001;
     private const double MinimumNearPlane = 0.0001;
-    private const double NearPlaneSceneScale = 0.0005;
-    private const double NearPlaneDistanceScale = 0.001;
+    private const double NearPlaneSceneScale = 0.00001;
+    private const double NearPlaneDistanceScale = 0.00001;
+    private const double NearPlaneFrontFaceScale = 0.5;
     private const double FarPlaneSceneMarginScale = 0.02;
     private const double FarPlaneSpanMarginScale = 0.05;
 
@@ -46,6 +47,9 @@ public static class AndroidCameraClipPlanes
         double near = minDepth > 0.0
             ? System.Math.Max(minDepth - margin, nearFloor)
             : nearFloor;
+
+        if (minDepth > MinimumNearPlane && near >= minDepth)
+            near = System.Math.Max(minDepth * NearPlaneFrontFaceScale, MinimumNearPlane);
 
         if (near >= far)
             near = System.Math.Max(System.Math.Min(far - margin, far * 0.5), MinimumNearPlane);

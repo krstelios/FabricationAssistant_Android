@@ -386,6 +386,8 @@ public static class AppSettings
     public static bool MeasureMultiMeasureEnabled { get => Get("measure_multi_enabled", true); set => Put("measure_multi_enabled", value); }
     public static bool MeasureShowDeltaBreakdown { get => Get("measure_show_deltas", true); set => Put("measure_show_deltas", value); }
     public static bool MeasurePointSnapEnabled { get => Get("measure_snap_enabled", true); set => Put("measure_snap_enabled", value); }
+    public static bool MeasureEndpointSnapEnabled { get => Get("measure_snap_endpoint_enabled", true); set => Put("measure_snap_endpoint_enabled", value); }
+    public static bool MeasureMidpointSnapEnabled { get => Get("measure_snap_midpoint_enabled", true); set => Put("measure_snap_midpoint_enabled", value); }
     public static bool MeasureSnapVisibleEdgesOnly { get => Get("measure_snap_visible_edges_only", true); set => Put("measure_snap_visible_edges_only", value); }
     public static float MeasureSnapEdgeFactor { get => GetFloatInRange("measure_snap_edge_factor", DefaultMeasureSnapFactor, MinMeasureSnapFactor, MaxMeasureSnapFactor); set => Put("measure_snap_edge_factor", System.Math.Clamp(value, MinMeasureSnapFactor, MaxMeasureSnapFactor)); }
     public static float MeasureSnapEndpointFactor { get => GetFloatInRange("measure_snap_endpoint_factor", DefaultMeasureSnapFactor, MinMeasureSnapFactor, MaxMeasureSnapFactor); set => Put("measure_snap_endpoint_factor", System.Math.Clamp(value, MinMeasureSnapFactor, MaxMeasureSnapFactor)); }
