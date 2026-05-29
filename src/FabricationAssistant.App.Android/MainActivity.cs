@@ -5287,6 +5287,19 @@ public sealed class MainActivity : AppCompatActivity
                 $"viewport gesture: kind={ev.Kind}, posDip=({ev.Position.X:0.#},{ev.Position.Y:0.#}), delta=({ev.PixelDelta.X:0.#},{ev.PixelDelta.Y:0.#}), pinch={ev.PinchScale:0.###}");
         }
 
+        // S12#3: While a section sub-mode is active, a double-tap's first Tap
+        // places the section plane (handled by OnGestureForSelection). Swallow
+        // the following DoubleTap here so it does not also re-fit the camera.
+        // Only DoubleTap is suppressed, so orbit/pan during axis placement still
+        // work; Custom mode also stays covered (ShouldSuppressNavigationGestures
+        // already suppresses its camera gestures).
+        if (ev.Kind == TouchGestureKind.DoubleTap
+            && _activeModalTool == AndroidModalTool.Section
+            && _activeSectionSubMode != SectionSubMode.None)
+        {
+            return;
+        }
+
         _interaction?.OnGesture(ev);
     }
 
