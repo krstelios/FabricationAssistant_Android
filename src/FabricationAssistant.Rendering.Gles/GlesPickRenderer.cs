@@ -156,6 +156,11 @@ public sealed class GlesPickRenderer : IDisposable
 
         try
         {
+            // S7#2 / S13#1: force the write masks before clearing so an inherited
+            // ColorMask/DepthMask = false from a prior pass cannot turn the pick
+            // FBO clear into a no-op (stale color/depth -> occluded false hits).
+            _gl.ColorMask(true, true, true, true);
+            _gl.DepthMask(true);
             uint clear = 0u;
             _gl.ClearBuffer(GLEnum.Color, 0, &clear);
             _gl.Clear((uint)ClearBufferMask.DepthBufferBit);
