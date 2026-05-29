@@ -182,6 +182,8 @@ internal sealed class PropertiesPanelBinder
         return rows;
     }
 
+    private const int MaxPropertyRowsPerGroup = 50;
+
     private void AddPropertyGroup(string title, IEnumerable<ScenePropertyDto> properties)
     {
         ScenePropertyDto[] items = properties.ToArray();
@@ -189,10 +191,17 @@ internal sealed class PropertiesPanelBinder
             return;
 
         AddSectionTitle($"{title} ({items.Length:N0})");
-        foreach (ScenePropertyDto property in items)
-        {
-            AddPropertyItem(property);
-        }
+
+        // S15#2: cap inflated rows per group. Metadata-heavy CAD parts can carry
+        // thousands of properties; inflating ~4-5 Views each synchronously into a
+        // non-virtualized ScrollView janks or ANRs the UI thread. Show the first
+        // K and summarize the rest (the section title already shows the total).
+        int shown = System.Math.Min(items.Length, MaxPropertyRowsPerGroup);
+        for (int i = 0; i < shown; i++)
+            AddPropertyItem(items[i]);
+
+        if (items.Length > shown)
+            AddRow("More", $"{items.Length - shown:N0} not shown");
     }
 
     private void AddSection(string title, IReadOnlyList<PropertyRow> rows)
