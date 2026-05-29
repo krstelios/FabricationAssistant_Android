@@ -3788,7 +3788,7 @@ public sealed class MainActivity : AppCompatActivity
         }
 
         SceneNode? selectedNode = ResolveSelectedNode(scene);
-        _propertiesPanelBinder?.ShowSelection(selectedNode, scene);
+        _propertiesPanelBinder?.ShowSelection(selectedNode, scene, _selectedNodeIds.Count);
         RefreshModelExplorerSelection(
             scene,
             scrollModelExplorerToSelection,
@@ -3825,6 +3825,7 @@ public sealed class MainActivity : AppCompatActivity
         => scene is null
             ? null
             : _selectedNodeIds
+                .OrderBy(id => id)
                 .Select(id => scene.GetNode(id))
                 .FirstOrDefault(node => node is not null);
 
@@ -9881,15 +9882,11 @@ public sealed class MainActivity : AppCompatActivity
     private void OpenSelectedProperties()
     {
         Scene? scene = _runtimeScene;
-        SceneNode? selectedNode = null;
-        if (scene is not null)
-        {
-            int selectedNodeId = _selectedNodeIds.FirstOrDefault();
-            if (selectedNodeId != 0)
-                selectedNode = scene.GetNode(selectedNodeId);
-        }
-
-        _propertiesPanelBinder?.ShowSelection(selectedNode, scene);
+        // S15#1: resolve deterministically (ResolveSelectedNode orders by id) and
+        // surface the multi-select count, instead of FirstOrDefault over the
+        // selection set picking an arbitrary node.
+        SceneNode? selectedNode = ResolveSelectedNode(scene);
+        _propertiesPanelBinder?.ShowSelection(selectedNode, scene, _selectedNodeIds.Count);
         SetPropertiesPanelExpanded(true);
     }
 

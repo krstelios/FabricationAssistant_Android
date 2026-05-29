@@ -42,7 +42,7 @@ internal sealed class PropertiesPanelBinder
         _captionSizePx = context.Resources!.GetDimension(Resource.Dimension.fa_text_size_caption);
     }
 
-    public void ShowSelection(SceneNode? node, Scene? scene)
+    public void ShowSelection(SceneNode? node, Scene? scene, int selectionCount = 1)
     {
         _content.RemoveAllViews();
 
@@ -57,6 +57,13 @@ internal sealed class PropertiesPanelBinder
         node = ResolvePresentedNode(node);
         _emptyState.Visibility = ViewStates.Gone;
         _scroll.Visibility = ViewStates.Visible;
+
+        // S15#1: the panel can only detail one node, but multi-select is a
+        // supported state. Make that explicit instead of silently showing one
+        // arbitrary part; the part shown is now deterministic (ResolveSelectedNode
+        // orders by id).
+        if (selectionCount > 1)
+            AddSection("Selection", new[] { new PropertyRow("Selected", $"{selectionCount} items (showing first)") });
 
         AddSection("Component", BuildComponentRows(node));
         AddSection("Geometry", BuildGeometryRows(node, scene));
