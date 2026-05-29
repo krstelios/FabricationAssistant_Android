@@ -158,7 +158,7 @@ public sealed class GlesRendererSourceTests
         string renderer = File.ReadAllText(ResolveRepoPath(
             @"..\FabricationAssistant.Rendering.Gles\GlesViewportRenderer.cs"));
 
-        int silhouetteStart = renderer.IndexOf("bool silhouetteOverlayActive = ssaoActive", StringComparison.Ordinal);
+        int silhouetteStart = renderer.IndexOf("bool silhouetteOverlayActive = normalDepthRanThisFrame", StringComparison.Ordinal);
         Assert.True(silhouetteStart >= 0, "silhouetteOverlayActive assignment was not found.");
         int silhouetteEnd = renderer.IndexOf("if (silhouetteOverlayActive)", silhouetteStart, StringComparison.Ordinal);
         Assert.True(silhouetteEnd > silhouetteStart, "silhouetteOverlayActive assignment end was not found.");

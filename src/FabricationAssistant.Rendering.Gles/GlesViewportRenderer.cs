@@ -535,37 +535,61 @@ public sealed class GlesViewportRenderer : IDisposable
         long ssaoStart = Stopwatch.GetTimestamp();
         uint aoTextureToBind = _whiteAoTexture;
         bool ssaoActive = false;
+        bool normalDepthRanThisFrame = false;
         string ssaoInactiveReason = GetSsaoInactiveReason(a, camera);
         if (ssaoInactiveReason.Length == 0 && lightweightNavigationActive)
             ssaoInactiveReason = "interactive navigation";
-        if (ssaoInactiveReason.Length == 0
-            && Scene is not null && camera is not null
-            && _normalDepthRenderer is not null && _ssaoRenderer is not null)
+
+        // SSAO is eligible to run when nothing vetoed it above.
+        bool ssaoEligible = ssaoInactiveReason.Length == 0;
+
+        // S19#1: the screen-space silhouette overlay also consumes the
+        // normal-depth pre-pass, so the pre-pass must be able to run even when
+        // AO is off. These are the same guards the overlay itself applies
+        // below, so the pre-pass runs exactly when either consumer needs it.
+        bool silhouettePrepassWanted = a.CadEdgeSilhouetteEnabled
+            && a.Mode != RenderMode.Clay
+            && a.Mode != RenderMode.Wireframe
+            && SectionPlanes.Count == 0
+            && !lightweightNavigationActive;
+
+        if ((ssaoEligible || silhouettePrepassWanted)
+            && Scene is { } ssaoScene
+            && camera is { } ssaoCamera
+            && _normalDepthRenderer is { } normalDepth)
         {
             bool collectSsaoDiagnostics = ShouldCollectSsaoDiagnostics(a, true, "active");
             ResetMainFramebufferState();
-            _normalDepthRenderer.SectionPlanes = SectionPlanes;
-            _normalDepthRenderer.Render(Scene, camera, _width, _height, a, collectSsaoDiagnostics);
-            _ssaoRenderer.Resize(_width, _height);
-            _ssaoRenderer.Render(
-                _normalDepthRenderer.NormalTexture,
-                _normalDepthRenderer.DepthTexture,
-                _normalDepthRenderer.LinearDepthMin,
-                _normalDepthRenderer.LinearDepthMax,
-                camera,
-                Scene.Bounds,
-                a,
-                collectSsaoDiagnostics);
+            normalDepth.SectionPlanes = SectionPlanes;
+            normalDepth.Render(ssaoScene, ssaoCamera, _width, _height, a, collectSsaoDiagnostics);
+            normalDepthRanThisFrame = true;
+
+            // SSAO consumption stays gated on SSAO eligibility; a pre-pass run
+            // only for silhouettes leaves AO off (aoTextureToBind stays white).
+            if (ssaoEligible && _ssaoRenderer is { } ssao)
+            {
+                ssao.Resize(_width, _height);
+                ssao.Render(
+                    normalDepth.NormalTexture,
+                    normalDepth.DepthTexture,
+                    normalDepth.LinearDepthMin,
+                    normalDepth.LinearDepthMax,
+                    ssaoCamera,
+                    ssaoScene.Bounds,
+                    a,
+                    collectSsaoDiagnostics);
+                if (ssao.AoTexture != 0)
+                {
+                    aoTextureToBind = ssao.AoTexture;
+                    ssaoActive = true;
+                }
+                else
+                {
+                    ssaoInactiveReason = "renderer produced no AO texture";
+                }
+            }
+
             ResetMainFramebufferState();
-            if (_ssaoRenderer.AoTexture != 0)
-            {
-                aoTextureToBind = _ssaoRenderer.AoTexture;
-                ssaoActive = true;
-            }
-            else
-            {
-                ssaoInactiveReason = "renderer produced no AO texture";
-            }
         }
         LogSsaoState(a, ssaoActive, ssaoInactiveReason, aoTextureToBind);
         long afterSsao = Stopwatch.GetTimestamp();
@@ -956,13 +980,16 @@ public sealed class GlesViewportRenderer : IDisposable
 
         // Screen-space silhouette overlay. Runs after the MSAA resolve (so
         // it draws into the resolved single-sampled buffer) and before the
-        // outline post-process. Requires the normal-depth pre-pass to have
-        // run this frame, so silhouettes are only emitted when SSAO is also
-        // active. Skipped in Clay/Wireframe modes (no CAD-edge concept
-        // there). Also skip it in section mode: the normal-depth pre-pass
-        // does not include cap geometry, so this post-process can repaint
-        // background/cut edge pixels over the section cap.
-        bool silhouetteOverlayActive = ssaoActive
+        // outline post-process. Requires the normal-depth pre-pass to have run
+        // THIS frame - which now happens for silhouettes independently of SSAO
+        // (S19#1), so it no longer requires AO to be on. Gating on
+        // normalDepthRanThisFrame (not NormalTexture != 0, which stays non-zero
+        // once allocated) ensures the texture is fresh. Skipped in
+        // Clay/Wireframe modes (no CAD-edge concept there). Also skip it in
+        // section mode: the normal-depth pre-pass does not include cap
+        // geometry, so this post-process can repaint background/cut edge pixels
+        // over the section cap.
+        bool silhouetteOverlayActive = normalDepthRanThisFrame
             && a.CadEdgeSilhouetteEnabled
             && a.Mode != RenderMode.Clay
             && a.Mode != RenderMode.Wireframe
