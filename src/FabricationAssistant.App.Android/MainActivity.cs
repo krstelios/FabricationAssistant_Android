@@ -6074,6 +6074,12 @@ public sealed class MainActivity : AppCompatActivity
 
         ApplyIsolatedVisibility(scene, opaqueNodeIds);
         SetXrayIsolationState(opaqueNodeIds, backgroundNodeIds, DefaultXrayIsolationOpacity);
+        // S20#2: x-ray ghosting is driven by the background node-id set, not by
+        // SceneNode.Visible, so keep the ghosted background nodes Visible=true
+        // (mirrors the FA branch above). Otherwise ApplyIsolatedVisibility leaves
+        // them Visible=false and the model tree shows them hidden while the
+        // viewport still renders them ghosted -> tree<->viewport desync.
+        EnsureBackgroundNodesVisible(scene, backgroundNodeIds);
         ClearSelectionAfterVisibilityMutation(scene);
         AddVisibilityUndo(undo, before, "Isolate (x-ray)");
         FinalizeVisibilityMutation("isolate-xray", opaqueNodeIds.Count);
