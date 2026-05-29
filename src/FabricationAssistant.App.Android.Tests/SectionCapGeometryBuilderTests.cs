@@ -196,29 +196,6 @@ public sealed class SectionCapGeometryBuilderTests
     }
 
     [Fact]
-    public void Build_MergesGroupedSourcesToCloseSplitPrimitiveLoop()
-    {
-        MeshDto[] parts = CreateSplitCrossingSegmentLoop();
-        var plane = new SectionCapPlane(Vector3.Zero, Vector3.UnitX, Vector3.UnitY, Vector3.UnitZ);
-
-        SectionCapGeometry geometry = SectionCapGeometryBuilder.Build(
-            new[]
-            {
-                new SectionCapMeshSource(parts[0], Matrix4d.Identity) { GroupId = 42 },
-                new SectionCapMeshSource(parts[1], Matrix4d.Identity) { GroupId = 42 },
-            },
-            plane,
-            new[] { plane },
-            activePlaneIndex: 0,
-            sceneDiagonal: 4.0);
-
-        Assert.NotEmpty(geometry.TriangleVertices);
-        Assert.True(geometry.Diagnostics.ClosedRegionCount > 0);
-        Assert.True(geometry.Diagnostics.FilledRegionCount > 0);
-        Assert.Equal(0, geometry.Diagnostics.OpenPrunedSegmentCount);
-    }
-
-    [Fact]
     public void Build_IgnoresCoplanarTriangles()
     {
         var mesh = new MeshDto

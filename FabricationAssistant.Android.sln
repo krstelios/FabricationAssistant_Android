@@ -17,6 +17,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FabricationAssistant.App.An
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FabricationAssistant.Draco.Android", "src\FabricationAssistant.Draco.Android\FabricationAssistant.Draco.Android.csproj", "{A7B8C9D0-E1F2-3456-0123-567890123456}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FabricationAssistant.App.Android.Tests", "src\FabricationAssistant.App.Android.Tests\FabricationAssistant.App.Android.Tests.csproj", "{B8C9D0E1-F2A3-4567-1234-678901234567}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|AnyCPU = Debug|AnyCPU
@@ -51,6 +53,10 @@ Global
 		{A7B8C9D0-E1F2-3456-0123-567890123456}.Debug|AnyCPU.Build.0 = Debug|AnyCPU
 		{A7B8C9D0-E1F2-3456-0123-567890123456}.Release|AnyCPU.ActiveCfg = Release|AnyCPU
 		{A7B8C9D0-E1F2-3456-0123-567890123456}.Release|AnyCPU.Build.0 = Release|AnyCPU
+		{B8C9D0E1-F2A3-4567-1234-678901234567}.Debug|AnyCPU.ActiveCfg = Debug|AnyCPU
+		{B8C9D0E1-F2A3-4567-1234-678901234567}.Debug|AnyCPU.Build.0 = Debug|AnyCPU
+		{B8C9D0E1-F2A3-4567-1234-678901234567}.Release|AnyCPU.ActiveCfg = Release|AnyCPU
+		{B8C9D0E1-F2A3-4567-1234-678901234567}.Release|AnyCPU.Build.0 = Release|AnyCPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
