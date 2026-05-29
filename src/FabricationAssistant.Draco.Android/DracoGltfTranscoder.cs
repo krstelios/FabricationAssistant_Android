@@ -18,7 +18,12 @@ public static class DracoGltfTranscoder
     private const uint ChunkTypeJson = 0x4E4F534A;  // "JSON"
     private const uint ChunkTypeBin  = 0x004E4942;  // "BIN\0"
     private const long MaxSourceBytes = 1L * 1024L * 1024L * 1024L;
-    private const long MaxDecodedBytes = 2L * 1024L * 1024L * 1024L;
+    // S5#2: capped at int.MaxValue rather than a full 2 GiB. The decoded buffer
+    // byteLength and bufferView offsets are written as glTF int32 fields via
+    // checked((int)...); a budget of exactly 2 GiB (2^31) is one byte past
+    // int.MaxValue and would throw an uncaught OverflowException instead of the
+    // catchable InvalidDataException EnsureDecodedBudget raises.
+    private const long MaxDecodedBytes = int.MaxValue;
 
     public static void Transcode(string sourceGlbPath, string destinationGlbPath)
     {
