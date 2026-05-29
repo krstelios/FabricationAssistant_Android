@@ -39,6 +39,14 @@ internal sealed class AndroidModelExplorerPanel : IDisposable
 
     public Action<AndroidModelExplorerNode, bool>? VisibilityChanged { get; set; }
 
+    /// <summary>
+    /// Raised after a Pack/Unpack rebuild (which calls SetScene and clears the
+    /// tree's highlight/selection state) so the host can re-apply the current
+    /// viewport selection onto the repacked tree. Not raised for the initial
+    /// scene attach (SetScene called directly by the host).
+    /// </summary>
+    public Action? SelectionResyncRequested { get; set; }
+
     public View CreateView(Context ctx)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -297,6 +305,7 @@ internal sealed class AndroidModelExplorerPanel : IDisposable
                 return;
             _packDuplicates = true;
             SetScene(_sceneAccessor());
+            SelectionResyncRequested?.Invoke();
         }));
         actions.AddView(CreateActionButton(ctx, "Unpack", () =>
         {
@@ -304,6 +313,7 @@ internal sealed class AndroidModelExplorerPanel : IDisposable
                 return;
             _packDuplicates = false;
             SetScene(_sceneAccessor());
+            SelectionResyncRequested?.Invoke();
         }));
     }
 

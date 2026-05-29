@@ -3394,6 +3394,7 @@ public sealed class MainActivity : AppCompatActivity
         {
             NodeSelected = SelectModelExplorerNode,
             VisibilityChanged = SetModelExplorerNodeVisibility,
+            SelectionResyncRequested = () => SyncModelExplorerSelectionFromViewport(scrollToSelection: false),
         };
 
         ShowLeftToolPanel(
