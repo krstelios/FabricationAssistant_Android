@@ -355,6 +355,13 @@ public sealed class GlesViewportRenderer : IDisposable
 
         _gl = GL.GetApi(new SurfaceViewGlContext());
 
+        // The GL context was (re)created, so any process-static GPU buffer
+        // names captured under a previous context are now dead. Forget the
+        // shared edge-ribbon quad names here, before any scene re-upload, so
+        // the next UploadEdges rebuilds them against this fresh context
+        // instead of binding stale handles (which corrupts/loses CAD edges).
+        GpuMesh.ResetStaticEdgeQuad();
+
         _gl.ClearColor(0.10f, 0.11f, 0.12f, 1.0f);
         _gl.Enable(EnableCap.DepthTest);
         _gl.DepthFunc(DepthFunction.Lequal);

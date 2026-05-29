@@ -274,6 +274,20 @@ public sealed class GpuMesh : IDisposable
     }
 
     /// <summary>
+    /// Forgets the per-process static edge-quad buffer names without deleting
+    /// them. Must be called when the GL context is recreated: the old names
+    /// belong to the destroyed context, so glDelete would be invalid, but the
+    /// short-circuit in EnsureStaticEdgeQuad would otherwise keep binding the
+    /// dead names into every fresh edge VAO. The next UploadEdges rebuilds the
+    /// quad against the new context.
+    /// </summary>
+    public static void ResetStaticEdgeQuad()
+    {
+        _staticEdgeQuadVbo = 0;
+        _staticEdgeQuadIbo = 0;
+    }
+
+    /// <summary>
     /// Lazily creates the per-process static quad geometry shared by every
     /// mesh's edge VAO: 4 vertices of (aSegmentT, aSide) and 6 indices for
     /// the two triangles that span them.
