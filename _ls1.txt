@@ -1,0 +1,13 @@
+﻿
+Name                                        Mode   LinkType Target
+----                                        ----   -------- ------
+FabricationAssistant.App.Android            d-----          {}    
+FabricationAssistant.App.Android.Tests      d-----          {}    
+FabricationAssistant.Core.Android           d-----          {}    
+FabricationAssistant.Draco.Android          d-----          {}    
+FabricationAssistant.Import.Gltf.Android    d-----          {}    
+FabricationAssistant.Input.Gestures.Android d-----          {}    
+FabricationAssistant.Platform.Android       d-----          {}    
+FabricationAssistant.Rendering.Gles         d-----          {}    
+
+

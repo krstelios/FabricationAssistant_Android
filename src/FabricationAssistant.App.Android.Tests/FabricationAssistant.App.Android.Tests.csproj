@@ -97,6 +97,10 @@
              LinkBase="Linked\Android" />
     <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\AppSettingsValueGuards.cs"
              LinkBase="Linked\Android" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\CloudModels.cs"
+             LinkBase="Linked\Android" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\CloudPasswordResetFlow.cs"
+             LinkBase="Linked\Android" />
     <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\CloudServerUrls.cs"
              LinkBase="Linked\Android" />
     <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\ImportFileTypeResolver.cs"

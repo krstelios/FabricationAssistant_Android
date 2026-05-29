@@ -276,9 +276,11 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
             AppSettings.SetSectionCapColor);
         AddFloatSlider(ctx, sections, "Plane size", 0.005f, 0.20f, AppSettings.SectionPlaneSizeFraction, v => AppSettings.SectionPlaneSizeFraction = v);
 
-        var cloud = AddSection(ctx, root, "FA Cloud", "Server, login, and project");
+        var cloud = AddSection(ctx, root, "FA Cloud", "Connection, account, and project");
         var cloudSecureStore = new CloudSecureStore(ctx.ApplicationContext ?? ctx);
-        AddTextField(ctx, cloud, "Server", AppSettings.CloudServerUrl, value => AppSettings.CloudServerUrl = value);
+        AddLabeledToggleRow(ctx, cloud, "Connection", new[] { "Local network", "Internet" },
+            AppSettings.CloudServerProfileSelectionIndex, AppSettings.SetCloudServerProfileSelectionIndex);
+        AddSubtle(ctx, cloud, "Connection changes apply to the next cloud sign-in.");
         AddTextField(ctx, cloud, "User / email", AppSettings.CloudUserEmail, value => AppSettings.CloudUserEmail = value);
         AddTextField(ctx, cloud, "Default project", AppSettings.CloudDefaultProjectName, value => AppSettings.CloudDefaultProjectName = value);
         AddSwitch(ctx, cloud, "Keep me signed in", AppSettings.CloudRememberCredentials, remember =>

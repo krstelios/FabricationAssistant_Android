@@ -38,6 +38,8 @@ using Google.Android.Material.Card;
 using Google.Android.Material.Snackbar;
 using Google.Android.Material.SwitchMaterial;
 using Microsoft.Extensions.DependencyInjection;
+using ZXing;
+using ZXing.QrCode;
 using AndroidUri = Android.Net.Uri;
 using AlertDialog = AndroidX.AppCompat.App.AlertDialog;
 using ColorStateList = Android.Content.Res.ColorStateList;
@@ -399,6 +401,7 @@ public sealed class MainActivity : AppCompatActivity
         // persisted values.
         AppSettings.Initialize(ApplicationContext!);
         _lastInteractiveMeasureMode = MeasureModeFromSettings();
+        global::Android.Util.Log.Info("FA.Cloud", "Using FA Cloud config: " + AppSettings.CloudServerConfigPath);
 #if DEBUG
         if (AppSettings.CloudServerUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
             global::Android.Util.Log.Warn("FA.Cloud", "Debug build is configured for cleartext FA Cloud HTTP: " + AppSettings.CloudServerUrl);
@@ -1280,13 +1283,6 @@ public sealed class MainActivity : AppCompatActivity
 
         root.AddView(header);
 
-        EditText serverInput = AddCloudDialogField(
-            root,
-            "Server",
-            AppSettings.CloudServerUrl,
-            isPassword: false,
-            hint: "http://10.0.1.159 or https://195.97.118.165");
-        TextView[] serverProfileButtons = AddCloudServerProfileButtons(root, serverInput);
         EditText emailInput = AddCloudDialogField(root, "User / email", AppSettings.CloudUserEmail, isPassword: false, hint: "user@example.com");
         EditText passwordInput = AddCloudDialogField(
             root,
@@ -1294,6 +1290,11 @@ public sealed class MainActivity : AppCompatActivity
             "",
             isPassword: true,
             hint: "Password");
+        TextView forgotPassword = CreateCloudDialogLinkButton("Forgot password?");
+        var forgotParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, Dp(36));
+        forgotParams.Gravity = GravityFlags.End;
+        forgotParams.TopMargin = Dp(2);
+        root.AddView(forgotPassword, forgotParams);
         EditText projectInput = AddCloudDialogField(root, "Default project", AppSettings.CloudDefaultProjectName, isPassword: false, hint: "Project name");
 
         var rememberCheck = new CheckBox(this)
@@ -1362,14 +1363,48 @@ public sealed class MainActivity : AppCompatActivity
             SetCloudDialogCommandEnabled(signIn, !busy);
             SetCloudDialogCommandEnabled(close, !busy);
             SetCloudDialogCommandEnabled(signOut, !busy);
-            foreach (TextView button in serverProfileButtons)
-                SetCloudDialogCommandEnabled(button, !busy);
-            serverInput.Enabled = !busy;
+            SetCloudDialogCommandEnabled(forgotPassword, !busy);
             emailInput.Enabled = !busy;
             passwordInput.Enabled = !busy;
             projectInput.Enabled = !busy;
             rememberCheck.Enabled = !busy;
         }
+
+        forgotPassword.Click += async (_, _) =>
+        {
+            SetBusy(true);
+            status.SetTextColor(GetColorCompat(Resource.Color.fa_text_secondary));
+            status.Text = "Opening password reset...";
+            try
+            {
+                string email = emailInput.Text?.Trim() ?? "";
+                if (cloudClient.IsSignedIn)
+                {
+                    await CloseActiveCloudSessionAsync("password reset").ConfigureAwait(true);
+                    if (_isDestroyed || !dialog.IsShowing)
+                        return;
+                    SignOutCloudLocally();
+                }
+
+                if (_isDestroyed || !dialog.IsShowing)
+                    return;
+
+                dialog.Dismiss();
+                ShowCloudPasswordResetStartDialog(email);
+            }
+            catch (Exception ex)
+            {
+                if (_isDestroyed || !dialog.IsShowing)
+                    return;
+                status.SetTextColor(GetColorCompat(Resource.Color.fa_warning));
+                status.Text = ex.GetBaseException().Message;
+            }
+            finally
+            {
+                if (!_isDestroyed && dialog.IsShowing)
+                    SetBusy(false);
+            }
+        };
 
         signIn.Click += async (_, _) =>
         {
@@ -1378,15 +1413,29 @@ public sealed class MainActivity : AppCompatActivity
             status.Text = "Signing in...";
             try
             {
-                string server = serverInput.Text?.Trim() ?? "";
                 string email = emailInput.Text?.Trim() ?? "";
                 string password = passwordInput.Text ?? "";
                 string project = projectInput.Text?.Trim() ?? "";
-                await cloudClient.SignInAsync(server, email, password, rememberCheck.Checked, _activityDestroyCts.Token);
+                CloudSignInOutcome outcome = await cloudClient.SignInAsync(AppSettings.CloudServerUrl, email, password, rememberCheck.Checked, _activityDestroyCts.Token);
                 if (_isDestroyed || !dialog.IsShowing)
                     return;
                 if (!string.IsNullOrWhiteSpace(project))
                     AppSettings.CloudDefaultProjectName = project;
+
+                if (outcome.Kind == CloudSignInOutcomeKind.TotpEnrollmentRequired)
+                {
+                    dialog.Dismiss();
+                    ShowCloudTotpEnrollmentDialog(outcome, project);
+                    return;
+                }
+
+                if (outcome.Kind == CloudSignInOutcomeKind.TotpRequired)
+                {
+                    dialog.Dismiss();
+                    ShowCloudTotpSignInDialog(outcome, project);
+                    return;
+                }
+
                 subtitle.Text = email;
                 subtitle.SetTextColor(GetColorCompat(Resource.Color.fa_accent_500));
                 status.Text = "Signed in as " + email;
@@ -1434,40 +1483,719 @@ public sealed class MainActivity : AppCompatActivity
         };
     }
 
-    private TextView[] AddCloudServerProfileButtons(ViewGroup parent, EditText serverInput)
+    private void ShowCloudTotpSignInDialog(CloudSignInOutcome challenge, string project)
     {
-        var row = new LinearLayout(this) { Orientation = Orientation.Horizontal };
-        SetMarginTop(row, Dp(6));
+        if (_cloudClient is not { } cloudClient || _isDestroyed)
+            return;
 
-        TextView localLan = CreateCloudDialogCommandButton("Local LAN", primary: false);
-        TextView internet = CreateCloudDialogCommandButton("Internet", primary: false);
-        localLan.Click += (_, _) => SetCloudServerInput(serverInput, CloudServerUrls.LocalLanUrl);
-        internet.Click += (_, _) => SetCloudServerInput(serverInput, CloudServerUrls.InternetUrl);
+        var dialog = CreateCloudDialog();
+        var root = CreateCloudDialogRoot();
+        AddCloudDialogHeader(root, "Authenticator code", challenge.Email);
+        AddCloudDialogText(root, "Enter the 6-digit code from your authenticator app to finish signing in.");
+        EditText codeInput = AddCloudTotpCodeField(root, "Authenticator code");
+        var status = AddCloudDialogStatus(root, "Waiting for code");
 
-        row.AddView(localLan, new LinearLayout.LayoutParams(0, Dp(40), 1f));
-        var internetParams = new LinearLayout.LayoutParams(0, Dp(40), 1f);
-        internetParams.LeftMargin = Dp(8);
-        row.AddView(internet, internetParams);
-        parent.AddView(row, new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MatchParent,
+        var actions = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        actions.SetGravity(GravityFlags.End | GravityFlags.CenterVertical);
+        SetMarginTop(actions, Dp(14));
+
+        TextView cancel = CreateCloudDialogCommandButton("Cancel", primary: false);
+        actions.AddView(cancel, new LinearLayout.LayoutParams(Dp(92), Dp(44)));
+
+        TextView verify = CreateCloudDialogCommandButton("Verify", primary: true);
+        var verifyParams = new LinearLayout.LayoutParams(Dp(104), Dp(44));
+        verifyParams.LeftMargin = Dp(8);
+        actions.AddView(verify, verifyParams);
+        root.AddView(actions);
+
+        dialog.SetContentView(root);
+        ShowCloudDialog(dialog);
+        cancel.Click += (_, _) => dialog.Dismiss();
+
+        void SetBusy(bool busy)
+        {
+            SetCloudDialogCommandEnabled(cancel, !busy);
+            SetCloudDialogCommandEnabled(verify, !busy);
+            codeInput.Enabled = !busy;
+        }
+
+        verify.Click += async (_, _) =>
+        {
+            SetBusy(true);
+            status.SetTextColor(GetColorCompat(Resource.Color.fa_text_secondary));
+            status.Text = "Verifying code...";
+            try
+            {
+                await cloudClient.VerifyTotpSignInAsync(
+                    challenge.ServerUrl,
+                    challenge.Email,
+                    challenge.ChallengeId ?? "",
+                    codeInput.Text ?? "",
+                    challenge.RememberCredentials,
+                    _activityDestroyCts.Token);
+                if (_isDestroyed || !dialog.IsShowing)
+                    return;
+                if (!string.IsNullOrWhiteSpace(project))
+                    AppSettings.CloudDefaultProjectName = project;
+                Toast.MakeText(this, "Cloud sign-in complete", ToastLength.Short)?.Show();
+                dialog.Dismiss();
+                RefreshCloudPanelAfterAuthChange();
+            }
+            catch (Exception ex)
+            {
+                if (_isDestroyed || !dialog.IsShowing)
+                    return;
+                status.SetTextColor(GetColorCompat(Resource.Color.fa_warning));
+                status.Text = ex.GetBaseException().Message;
+            }
+            finally
+            {
+                if (!_isDestroyed && dialog.IsShowing)
+                    SetBusy(false);
+            }
+        };
+    }
+
+    private void ShowCloudTotpEnrollmentDialog(CloudSignInOutcome enrollment, string project)
+    {
+        if (_cloudClient is not { } cloudClient || _isDestroyed)
+            return;
+
+        string temporaryAccessToken = enrollment.TemporaryAccessToken ?? "";
+        var dialog = CreateCloudDialog();
+        var root = CreateCloudDialogRoot();
+        AddCloudDialogHeader(root, "Set up authenticator", enrollment.Email);
+        AddCloudDialogText(root, "Scan the QR code or copy the manual secret into your authenticator app, then enter the 6-digit code.");
+
+        var qrImage = new ImageView(this)
+        {
+            Visibility = ViewStates.Gone,
+        };
+        qrImage.SetAdjustViewBounds(true);
+        var qrParams = new LinearLayout.LayoutParams(Dp(180), Dp(180));
+        qrParams.Gravity = GravityFlags.CenterHorizontal;
+        qrParams.TopMargin = Dp(8);
+        root.AddView(qrImage, qrParams);
+
+        AddCloudDialogLabel(root, "Manual secret");
+        TextView secretValue = new(this)
+        {
+            Text = "Loading...",
+            Background = CreateCloudDialogInputBackground(),
+        };
+        secretValue.SetTextColor(GetColorCompat(Resource.Color.fa_text_primary));
+        secretValue.SetTextSize(ComplexUnitType.Px, Dp(13));
+        secretValue.SetPadding(Dp(12), Dp(8), Dp(12), Dp(8));
+        secretValue.SetSingleLine(false);
+        secretValue.SetTextIsSelectable(true);
+        root.AddView(secretValue, new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MatchParent,
             ViewGroup.LayoutParams.WrapContent));
 
-        return [localLan, internet];
+        var copySecret = CreateCloudDialogCommandButton("Copy secret", primary: false);
+        var copyParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, Dp(38));
+        copyParams.TopMargin = Dp(8);
+        root.AddView(copySecret, copyParams);
+
+        EditText codeInput = AddCloudTotpCodeField(root, "Authenticator code");
+        codeInput.Enabled = false;
+        var status = AddCloudDialogStatus(root, "Starting TOTP enrollment...");
+
+        var actions = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        actions.SetGravity(GravityFlags.End | GravityFlags.CenterVertical);
+        SetMarginTop(actions, Dp(14));
+
+        TextView cancel = CreateCloudDialogCommandButton("Cancel", primary: false);
+        actions.AddView(cancel, new LinearLayout.LayoutParams(Dp(92), Dp(44)));
+
+        TextView verify = CreateCloudDialogCommandButton("Enroll", primary: true);
+        SetCloudDialogCommandEnabled(verify, false);
+        var verifyParams = new LinearLayout.LayoutParams(Dp(104), Dp(44));
+        verifyParams.LeftMargin = Dp(8);
+        actions.AddView(verify, verifyParams);
+        root.AddView(actions);
+
+        dialog.SetContentView(root);
+        ShowCloudDialog(dialog);
+        cancel.Click += (_, _) => dialog.Dismiss();
+
+        CloudTotpEnrollmentStartResult? startResult = null;
+        copySecret.Click += (_, _) =>
+        {
+            string? secret = startResult?.RawSecret;
+            if (!string.IsNullOrWhiteSpace(secret))
+                CopyToClipboard("FA Cloud TOTP secret", secret);
+        };
+
+        void SetBusy(bool busy)
+        {
+            SetCloudDialogCommandEnabled(cancel, !busy);
+            SetCloudDialogCommandEnabled(verify, !busy && startResult is not null);
+            codeInput.Enabled = !busy && startResult is not null;
+            SetCloudDialogCommandEnabled(copySecret, !busy && !string.IsNullOrWhiteSpace(startResult?.RawSecret));
+        }
+
+        _ = LoadEnrollmentAsync();
+
+        async Task LoadEnrollmentAsync()
+        {
+            SetBusy(true);
+            try
+            {
+                startResult = await cloudClient.StartTotpEnrollmentAsync(
+                    enrollment.ServerUrl,
+                    temporaryAccessToken,
+                    _activityDestroyCts.Token);
+                if (_isDestroyed || !dialog.IsShowing)
+                    return;
+
+                secretValue.Text = string.IsNullOrWhiteSpace(startResult.RawSecret)
+                    ? "Manual secret unavailable"
+                    : startResult.RawSecret;
+                if (!string.IsNullOrWhiteSpace(startResult.OtpAuthUri)
+                    && CreateTotpQrBitmap(startResult.OtpAuthUri, Dp(180)) is { } qr)
+                {
+                    qrImage.SetImageBitmap(qr);
+                    qrImage.Visibility = ViewStates.Visible;
+                }
+                status.Text = "Enter the code from your authenticator app.";
+            }
+            catch (Exception ex)
+            {
+                if (_isDestroyed || !dialog.IsShowing)
+                    return;
+                status.SetTextColor(GetColorCompat(Resource.Color.fa_warning));
+                status.Text = ex.GetBaseException().Message;
+            }
+            finally
+            {
+                if (!_isDestroyed && dialog.IsShowing)
+                    SetBusy(false);
+            }
+        }
+
+        verify.Click += async (_, _) =>
+        {
+            if (startResult is null)
+                return;
+
+            SetBusy(true);
+            status.SetTextColor(GetColorCompat(Resource.Color.fa_text_secondary));
+            status.Text = "Verifying enrollment...";
+            try
+            {
+                CloudTotpEnrollmentVerifyResult result = await cloudClient.VerifyTotpEnrollmentAsync(
+                    enrollment.ServerUrl,
+                    temporaryAccessToken,
+                    codeInput.Text ?? "",
+                    _activityDestroyCts.Token);
+                if (_isDestroyed || !dialog.IsShowing)
+                    return;
+                if (!string.IsNullOrWhiteSpace(project))
+                    AppSettings.CloudDefaultProjectName = project;
+                dialog.Dismiss();
+                ShowCloudTotpBackupCodesDialog(result.BackupCodes ?? Array.Empty<string>());
+            }
+            catch (Exception ex)
+            {
+                if (_isDestroyed || !dialog.IsShowing)
+                    return;
+                status.SetTextColor(GetColorCompat(Resource.Color.fa_warning));
+                status.Text = ex.GetBaseException().Message;
+            }
+            finally
+            {
+                if (!_isDestroyed && dialog.IsShowing)
+                    SetBusy(false);
+            }
+        };
     }
 
-    private static void SetCloudServerInput(EditText input, string value)
+    private void ShowCloudTotpBackupCodesDialog(IReadOnlyList<string> backupCodes)
     {
-        input.Text = value;
-        input.SetSelection(value.Length);
+        if (_isDestroyed)
+            return;
+
+        var dialog = CreateCloudDialog();
+        var root = CreateCloudDialogRoot();
+        AddCloudDialogHeader(root, "Backup codes", "Save these codes now");
+        AddCloudDialogText(root, "These backup codes are shown once. Store them somewhere secure, then sign in again with your authenticator code.");
+
+        string codesText = backupCodes.Count == 0
+            ? "No backup codes were returned by the server."
+            : string.Join(System.Environment.NewLine, backupCodes);
+        var codes = new TextView(this)
+        {
+            Text = codesText,
+            Background = CreateCloudDialogInputBackground(),
+        };
+        codes.SetTypeface(Typeface.Monospace, TypefaceStyle.Normal);
+        codes.SetTextColor(GetColorCompat(Resource.Color.fa_text_primary));
+        codes.SetTextSize(ComplexUnitType.Px, Dp(14));
+        codes.SetPadding(Dp(12), Dp(10), Dp(12), Dp(10));
+        codes.SetSingleLine(false);
+        codes.SetTextIsSelectable(true);
+        root.AddView(codes, new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MatchParent,
+            ViewGroup.LayoutParams.WrapContent));
+
+        var actions = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        actions.SetGravity(GravityFlags.End | GravityFlags.CenterVertical);
+        SetMarginTop(actions, Dp(14));
+
+        TextView copy = CreateCloudDialogCommandButton("Copy", primary: false);
+        actions.AddView(copy, new LinearLayout.LayoutParams(Dp(92), Dp(44)));
+
+        TextView signInAgain = CreateCloudDialogCommandButton("Sign in", primary: true);
+        var signInParams = new LinearLayout.LayoutParams(Dp(104), Dp(44));
+        signInParams.LeftMargin = Dp(8);
+        actions.AddView(signInAgain, signInParams);
+        root.AddView(actions);
+
+        dialog.SetContentView(root);
+        ShowCloudDialog(dialog);
+        copy.Click += (_, _) => CopyToClipboard("FA Cloud backup codes", codesText);
+        signInAgain.Click += (_, _) =>
+        {
+            dialog.Dismiss();
+            ShowCloudAccountDialog();
+        };
     }
 
-    private EditText AddCloudDialogField(ViewGroup parent, string label, string value, bool isPassword, string? hint)
+    private void ShowCloudPasswordResetStartDialog(
+        string initialEmail,
+        string? passwordError = null,
+        string? initialStatus = null)
+    {
+        if (_cloudClient is not { } cloudClient || _isDestroyed)
+            return;
+
+        var dialog = CreateCloudDialog();
+        var root = CreateCloudDialogRoot();
+        AddCloudDialogHeader(root, "Reset password", "Authenticator required");
+        AddCloudDialogText(root, "Enter your email and a new password. You will verify the reset with your authenticator or backup code.");
+
+        EditText emailInput = AddCloudDialogField(root, "User / email", initialEmail, isPassword: false, hint: "user@example.com");
+        EditText newPasswordInput = AddCloudDialogField(root, "New password", "", isPassword: true, hint: "New password");
+        EditText confirmPasswordInput = AddCloudDialogField(root, "Confirm new password", "", isPassword: true, hint: "Confirm new password");
+
+        var passwordStatus = AddCloudDialogStatus(root, passwordError ?? "");
+        passwordStatus.SetTextColor(GetColorCompat(Resource.Color.fa_warning));
+        passwordStatus.Visibility = string.IsNullOrWhiteSpace(passwordError) ? ViewStates.Gone : ViewStates.Visible;
+
+        var status = AddCloudDialogStatus(root, initialStatus ?? "Password reset requires a TOTP or backup code.");
+
+        var actions = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        actions.SetGravity(GravityFlags.End | GravityFlags.CenterVertical);
+        SetMarginTop(actions, Dp(14));
+
+        TextView cancel = CreateCloudDialogCommandButton("Cancel", primary: false);
+        actions.AddView(cancel, new LinearLayout.LayoutParams(Dp(92), Dp(44)));
+
+        TextView next = CreateCloudDialogCommandButton("Continue", primary: true);
+        var nextParams = new LinearLayout.LayoutParams(Dp(116), Dp(44));
+        nextParams.LeftMargin = Dp(8);
+        actions.AddView(next, nextParams);
+        root.AddView(actions);
+
+        void ClearInputSecrets()
+        {
+            newPasswordInput.Text = "";
+            confirmPasswordInput.Text = "";
+        }
+
+        dialog.SetContentView(root);
+        dialog.DismissEvent += (_, _) => ClearInputSecrets();
+        ShowCloudDialog(dialog);
+        cancel.Click += (_, _) => dialog.Dismiss();
+
+        void SetBusy(bool busy)
+        {
+            SetCloudDialogCommandEnabled(cancel, !busy);
+            SetCloudDialogCommandEnabled(next, !busy);
+            emailInput.Enabled = !busy;
+            newPasswordInput.Enabled = !busy;
+            confirmPasswordInput.Enabled = !busy;
+        }
+
+        next.Click += async (_, _) =>
+        {
+            SetBusy(true);
+            passwordStatus.Visibility = ViewStates.Gone;
+            status.SetTextColor(GetColorCompat(Resource.Color.fa_text_secondary));
+            status.Text = "Requesting reset challenge...";
+
+            try
+            {
+                string email = emailInput.Text?.Trim() ?? "";
+                string newPassword = newPasswordInput.Text ?? "";
+                string confirmPassword = confirmPasswordInput.Text ?? "";
+                CloudPasswordResetFlow.ValidateNewPasswordStep(email, newPassword, confirmPassword);
+
+                CloudPasswordResetChallenge challenge = await cloudClient.StartPasswordResetAsync(
+                    AppSettings.CloudServerUrl,
+                    email,
+                    _activityDestroyCts.Token).ConfigureAwait(true);
+
+                if (_isDestroyed || !dialog.IsShowing)
+                {
+                    newPassword = "";
+                    return;
+                }
+
+                AppSettings.CloudUserEmail = email;
+                ClearInputSecrets();
+                dialog.Dismiss();
+                ShowCloudPasswordResetCodeDialog(challenge, newPassword);
+            }
+            catch (CloudApiException ex) when (ex.Code == "password_mismatch" || ex.Code == "password_required")
+            {
+                if (_isDestroyed || !dialog.IsShowing)
+                    return;
+                passwordStatus.Text = ex.Message;
+                passwordStatus.Visibility = ViewStates.Visible;
+                status.Text = "Fix the new password fields and continue.";
+            }
+            catch (Exception ex)
+            {
+                if (_isDestroyed || !dialog.IsShowing)
+                    return;
+                var kind = CloudPasswordResetFlow.ClassifyFailure(ex);
+                status.SetTextColor(GetColorCompat(Resource.Color.fa_warning));
+                status.Text = kind == CloudPasswordResetFailureKind.TotpUnavailable
+                    ? CloudPasswordResetFlow.TotpUnavailableMessage
+                    : CloudPasswordResetFlow.UserMessageForFailure(ex);
+            }
+            finally
+            {
+                if (!_isDestroyed && dialog.IsShowing)
+                    SetBusy(false);
+            }
+        };
+    }
+
+    private void ShowCloudPasswordResetCodeDialog(CloudPasswordResetChallenge challenge, string newPassword)
+    {
+        if (_cloudClient is not { } cloudClient || _isDestroyed)
+            return;
+
+        string serverUrl = challenge.ServerUrl;
+        string email = challenge.Email;
+        string challengeId = challenge.ChallengeId;
+
+        var dialog = CreateCloudDialog();
+        var root = CreateCloudDialogRoot();
+        AddCloudDialogHeader(root, "Verify reset", email);
+        AddCloudDialogText(root, "Enter the current authenticator code or one backup code to change the password.");
+
+        EditText codeInput = AddCloudDialogField(root, "Authenticator or backup code", "", isPassword: false, hint: "123456 or backup code");
+        var status = AddCloudDialogStatus(root, "Waiting for code");
+
+        var actions = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        actions.SetGravity(GravityFlags.End | GravityFlags.CenterVertical);
+        SetMarginTop(actions, Dp(14));
+
+        TextView back = CreateCloudDialogCommandButton("Back", primary: false);
+        actions.AddView(back, new LinearLayout.LayoutParams(Dp(84), Dp(44)));
+
+        TextView cancel = CreateCloudDialogCommandButton("Cancel", primary: false);
+        var cancelParams = new LinearLayout.LayoutParams(Dp(92), Dp(44));
+        cancelParams.LeftMargin = Dp(8);
+        actions.AddView(cancel, cancelParams);
+
+        TextView reset = CreateCloudDialogCommandButton("Reset", primary: true);
+        var resetParams = new LinearLayout.LayoutParams(Dp(104), Dp(44));
+        resetParams.LeftMargin = Dp(8);
+        actions.AddView(reset, resetParams);
+        root.AddView(actions);
+
+        void ClearSecrets()
+        {
+            codeInput.Text = "";
+            newPassword = "";
+            challengeId = "";
+        }
+
+        dialog.SetContentView(root);
+        dialog.DismissEvent += (_, _) => ClearSecrets();
+        ShowCloudDialog(dialog);
+        cancel.Click += (_, _) => dialog.Dismiss();
+        back.Click += (_, _) =>
+        {
+            ClearSecrets();
+            dialog.Dismiss();
+            ShowCloudPasswordResetStartDialog(email);
+        };
+
+        void SetBusy(bool busy)
+        {
+            SetCloudDialogCommandEnabled(back, !busy);
+            SetCloudDialogCommandEnabled(cancel, !busy);
+            SetCloudDialogCommandEnabled(reset, !busy);
+            codeInput.Enabled = !busy;
+        }
+
+        reset.Click += async (_, _) =>
+        {
+            SetBusy(true);
+            status.SetTextColor(GetColorCompat(Resource.Color.fa_text_secondary));
+            status.Text = "Resetting password...";
+
+            try
+            {
+                await cloudClient.VerifyPasswordResetAsync(
+                    serverUrl,
+                    challengeId,
+                    codeInput.Text ?? "",
+                    newPassword,
+                    _activityDestroyCts.Token).ConfigureAwait(true);
+
+                if (_isDestroyed || !dialog.IsShowing)
+                    return;
+
+                ClearSecrets();
+                dialog.Dismiss();
+                RefreshCloudPanelAfterAuthChange();
+                ShowCloudPasswordResetSuccessDialog(email);
+            }
+            catch (Exception ex)
+            {
+                if (_isDestroyed || !dialog.IsShowing)
+                    return;
+
+                var kind = CloudPasswordResetFlow.ClassifyFailure(ex);
+                string message = CloudPasswordResetFlow.UserMessageForFailure(ex);
+                status.SetTextColor(GetColorCompat(Resource.Color.fa_warning));
+
+                if (kind == CloudPasswordResetFailureKind.ExpiredChallenge)
+                {
+                    ClearSecrets();
+                    dialog.Dismiss();
+                    ShowCloudPasswordResetStartDialog(email, initialStatus: message);
+                    return;
+                }
+
+                if (kind == CloudPasswordResetFailureKind.PasswordPolicy)
+                {
+                    ClearSecrets();
+                    dialog.Dismiss();
+                    ShowCloudPasswordResetStartDialog(email, passwordError: message, initialStatus: "Choose a different password.");
+                    return;
+                }
+
+                status.Text = kind == CloudPasswordResetFailureKind.TotpUnavailable
+                    ? CloudPasswordResetFlow.TotpUnavailableMessage
+                    : message;
+            }
+            finally
+            {
+                if (!_isDestroyed && dialog.IsShowing)
+                    SetBusy(false);
+            }
+        };
+    }
+
+    private void ShowCloudPasswordResetSuccessDialog(string email)
+    {
+        if (_isDestroyed)
+            return;
+
+        var dialog = CreateCloudDialog();
+        var root = CreateCloudDialogRoot();
+        AddCloudDialogHeader(root, "Password changed", email);
+        AddCloudDialogText(root, "Password changed. Sign in with your new password.");
+
+        var actions = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        actions.SetGravity(GravityFlags.End | GravityFlags.CenterVertical);
+        SetMarginTop(actions, Dp(14));
+
+        TextView signIn = CreateCloudDialogCommandButton("Sign in", primary: true);
+        actions.AddView(signIn, new LinearLayout.LayoutParams(Dp(104), Dp(44)));
+        root.AddView(actions);
+
+        dialog.SetContentView(root);
+        ShowCloudDialog(dialog);
+        signIn.Click += (_, _) =>
+        {
+            dialog.Dismiss();
+            ShowCloudAccountDialog();
+        };
+    }
+
+    private global::Android.App.Dialog CreateCloudDialog()
+    {
+        var dialog = new global::Android.App.Dialog(this);
+        dialog.RequestWindowFeature((int)WindowFeatures.NoTitle);
+        dialog.Window?.SetBackgroundDrawable(new ColorDrawable(Color.Transparent));
+        dialog.Window?.SetSoftInputMode(SoftInput.AdjustResize);
+        return dialog;
+    }
+
+    private LinearLayout CreateCloudDialogRoot()
+    {
+        var root = new LinearLayout(this)
+        {
+            Orientation = Orientation.Vertical,
+            Background = CreateCloudDialogBackground(),
+        };
+        root.SetPadding(Dp(16), Dp(14), Dp(16), Dp(14));
+        return root;
+    }
+
+    private void AddCloudDialogHeader(ViewGroup root, string titleText, string subtitleText)
+    {
+        var header = new LinearLayout(this)
+        {
+            Orientation = Orientation.Horizontal,
+        };
+        header.SetGravity(GravityFlags.CenterVertical);
+        SetMarginBottom(header, Dp(12));
+
+        var iconBox = new FrameLayout(this)
+        {
+            Background = CreateCloudDialogIconBackground(),
+        };
+        var icon = new ImageView(this);
+        icon.SetImageResource(Resource.Drawable.ic_cloud);
+        icon.ImageTintList = ColorStateList.ValueOf(GetColorCompat(Resource.Color.fa_accent_500));
+        iconBox.AddView(icon, new FrameLayout.LayoutParams(Dp(24), Dp(24), GravityFlags.Center));
+        var iconParams = new LinearLayout.LayoutParams(Dp(44), Dp(44));
+        iconParams.RightMargin = Dp(12);
+        header.AddView(iconBox, iconParams);
+
+        var titleGroup = new LinearLayout(this) { Orientation = Orientation.Vertical };
+        header.AddView(titleGroup, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f));
+
+        var title = new TextView(this)
+        {
+            Text = titleText,
+            Ellipsize = TextUtils.TruncateAt.End,
+        };
+        title.SetSingleLine(true);
+        title.SetTypeface(Typeface.Default, TypefaceStyle.Bold);
+        title.SetTextColor(GetColorCompat(Resource.Color.fa_text_primary));
+        title.SetTextSize(ComplexUnitType.Px, Dp(20));
+        titleGroup.AddView(title);
+
+        var subtitle = new TextView(this)
+        {
+            Text = subtitleText,
+            Ellipsize = TextUtils.TruncateAt.End,
+        };
+        subtitle.SetSingleLine(true);
+        subtitle.SetTextColor(GetColorCompat(Resource.Color.fa_text_secondary));
+        subtitle.SetTextSize(ComplexUnitType.Px, Dp(13));
+        titleGroup.AddView(subtitle);
+
+        root.AddView(header);
+    }
+
+    private TextView AddCloudDialogLabel(ViewGroup parent, string label)
     {
         var labelView = new TextView(this) { Text = label };
         labelView.SetTextColor(GetColorCompat(Resource.Color.fa_text_secondary));
         labelView.SetTextSize(ComplexUnitType.Px, Dp(12));
         SetMarginTop(labelView, Dp(7));
         parent.AddView(labelView);
+        return labelView;
+    }
+
+    private TextView AddCloudDialogStatus(ViewGroup parent, string text)
+    {
+        var status = new TextView(this);
+        status.SetTextSize(ComplexUnitType.Px, Dp(13));
+        status.SetTextColor(GetColorCompat(Resource.Color.fa_text_secondary));
+        status.Text = text;
+        status.SetSingleLine(false);
+        status.SetMaxLines(3);
+        SetMarginTop(status, Dp(8));
+        parent.AddView(status);
+        return status;
+    }
+
+    private void AddCloudDialogText(ViewGroup parent, string text)
+    {
+        var body = new TextView(this) { Text = text };
+        body.SetTextColor(GetColorCompat(Resource.Color.fa_text_secondary));
+        body.SetTextSize(ComplexUnitType.Px, Dp(13));
+        body.SetSingleLine(false);
+        parent.AddView(body);
+    }
+
+    private void ShowCloudDialog(global::Android.App.Dialog dialog)
+    {
+        ShowOwnedDialog(dialog);
+        int screenWidth = Resources?.DisplayMetrics?.WidthPixels ?? Dp(460);
+        int width = Math.Min(Dp(520), Math.Max(Dp(340), screenWidth - Dp(56)));
+        dialog.Window?.SetBackgroundDrawable(new ColorDrawable(Color.Transparent));
+        dialog.Window?.SetLayout(width, ViewGroup.LayoutParams.WrapContent);
+    }
+
+    private EditText AddCloudTotpCodeField(ViewGroup parent, string label)
+    {
+        EditText input = AddCloudDialogField(parent, label, "", isPassword: false, hint: "123456");
+        input.InputType = InputTypes.ClassNumber;
+        input.Gravity = GravityFlags.CenterVertical;
+        return input;
+    }
+
+    private void RefreshCloudPanelAfterAuthChange()
+    {
+        UpdateCloudAccountButton();
+        UpdateSaveButton();
+        if (_leftToolPanelKind == LeftToolPanelKind.Cloud)
+        {
+            SetLeftToolPanelExpanded(false, animate: false);
+            ToggleCloudPanel();
+        }
+        else
+        {
+            _cloudPanel?.Refresh();
+        }
+    }
+
+    private void CopyToClipboard(string label, string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return;
+
+        if (GetSystemService(ClipboardService) is global::Android.Content.ClipboardManager clipboard)
+        {
+            clipboard.PrimaryClip = ClipData.NewPlainText(label, value);
+            Toast.MakeText(this, "Copied", ToastLength.Short)?.Show();
+        }
+    }
+
+    private static Bitmap? CreateTotpQrBitmap(string value, int sizePx)
+    {
+        try
+        {
+            var matrix = new QRCodeWriter().encode(value, BarcodeFormat.QR_CODE, sizePx, sizePx);
+            Bitmap bitmap = Bitmap.CreateBitmap(sizePx, sizePx, Bitmap.Config.Argb8888!)
+                ?? throw new InvalidOperationException("Could not create QR bitmap.");
+            int black = Color.Black.ToArgb();
+            int white = Color.White.ToArgb();
+            var pixels = new int[sizePx * sizePx];
+            for (int y = 0; y < sizePx; y++)
+            {
+                int row = y * sizePx;
+                for (int x = 0; x < sizePx; x++)
+                    pixels[row + x] = matrix[x, y] ? black : white;
+            }
+
+            bitmap.SetPixels(pixels, 0, sizePx, 0, 0, sizePx, sizePx);
+            return bitmap;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            global::Android.Util.Log.Warn("FA.Cloud", "Could not render TOTP QR code: " + ex.Message);
+            return null;
+        }
+    }
+
+    private EditText AddCloudDialogField(ViewGroup parent, string label, string value, bool isPassword, string? hint)
+    {
+        AddCloudDialogLabel(parent, label);
 
         var input = new EditText(this)
         {
@@ -1505,6 +2233,24 @@ public sealed class MainActivity : AppCompatActivity
         button.SetTypeface(Typeface.Default, TypefaceStyle.Bold);
         button.SetTextSize(ComplexUnitType.Px, Dp(13));
         button.SetTextColor(GetColorCompat(primary ? Resource.Color.fa_on_accent : Resource.Color.fa_accent_500));
+        button.SetPadding(Dp(8), 0, Dp(8), 0);
+        button.ContentDescription = text;
+        return button;
+    }
+
+    private TextView CreateCloudDialogLinkButton(string text)
+    {
+        var button = new TextView(this)
+        {
+            Text = text,
+            Gravity = GravityFlags.CenterVertical,
+            Clickable = true,
+            Focusable = true,
+        };
+        button.SetSingleLine(true);
+        button.SetTypeface(Typeface.Default, TypefaceStyle.Bold);
+        button.SetTextSize(ComplexUnitType.Px, Dp(13));
+        button.SetTextColor(GetColorCompat(Resource.Color.fa_accent_500));
         button.SetPadding(Dp(8), 0, Dp(8), 0);
         button.ContentDescription = text;
         return button;

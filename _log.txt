@@ -1,0 +1,5 @@
+﻿e07de77 updates
+6eeee6f updates
+3bf92c8 Clean Phase D leftovers and stale phase tags
+e11c3b5 Phase D-1: log batch potential at scene attach
+1ea9e13 Phase C: screen-space silhouette hybrid + section curves request-render fix

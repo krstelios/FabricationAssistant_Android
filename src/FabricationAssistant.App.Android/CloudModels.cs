@@ -95,7 +95,46 @@ internal sealed record CloudSignInResult(
     [property: JsonPropertyName("session_family_id")] string? SessionFamilyId,
     [property: JsonPropertyName("requires_totp")] bool RequiresTotp,
     [property: JsonPropertyName("requires_totp_enrollment")] bool RequiresTotpEnrollment,
-    [property: JsonPropertyName("must_change_password")] bool MustChangePassword);
+    [property: JsonPropertyName("must_change_password")] bool MustChangePassword,
+    [property: JsonPropertyName("challenge_id")] string? ChallengeId);
+
+public enum CloudSignInOutcomeKind
+{
+    SignedIn,
+    TotpRequired,
+    TotpEnrollmentRequired,
+}
+
+public sealed record CloudSignInOutcome(
+    CloudSignInOutcomeKind Kind,
+    string ServerUrl,
+    string Email,
+    bool RememberCredentials,
+    string? TemporaryAccessToken,
+    DateTimeOffset? TemporaryAccessTokenExpiresAt,
+    string? ChallengeId);
+
+public sealed record CloudTotpEnrollmentStartResult(
+    [property: JsonPropertyName("otpauth_uri")] string? OtpAuthUri,
+    [property: JsonPropertyName("raw_secret")] string? RawSecret);
+
+public sealed record CloudTotpEnrollmentVerifyResult(
+    [property: JsonPropertyName("backup_codes")] IReadOnlyList<string>? BackupCodes);
+
+internal sealed record CloudPasswordResetStartResult(
+    [property: JsonPropertyName("challenge_id")] string? ChallengeId,
+    [property: JsonPropertyName("message")] string? Message,
+    [property: JsonPropertyName("detail")] string? Detail = null,
+    [property: JsonPropertyName("title")] string? Title = null,
+    [property: JsonPropertyName("error")] string? Error = null);
+
+public sealed record CloudPasswordResetChallenge(
+    string ServerUrl,
+    string Email,
+    string ChallengeId);
+
+internal sealed record CloudPasswordResetVerifyResult(
+    [property: JsonPropertyName("status")] string? Status);
 
 internal sealed record CloudRefreshResult(
     [property: JsonPropertyName("token_type")] string? TokenType,
@@ -174,6 +213,7 @@ internal sealed record CloudOperationResponse(
 
 internal sealed record CloudProblemDetails(
     [property: JsonPropertyName("title")] string? Title,
+    [property: JsonPropertyName("detail")] string? Detail,
     [property: JsonPropertyName("status")] int? Status,
     [property: JsonPropertyName("code")] string? Code);
 

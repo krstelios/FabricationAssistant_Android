@@ -12,7 +12,7 @@ namespace FabricationAssistant.App.Android;
 public static class AppSettings
 {
     private const string FileName = "fa_settings";
-    private const int SettingsSchemaVersion = 19;
+    private const int SettingsSchemaVersion = 21;
 
     private const int DefaultAoSampleCount = SceneAppearanceDefaults.AoSampleCount;
     private const int MinAoSampleCount = 1;
@@ -95,11 +95,6 @@ public static class AppSettings
     private const float MaxMouseSpeed = 5.0f;
     private const float MinMouseDragThresholdDip = 1.0f;
     private const float MaxMouseDragThresholdDip = 20.0f;
-#if DEBUG
-    private const string DefaultCloudServerUrl = CloudServerUrls.LocalLanUrl;
-#else
-    private const string DefaultCloudServerUrl = CloudServerUrls.InternetUrl;
-#endif
     private const string DefaultCloudUserEmail = "";
     private const string DefaultCloudProjectName = "";
 
@@ -199,6 +194,7 @@ public static class AppSettings
         ISharedPreferences prefs = context.GetSharedPreferences(FileName, FileCreationMode.Private)
             ?? throw new InvalidOperationException("Context.GetSharedPreferences returned null.");
         System.Threading.Interlocked.CompareExchange(ref _prefs, prefs, null);
+        CloudServerConfig.Initialize(context);
         MigrateDefaultsIfNeeded();
     }
 
@@ -432,7 +428,16 @@ public static class AppSettings
     }
 
     // FA Cloud
-    public static string CloudServerUrl { get => CloudServerUrls.NormalizeKnownProfileUrl(Get("cloud_server_url", DefaultCloudServerUrl)); set => Put("cloud_server_url", CloudServerUrls.NormalizeKnownProfileUrl(value)); }
+    public static string CloudServerUrl
+    {
+        get => CloudServerConfig.ServerUrl;
+        set => Edit(editor => editor.Remove("cloud_server_url"));
+    }
+    public static string CloudServerConfigPath => CloudServerConfig.ConfigPath;
+    public static int CloudServerProfileSelectionIndex => CloudServerConfig.ProfileSelectionIndex;
+    public static string CloudServerProfileDisplayName => CloudServerConfig.ProfileDisplayName;
+    public static string CloudServerSelectedUrlKey => CloudServerConfig.SelectedUrlKey;
+    public static void SetCloudServerProfileSelectionIndex(int index) => CloudServerConfig.SetProfileSelectionIndex(index);
     public static string CloudUserEmail { get => Get("cloud_user_email", DefaultCloudUserEmail); set => Put("cloud_user_email", value.Trim()); }
     public static string CloudDefaultProjectName { get => Get("cloud_default_project", DefaultCloudProjectName); set => Put("cloud_default_project", value.Trim()); }
     public static bool CloudRememberCredentials { get => Get("cloud_remember_credentials", false); set => Put("cloud_remember_credentials", value); }
@@ -580,8 +585,8 @@ public static class AppSettings
         if (previousSchema < 16)
             editor.Remove("ao_noise_scale"); // setting removed: noise texture replaced with IGN in the SSAO shader.
 
-        if (previousSchema < 17)
-            NormalizeCloudServerUrl(editor);
+        if (previousSchema < 21)
+            editor.Remove("cloud_server_url");
 
         RemoveLegacyDefaultValues(editor);
         RemoveFloatIfBelow(editor, "edge_width", MinimumVisibleEdgeWidth);
@@ -589,17 +594,6 @@ public static class AppSettings
 
         editor.PutInt("settings_schema_version", SettingsSchemaVersion);
         editor.Apply();
-    }
-
-    private static void NormalizeCloudServerUrl(ISharedPreferencesEditor editor)
-    {
-        if (!Prefs.Contains("cloud_server_url"))
-            return;
-
-        string current = Get("cloud_server_url", DefaultCloudServerUrl);
-        string normalized = CloudServerUrls.NormalizeKnownProfileUrl(current);
-        if (!string.Equals(current, normalized, StringComparison.Ordinal))
-            editor.PutString("cloud_server_url", normalized);
     }
 
     private static void RemoveLegacyDefaultValues(ISharedPreferencesEditor editor)

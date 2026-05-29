@@ -109,7 +109,7 @@ public sealed class CloudApiClient : IDisposable
         return false;
     }
 
-    public async Task SignInAsync(
+    public async Task<CloudSignInOutcome> SignInAsync(
         string serverUrl,
         string email,
         string password,
@@ -130,19 +130,194 @@ public sealed class CloudApiClient : IDisposable
             body,
             ct).ConfigureAwait(false);
 
-        if (result.RequiresTotp)
-            throw new CloudApiException("This account requires a TOTP challenge. Android challenge UI is not configured for this test account.");
-        if (result.RequiresTotpEnrollment)
-            throw new CloudApiException("This account must enroll TOTP before Android package access.");
         if (result.MustChangePassword)
-            throw new CloudApiException("This account must change its password before Android package access.");
+            throw new CloudApiException("This account must change its password before Android package access. Use the admin or desktop flow to change the password, then sign in again.");
+
+        string trimmedEmail = email.Trim();
+        if (result.RequiresTotpEnrollment)
+        {
+            if (string.IsNullOrWhiteSpace(result.AccessToken))
+                throw new CloudApiException("Cloud sign-in requires TOTP enrollment but did not return an enrollment token.");
+
+            AppSettings.CloudUserEmail = trimmedEmail;
+            return new CloudSignInOutcome(
+                CloudSignInOutcomeKind.TotpEnrollmentRequired,
+                normalizedServer,
+                trimmedEmail,
+                rememberCredentials,
+                result.AccessToken,
+                result.AccessTokenExpiresAt,
+                null);
+        }
+
+        if (result.RequiresTotp)
+        {
+            if (string.IsNullOrWhiteSpace(result.ChallengeId))
+                throw new CloudApiException("Cloud sign-in requires a TOTP code but did not return a challenge id.");
+
+            AppSettings.CloudUserEmail = trimmedEmail;
+            return new CloudSignInOutcome(
+                CloudSignInOutcomeKind.TotpRequired,
+                normalizedServer,
+                trimmedEmail,
+                rememberCredentials,
+                null,
+                null,
+                result.ChallengeId);
+        }
+
         if (string.IsNullOrWhiteSpace(result.AccessToken))
             throw new CloudApiException("Cloud sign-in did not return an access token.");
 
+        StoreSignedInSession(normalizedServer, trimmedEmail, result, rememberCredentials);
+        return new CloudSignInOutcome(
+            CloudSignInOutcomeKind.SignedIn,
+            normalizedServer,
+            trimmedEmail,
+            rememberCredentials,
+            null,
+            null,
+            null);
+    }
+
+    public async Task<CloudSignInOutcome> VerifyTotpSignInAsync(
+        string serverUrl,
+        string email,
+        string challengeId,
+        string totpCode,
+        bool rememberCredentials,
+        CancellationToken ct)
+    {
+        ThrowIfDisposed();
+        string normalizedServer = NormalizeServerUrl(serverUrl);
+        string trimmedEmail = email.Trim();
+        string trimmedChallengeId = challengeId.Trim();
+        string normalizedCode = NormalizeTotpCode(totpCode);
+        if (string.IsNullOrWhiteSpace(trimmedChallengeId))
+            throw new CloudApiException("Cloud sign-in did not return a TOTP challenge id.");
+
+        CloudSignInResult result = await PostJsonNoAuthAsync<CloudSignInResult>(
+            normalizedServer,
+            "/auth/2fa-verify",
+            new
+            {
+                challenge_id = trimmedChallengeId,
+                totp_code = normalizedCode,
+            },
+            ct).ConfigureAwait(false);
+
+        if (result.MustChangePassword)
+            throw new CloudApiException("This account must change its password before Android package access. Use the admin or desktop flow to change the password, then sign in again.");
+        if (result.RequiresTotp || result.RequiresTotpEnrollment)
+            throw new CloudApiException("Cloud sign-in returned another MFA challenge after TOTP verification.");
+        if (string.IsNullOrWhiteSpace(result.AccessToken))
+            throw new CloudApiException("Cloud TOTP verification did not return an access token.");
+
+        StoreSignedInSession(normalizedServer, trimmedEmail, result, rememberCredentials);
+        return new CloudSignInOutcome(
+            CloudSignInOutcomeKind.SignedIn,
+            normalizedServer,
+            trimmedEmail,
+            rememberCredentials,
+            null,
+            null,
+            null);
+    }
+
+    public Task<CloudTotpEnrollmentStartResult> StartTotpEnrollmentAsync(
+        string serverUrl,
+        string temporaryAccessToken,
+        CancellationToken ct)
+        => PostJsonWithBearerAsync<CloudTotpEnrollmentStartResult>(
+            NormalizeServerUrl(serverUrl),
+            "/auth/totp/enroll/start",
+            temporaryAccessToken,
+            body: null,
+            ct);
+
+    public Task<CloudTotpEnrollmentVerifyResult> VerifyTotpEnrollmentAsync(
+        string serverUrl,
+        string temporaryAccessToken,
+        string totpCode,
+        CancellationToken ct)
+        => PostJsonWithBearerAsync<CloudTotpEnrollmentVerifyResult>(
+            NormalizeServerUrl(serverUrl),
+            "/auth/totp/enroll/verify",
+            temporaryAccessToken,
+            new { totp_code = NormalizeTotpCode(totpCode) },
+            ct);
+
+    public async Task<CloudPasswordResetChallenge> StartPasswordResetAsync(
+        string serverUrl,
+        string email,
+        CancellationToken ct)
+    {
+        ThrowIfDisposed();
+        string normalizedServer = NormalizeServerUrl(serverUrl);
+        string trimmedEmail = email.Trim();
+        if (string.IsNullOrWhiteSpace(trimmedEmail))
+            throw new CloudApiException("Enter your cloud email.");
+
+        CloudPasswordResetStartResult result = await PostJsonNoAuthAsync<CloudPasswordResetStartResult>(
+            normalizedServer,
+            "/auth/password-reset/start",
+            new { email = trimmedEmail },
+            ct).ConfigureAwait(false);
+
+        global::Android.Util.Log.Info("FA.Cloud.Auth", "Password reset challenge requested.");
+        return new CloudPasswordResetChallenge(
+            normalizedServer,
+            trimmedEmail,
+            CloudPasswordResetFlow.RequireChallengeId(result));
+    }
+
+    public Task VerifyPasswordResetAsync(
+        string serverUrl,
+        string challengeId,
+        string authenticatorOrBackupCode,
+        string newPassword,
+        CancellationToken ct)
+    {
+        ThrowIfDisposed();
+        string normalizedServer = NormalizeServerUrl(serverUrl);
+        string trimmedChallengeId = challengeId.Trim();
+        if (string.IsNullOrWhiteSpace(trimmedChallengeId))
+            throw new CloudApiException("Password reset challenge expired. Start the reset again.", code: "missing_challenge");
+        if (string.IsNullOrEmpty(newPassword))
+            throw new CloudApiException("Enter a new password.", code: "password_required");
+
+        string code = CloudPasswordResetFlow.NormalizeAuthenticatorOrBackupCode(authenticatorOrBackupCode);
+        return CloudPasswordResetFlow.CompleteSuccessfulResetAsync(
+            async token =>
+            {
+                await PostJsonNoAuthAsync<CloudPasswordResetVerifyResult>(
+                    normalizedServer,
+                    "/auth/password-reset/verify",
+                    new
+                    {
+                        challenge_id = trimmedChallengeId,
+                        totp_code = code,
+                        new_password = newPassword,
+                    },
+                    token).ConfigureAwait(false);
+            },
+            SignOut,
+            () => global::Android.Util.Log.Info("FA.Cloud.Auth", "Password reset completed."),
+            ct);
+    }
+
+    private void StoreSignedInSession(
+        string normalizedServer,
+        string email,
+        CloudSignInResult result,
+        bool rememberCredentials)
+    {
+        string accessToken = result.AccessToken
+            ?? throw new CloudApiException("Cloud sign-in did not return an access token.");
         var session = new CloudAuthSession(
             normalizedServer,
-            email.Trim(),
-            result.AccessToken,
+            email,
+            accessToken,
             result.AccessTokenExpiresAt,
             result.RefreshToken,
             result.RefreshTokenExpiresAt,
@@ -151,8 +326,7 @@ public sealed class CloudApiClient : IDisposable
         lock (_sync)
             _session = session;
 
-        AppSettings.CloudServerUrl = normalizedServer;
-        AppSettings.CloudUserEmail = email.Trim();
+        AppSettings.CloudUserEmail = email;
         AppSettings.CloudRememberCredentials = rememberCredentials;
 
         if (rememberCredentials)
@@ -165,6 +339,14 @@ public sealed class CloudApiClient : IDisposable
         }
 
         RaiseSessionChanged();
+    }
+
+    private static string NormalizeTotpCode(string value)
+    {
+        string code = new(value.Where(char.IsDigit).ToArray());
+        if (code.Length != 6)
+            throw new CloudApiException("Enter the 6-digit authenticator code.");
+        return code;
     }
 
     public void SignOut()
@@ -899,6 +1081,34 @@ public sealed class CloudApiClient : IDisposable
             ?? throw new CloudApiException("Cloud server returned an empty response.");
     }
 
+    private async Task<T> PostJsonWithBearerAsync<T>(
+        string serverUrl,
+        string path,
+        string accessToken,
+        object? body,
+        CancellationToken ct)
+    {
+        using OperationLease operation = BeginOperation();
+        if (string.IsNullOrWhiteSpace(accessToken))
+            throw new CloudApiException("Cloud TOTP enrollment token is missing.");
+
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, _disposeCts.Token);
+        ct = linkedCts.Token;
+        using HttpRequestMessage request = CreateJsonRequest(
+            HttpMethod.Post,
+            BuildUri(serverUrl, path),
+            body,
+            idempotencyKey: null);
+        ValidateAuthorizedRequestUri(new CloudAuthSession(serverUrl, "", accessToken, null, null, null, null), request.RequestUri);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+
+        using HttpResponseMessage response = await _http.SendAsync(request, ct).ConfigureAwait(false);
+        await EnsureSuccessAsync(response).ConfigureAwait(false);
+        await using Stream stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+        return await JsonSerializer.DeserializeAsync<T>(stream, JsonOptions, ct).ConfigureAwait(false)
+            ?? throw new CloudApiException("Cloud server returned an empty response.");
+    }
+
     private async Task<HttpResponseMessage> SendAuthorizedAsync(
         Func<HttpRequestMessage> requestFactory,
         CancellationToken ct,
@@ -1062,11 +1272,14 @@ public sealed class CloudApiClient : IDisposable
                && cloud.Code.StartsWith("auth_", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static HttpRequestMessage CreateJsonRequest(HttpMethod method, Uri uri, object body, string? idempotencyKey)
+    private static HttpRequestMessage CreateJsonRequest(HttpMethod method, Uri uri, object? body, string? idempotencyKey)
     {
         var request = new HttpRequestMessage(method, uri);
-        string json = JsonSerializer.Serialize(body, JsonOptions);
-        request.Content = new StringContent(json, Encoding.UTF8, "application/json");
+        if (body is not null)
+        {
+            string json = JsonSerializer.Serialize(body, JsonOptions);
+            request.Content = new StringContent(json, Encoding.UTF8, "application/json");
+        }
         if (!string.IsNullOrWhiteSpace(idempotencyKey))
             request.Headers.TryAddWithoutValidation("Idempotency-Key", idempotencyKey);
         return request;
@@ -1085,7 +1298,7 @@ public sealed class CloudApiClient : IDisposable
             if (!string.IsNullOrWhiteSpace(text))
             {
                 CloudProblemDetails? problem = JsonSerializer.Deserialize<CloudProblemDetails>(text, JsonOptions);
-                title = problem?.Title ?? title;
+                title = problem?.Title ?? problem?.Detail ?? title;
                 code = problem?.Code;
             }
         }
@@ -1286,19 +1499,16 @@ public sealed class CloudApiClient : IDisposable
 
     public static string NormalizeServerUrl(string serverUrl)
     {
-        string value = CloudServerUrls.NormalizeKnownProfileUrl(serverUrl);
+        string value = CloudServerUrls.NormalizeConfiguredUrl(serverUrl);
         if (string.IsNullOrWhiteSpace(value))
-            throw new CloudApiException("Enter the FA Cloud server URL.");
+            throw new CloudApiException(
+                $"FA Cloud {AppSettings.CloudServerProfileDisplayName} server is not configured. Set {AppSettings.CloudServerSelectedUrlKey} in {AppSettings.CloudServerConfigPath}.");
         if (!Uri.TryCreate(value, UriKind.Absolute, out Uri? uri)
             || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
         {
             throw new CloudApiException("Cloud server must be an http or https URL.");
         }
 
-#if !DEBUG
-        if (uri.Scheme != Uri.UriSchemeHttps)
-            throw new CloudApiException("Release builds require an HTTPS cloud server.");
-#endif
         return value;
     }
 
