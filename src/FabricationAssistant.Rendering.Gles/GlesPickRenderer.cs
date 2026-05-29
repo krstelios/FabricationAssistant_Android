@@ -178,7 +178,13 @@ public sealed class GlesPickRenderer : IDisposable
             int indexLoc = _gl.GetUniformLocation(_program.Handle, "uMeshIndex");
             foreach (var mesh in scene.Meshes)
             {
-                if (!mesh.Visible && !IsXrayBackgroundMesh(mesh))
+                // S20#1: pick only genuinely selectable meshes. Skip x-ray
+                // background ghosts so a faint ghost in front of the isolated
+                // body cannot win the pick depth test; tapping the visible
+                // isolated body selects it (or the opaque body behind a ghost),
+                // never the ghost. Ghosts remain in the main render - they are
+                // simply not pick targets while x-ray isolation is active.
+                if (!mesh.Visible || IsXrayBackgroundMesh(mesh))
                     continue;
 
                 float[] model = mesh.WorldTransform ?? identity;
