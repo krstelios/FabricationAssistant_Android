@@ -10723,7 +10723,15 @@ public sealed class MainActivity : AppCompatActivity
                     UpdateLoadingDetail(message);
             });
 
-            var document = await _import.ImportAsync(uri, progress, cts.Token, copyToImportCache);
+            // S3#2: ImportAsync's synchronous prelude (ContentResolver Query /
+            // GetType / OpenInputStream metadata + size resolution) runs blocking
+            // binder IPC before its first real await. Hop onto a worker thread so
+            // a slow cloud-provider URI cannot jank the UI right after file pick.
+            // The Progress<string> still marshals reports back to the UI thread,
+            // and this await resumes on the UI thread for the rest of the load.
+            var document = await Task.Run(
+                () => _import.ImportAsync(uri, progress, cts.Token, copyToImportCache),
+                cts.Token);
             cts.Token.ThrowIfCancellationRequested();
             if (!IsCurrentLoad(loadVersion, cts)) return false;
             string modelDisplayName = string.IsNullOrWhiteSpace(displayNameOverride)
