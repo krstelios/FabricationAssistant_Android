@@ -375,7 +375,9 @@ internal sealed class PropertiesPanelBinder
             return property.ValueInteger.Value.ToString(CultureInfo.CurrentCulture);
 
         if (property.ValueNumber.HasValue)
-            return property.ValueNumber.Value.ToString("G", CultureInfo.InvariantCulture);
+            // S15#3: use CurrentCulture to match the count/instance formatting
+            // elsewhere in the panel (so all numbers share one decimal separator).
+            return property.ValueNumber.Value.ToString("G", CultureInfo.CurrentCulture);
 
         if (property.ValueBoolean.HasValue)
             return property.ValueBoolean.Value ? "true" : "false";
