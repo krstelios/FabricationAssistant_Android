@@ -1286,7 +1286,7 @@ public sealed class CloudApiClient : IDisposable
 
     public static string NormalizeServerUrl(string serverUrl)
     {
-        string value = (serverUrl ?? "").Trim().TrimEnd('/');
+        string value = CloudServerUrls.NormalizeKnownProfileUrl(serverUrl);
         if (string.IsNullOrWhiteSpace(value))
             throw new CloudApiException("Enter the FA Cloud server URL.");
         if (!Uri.TryCreate(value, UriKind.Absolute, out Uri? uri)

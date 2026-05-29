@@ -8,6 +8,9 @@ internal sealed class GlesSectionOverlay : IDisposable
 {
     private const int FloatsPerVertex = 7;
     private const int StrideBytes = FloatsPerVertex * sizeof(float);
+    private const int RibbonFloatsPerInstance = 6;
+    private const int RibbonStrideBytes = RibbonFloatsPerInstance * sizeof(float);
+    private const int RibbonIndexCount = 6;
     private const float MinExtent = 1.0f;
     private const float MaxPlaneExtent = 10_000.0f;
     private const float MaxCapExtent = 100_000.0f;
@@ -18,23 +21,48 @@ internal sealed class GlesSectionOverlay : IDisposable
     private const float GizmoArcRadiusScale = 0.56f;
     private readonly GL _gl;
     private readonly ShaderProgram _program;
+    private readonly ShaderProgram _ribbonProgram;
     private readonly GlesPrimitiveLimits _primitiveLimits;
     private uint _vao;
     private uint _vbo;
+    private uint _ribbonVao;
+    private uint _ribbonInstanceVbo;
+    private uint _ribbonQuadVbo;
+    private uint _ribbonQuadIbo;
     private readonly List<float> _data = new();
+    private readonly List<float> _ribbonInstances = new();
+    private static readonly float[] IdentityMatrix =
+    [
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f
+    ];
 
-    public GlesSectionOverlay(GL gl, string vertexSource, string fragmentSource)
+    public GlesSectionOverlay(
+        GL gl,
+        string vertexSource,
+        string fragmentSource,
+        string ribbonVertexSource,
+        string ribbonFragmentSource)
     {
         _gl = gl ?? throw new ArgumentNullException(nameof(gl));
         _program = new ShaderProgram(gl, "section.overlay", vertexSource, fragmentSource);
+        _ribbonProgram = new ShaderProgram(gl, "section.ribbon", ribbonVertexSource, ribbonFragmentSource);
         _primitiveLimits = GlesRenderUtil.QueryPrimitiveLimits(gl);
     }
 
     public float PlaneSizeFraction { get; set; } = 0.025f;
 
+    public int ViewportWidth { get; set; } = 1;
+
+    public int ViewportHeight { get; set; } = 1;
+
     public Vector4 FillColor { get; set; }
 
     public Vector4 EdgeColor { get; set; }
+
+    public float EdgeWidth { get; set; } = 2.4f;
 
     public Vector4 EdgeHighlightColor { get; set; }
 
@@ -82,10 +110,13 @@ internal sealed class GlesSectionOverlay : IDisposable
 
         if (edgesVisible && planes.Count > 0)
         {
-            _data.Clear();
             foreach (GlesSectionVisualPlane plane in planes)
-                AppendPlaneEdges(_data, plane, plane.Selected ? EdgeHighlightColor : EdgeColor, planeHalfSide);
-            Draw(view, projection, PrimitiveType.Lines, depthTest: true, blend: true, lineWidth: 2.0f, pointSize: 1.0f);
+            {
+                Vector4 color = plane.Selected ? EdgeHighlightColor : EdgeColor;
+                _data.Clear();
+                AppendPlaneEdges(_data, plane, color, planeHalfSide);
+                DrawRibbonVertexData(view, projection, color, depthTest: true, blend: true, lineWidth: EdgeWidth);
+            }
         }
 
         if (committedPicks.Count > 0 || hoverPoint is not null)
@@ -112,7 +143,7 @@ internal sealed class GlesSectionOverlay : IDisposable
     {
         _data.Clear();
         AppendPlaneQuad(_data, plane, CapColor, ResolveCapHalfSide(sceneDiagonal));
-        Draw(view, projection, PrimitiveType.Triangles, depthTest: true, blend: false, lineWidth: 1.0f, pointSize: 1.0f);
+        Draw(view, projection, PrimitiveType.Triangles, depthTest: true, blend: false, lineWidth: 1.0f, pointSize: 1.0f, depthMask: true);
     }
 
     public void RenderCapMaskTriangles(
@@ -146,16 +177,7 @@ internal sealed class GlesSectionOverlay : IDisposable
         if (lineVertices.Length == 0)
             return;
 
-        _data.Clear();
-        for (int i = 0; i + 2 < lineVertices.Length; i += 3)
-        {
-            AppendVertex(
-                _data,
-                new Vector3(lineVertices[i], lineVertices[i + 1], lineVertices[i + 2]),
-                color);
-        }
-
-        Draw(view, projection, PrimitiveType.Lines, depthTest: false, blend: true, lineWidth: 2.4f, pointSize: 1.0f);
+        DrawRibbonPositions(view, projection, lineVertices, color, depthTest: true, blend: true, lineWidth: EdgeWidth);
     }
 
     public void RenderGizmo(
@@ -281,7 +303,8 @@ internal sealed class GlesSectionOverlay : IDisposable
         bool blend,
         float lineWidth,
         float pointSize,
-        bool roundPoints = false)
+        bool roundPoints = false,
+        bool depthMask = false)
     {
         int vertexCount = _data.Count / FloatsPerVertex;
         if (vertexCount == 0)
@@ -306,7 +329,7 @@ internal sealed class GlesSectionOverlay : IDisposable
         }
 
         _gl.Disable(EnableCap.CullFace);
-        _gl.DepthMask(false);
+        _gl.DepthMask(depthMask);
         if (blend)
         {
             _gl.Enable(EnableCap.Blend);
@@ -344,25 +367,250 @@ internal sealed class GlesSectionOverlay : IDisposable
         }
     }
 
-    private void SetMat4(string name, float[] matrix)
+    private void DrawRibbonVertexData(
+        float[] view,
+        float[] projection,
+        Vector4 color,
+        bool depthTest,
+        bool blend,
+        float lineWidth)
     {
-        int loc = _program.UniformLocation(name);
+        _ribbonInstances.Clear();
+        for (int i = 0; i + FloatsPerVertex + 2 < _data.Count; i += FloatsPerVertex * 2)
+        {
+            AppendRibbonInstance(
+                _data[i],
+                _data[i + 1],
+                _data[i + 2],
+                _data[i + FloatsPerVertex],
+                _data[i + FloatsPerVertex + 1],
+                _data[i + FloatsPerVertex + 2]);
+        }
+
+        DrawRibbonInstances(view, projection, color, depthTest, blend, lineWidth);
+    }
+
+    private void DrawRibbonPositions(
+        float[] view,
+        float[] projection,
+        float[] lineVertices,
+        Vector4 color,
+        bool depthTest,
+        bool blend,
+        float lineWidth)
+    {
+        _ribbonInstances.Clear();
+        for (int i = 0; i + 5 < lineVertices.Length; i += 6)
+        {
+            AppendRibbonInstance(
+                lineVertices[i],
+                lineVertices[i + 1],
+                lineVertices[i + 2],
+                lineVertices[i + 3],
+                lineVertices[i + 4],
+                lineVertices[i + 5]);
+        }
+
+        DrawRibbonInstances(view, projection, color, depthTest, blend, lineWidth);
+    }
+
+    private void AppendRibbonInstance(float x0, float y0, float z0, float x1, float y1, float z1)
+    {
+        _ribbonInstances.Add(x0);
+        _ribbonInstances.Add(y0);
+        _ribbonInstances.Add(z0);
+        _ribbonInstances.Add(x1);
+        _ribbonInstances.Add(y1);
+        _ribbonInstances.Add(z1);
+    }
+
+    private unsafe void DrawRibbonInstances(
+        float[] view,
+        float[] projection,
+        Vector4 color,
+        bool depthTest,
+        bool blend,
+        float lineWidth)
+    {
+        int segmentCount = _ribbonInstances.Count / RibbonFloatsPerInstance;
+        if (segmentCount == 0)
+            return;
+
+        EnsureRibbonBuffers();
+
+        _ribbonProgram.Use();
+        SetMat4(_ribbonProgram, "uModel", IdentityMatrix);
+        SetMat4(_ribbonProgram, "uView", view);
+        SetMat4(_ribbonProgram, "uProjection", projection);
+        SetVec2(_ribbonProgram, "uViewportSize", Math.Max(1.0f, ViewportWidth), Math.Max(1.0f, ViewportHeight));
+        SetFloat(_ribbonProgram, "uLineWidthPixels", Math.Clamp(lineWidth, 0.05f, 8.0f));
+        SetFloat(_ribbonProgram, "uDepthBias", 0.0f);
+        SetVec4(_ribbonProgram, "uEdgeColor", color);
+        SetInt(_ribbonProgram, "uSectionPlaneCount", 0);
+
+        if (depthTest)
+        {
+            _gl.Enable(EnableCap.DepthTest);
+            _gl.DepthFunc(DepthFunction.Lequal);
+        }
+        else
+        {
+            _gl.Disable(EnableCap.DepthTest);
+        }
+
+        _gl.Disable(EnableCap.CullFace);
+        _gl.DepthMask(false);
+        if (blend)
+        {
+            _gl.Enable(EnableCap.Blend);
+            _gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+        }
+        else
+        {
+            _gl.Disable(EnableCap.Blend);
+        }
+
+        try
+        {
+            _gl.BindVertexArray(_ribbonVao);
+            _gl.BindBuffer(BufferTargetARB.ArrayBuffer, _ribbonInstanceVbo);
+            Span<float> span = CollectionsMarshal.AsSpan(_ribbonInstances);
+            fixed (float* p = span)
+            {
+                _gl.BufferData(
+                    BufferTargetARB.ArrayBuffer,
+                    (nuint)(span.Length * sizeof(float)),
+                    p,
+                    BufferUsageARB.DynamicDraw);
+            }
+
+            _gl.DrawElementsInstanced(
+                PrimitiveType.Triangles,
+                RibbonIndexCount,
+                DrawElementsType.UnsignedShort,
+                (void*)0,
+                (uint)segmentCount);
+        }
+        finally
+        {
+            _gl.BindVertexArray(0);
+            _gl.DepthMask(true);
+            _gl.Disable(EnableCap.Blend);
+            _gl.Enable(EnableCap.DepthTest);
+            _gl.Enable(EnableCap.CullFace);
+        }
+    }
+
+    private unsafe void EnsureRibbonBuffers()
+    {
+        if (_ribbonVao != 0
+            && _ribbonInstanceVbo != 0
+            && _ribbonQuadVbo != 0
+            && _ribbonQuadIbo != 0)
+        {
+            return;
+        }
+
+        DeleteRibbonBuffers();
+
+        float[] quad =
+        {
+            0.0f,  1.0f,
+            0.0f, -1.0f,
+            1.0f,  1.0f,
+            1.0f, -1.0f,
+        };
+        ushort[] indices = { 0, 1, 2, 2, 1, 3 };
+
+        _ribbonVao = _gl.GenVertexArray();
+        _ribbonInstanceVbo = _gl.GenBuffer();
+        _ribbonQuadVbo = _gl.GenBuffer();
+        _ribbonQuadIbo = _gl.GenBuffer();
+
+        _gl.BindVertexArray(_ribbonVao);
+
+        _gl.BindBuffer(BufferTargetARB.ArrayBuffer, _ribbonInstanceVbo);
+        _gl.EnableVertexAttribArray(0);
+        _gl.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, false, RibbonStrideBytes, (void*)0);
+        _gl.VertexAttribDivisor(0, 1);
+        _gl.EnableVertexAttribArray(1);
+        _gl.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, false, RibbonStrideBytes, (void*)(3 * sizeof(float)));
+        _gl.VertexAttribDivisor(1, 1);
+
+        _gl.BindBuffer(BufferTargetARB.ArrayBuffer, _ribbonQuadVbo);
+        fixed (float* p = quad)
+        {
+            _gl.BufferData(
+                BufferTargetARB.ArrayBuffer,
+                (nuint)(quad.Length * sizeof(float)),
+                p,
+                BufferUsageARB.StaticDraw);
+        }
+
+        _gl.EnableVertexAttribArray(2);
+        _gl.VertexAttribPointer(2, 1, VertexAttribPointerType.Float, false, 2 * sizeof(float), (void*)0);
+        _gl.VertexAttribDivisor(2, 0);
+        _gl.EnableVertexAttribArray(3);
+        _gl.VertexAttribPointer(3, 1, VertexAttribPointerType.Float, false, 2 * sizeof(float), (void*)sizeof(float));
+        _gl.VertexAttribDivisor(3, 0);
+
+        _gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, _ribbonQuadIbo);
+        fixed (ushort* p = indices)
+        {
+            _gl.BufferData(
+                BufferTargetARB.ElementArrayBuffer,
+                (nuint)(indices.Length * sizeof(ushort)),
+                p,
+                BufferUsageARB.StaticDraw);
+        }
+
+        _gl.BindVertexArray(0);
+        _gl.BindBuffer(BufferTargetARB.ArrayBuffer, 0);
+        _gl.BindBuffer(BufferTargetARB.ElementArrayBuffer, 0);
+    }
+
+    private void SetMat4(string name, float[] matrix)
+        => SetMat4(_program, name, matrix);
+
+    private void SetMat4(ShaderProgram program, string name, float[] matrix)
+    {
+        int loc = program.UniformLocation(name);
         if (loc < 0) return;
         _gl.UniformMatrix4(loc, true, matrix);
     }
 
     private void SetFloat(string name, float value)
+        => SetFloat(_program, name, value);
+
+    private void SetFloat(ShaderProgram program, string name, float value)
     {
-        int loc = _program.UniformLocation(name);
+        int loc = program.UniformLocation(name);
         if (loc < 0) return;
         _gl.Uniform1(loc, value);
     }
 
     private void SetInt(string name, int value)
+        => SetInt(_program, name, value);
+
+    private void SetInt(ShaderProgram program, string name, int value)
     {
-        int loc = _program.UniformLocation(name);
+        int loc = program.UniformLocation(name);
         if (loc < 0) return;
         _gl.Uniform1(loc, value);
+    }
+
+    private void SetVec2(ShaderProgram program, string name, float x, float y)
+    {
+        int loc = program.UniformLocation(name);
+        if (loc < 0) return;
+        _gl.Uniform2(loc, x, y);
+    }
+
+    private void SetVec4(ShaderProgram program, string name, Vector4 value)
+    {
+        int loc = program.UniformLocation(name);
+        if (loc < 0) return;
+        _gl.Uniform4(loc, value.X, value.Y, value.Z, value.W);
     }
 
     private float ResolvePlaneHalfSide(float sceneDiagonal)
@@ -516,7 +764,9 @@ internal sealed class GlesSectionOverlay : IDisposable
     public void Dispose()
     {
         DeleteBuffers();
+        DeleteRibbonBuffers();
         _program.Dispose();
+        _ribbonProgram.Dispose();
     }
 
     private void DeleteBuffers()
@@ -531,6 +781,33 @@ internal sealed class GlesSectionOverlay : IDisposable
         {
             _gl.DeleteVertexArray(_vao);
             _vao = 0;
+        }
+    }
+
+    private void DeleteRibbonBuffers()
+    {
+        if (_ribbonInstanceVbo != 0)
+        {
+            _gl.DeleteBuffer(_ribbonInstanceVbo);
+            _ribbonInstanceVbo = 0;
+        }
+
+        if (_ribbonQuadVbo != 0)
+        {
+            _gl.DeleteBuffer(_ribbonQuadVbo);
+            _ribbonQuadVbo = 0;
+        }
+
+        if (_ribbonQuadIbo != 0)
+        {
+            _gl.DeleteBuffer(_ribbonQuadIbo);
+            _ribbonQuadIbo = 0;
+        }
+
+        if (_ribbonVao != 0)
+        {
+            _gl.DeleteVertexArray(_ribbonVao);
+            _ribbonVao = 0;
         }
     }
 }

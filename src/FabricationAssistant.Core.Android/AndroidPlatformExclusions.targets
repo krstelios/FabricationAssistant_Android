@@ -20,5 +20,12 @@
       FabricationAssistantPathsBootstrap (Plan 1 Task 8).
     -->
     <CoreExclusions Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Runtime\FabricationAssistantPaths.cs" />
+
+    <!--
+      Android uses a touch-oriented point snap policy: straight edge runs snap
+      only to their endpoints and midpoint. Replaced by the Android-local
+      Measurement\Engine\EdgeSnapService.cs.
+    -->
+    <CoreExclusions Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Measurement\Engine\EdgeSnapService.cs" />
   </ItemGroup>
 </Project>

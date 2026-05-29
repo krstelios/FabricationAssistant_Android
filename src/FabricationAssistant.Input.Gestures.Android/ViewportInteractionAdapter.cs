@@ -16,14 +16,21 @@ namespace FabricationAssistant.Input.Gestures.Android;
 public sealed class ViewportInteractionAdapter
 {
     private const double OrbitSensitivityRadiansPerPixel = 0.005;
+    private const double MouseOrbitSensitivityRadiansPerPixel = 0.005;
 
     // The desktop's 0.002 value yields ~2x the world-units per DIP that a
     // finger expects on this tablet (centroid runs ahead of the finger).
     // 0.001 makes the pan track the centroid 1:1 in practice.
     private const double PanDistanceScale = 0.001;
+    private const double MousePanDistanceScale = 0.002;
+    private const double DefaultMousePivotSpeed = 0.8;
+    private const double DefaultMousePanSpeed = 0.3;
+    private const double DefaultMouseZoomSpeed = 1.0;
 
     private const double MinimumPanDistance = 1e-6;
     private const double PinchScaleDeadband = 0.005;
+    private const double OrbitAnchorDenominatorEpsilon = 1e-8;
+    private const double OrbitAnchorTranslationEpsilon = 1e-12;
 
     private readonly CameraState _camera;
     private readonly Func<BoundingBox?> _boundsAccessor;
@@ -42,12 +49,20 @@ public sealed class ViewportInteractionAdapter
 
     private bool _orbitActive;
     private bool _panZoomActive;
+    private bool _mouseOrbitActive;
+    private bool _mousePanActive;
+    private bool _hasMouseOrbitAnchor;
     private Vector3d? _activeGesturePivot;
     private Vector3d? _lastResolvedPivot;
     private Vector3d? _panZoomAnchorWorld;
+    private Point2D _mouseOrbitAnchorScreenPosition;
     private double _orbitSensitivityMultiplier = 1.0;
     private double _panSensitivityMultiplier = 1.0;
     private double _zoomSensitivityMultiplier = 1.0;
+    private double _mouseOrbitSpeedMultiplier = 1.0;
+    private double _mousePanSpeedMultiplier = 1.1;
+    private double _mouseWheelZoomSpeedMultiplier = 1.0;
+    private bool _mouseWheelZoomInverted;
 
     /// <summary>Multiplier applied to the orbit angular velocity. 1.0 is the
     /// tuned default; the settings popup writes this from AppSettings.</summary>
@@ -70,6 +85,30 @@ public sealed class ViewportInteractionAdapter
     {
         get => _zoomSensitivityMultiplier;
         set => _zoomSensitivityMultiplier = ClampSensitivity(value);
+    }
+
+    public double MouseOrbitSpeedMultiplier
+    {
+        get => _mouseOrbitSpeedMultiplier;
+        set => _mouseOrbitSpeedMultiplier = ClampSensitivity(value);
+    }
+
+    public double MousePanSpeedMultiplier
+    {
+        get => _mousePanSpeedMultiplier;
+        set => _mousePanSpeedMultiplier = ClampSensitivity(value);
+    }
+
+    public double MouseWheelZoomSpeedMultiplier
+    {
+        get => _mouseWheelZoomSpeedMultiplier;
+        set => _mouseWheelZoomSpeedMultiplier = ClampSensitivity(value);
+    }
+
+    public bool MouseWheelZoomInverted
+    {
+        get => _mouseWheelZoomInverted;
+        set => _mouseWheelZoomInverted = value;
     }
 
     public ViewportInteractionAdapter(
@@ -102,10 +141,13 @@ public sealed class ViewportInteractionAdapter
     {
         if (IsNavigationSuppressed() && IsCameraGesture(ev.Kind))
         {
-            if (_orbitActive || _panZoomActive)
+            if (_orbitActive || _panZoomActive || _mouseOrbitActive || _mousePanActive)
             {
                 _orbitActive = false;
                 _panZoomActive = false;
+                _mouseOrbitActive = false;
+                _mousePanActive = false;
+                _hasMouseOrbitAnchor = false;
                 _activeGesturePivot = null;
                 _panZoomAnchorWorld = null;
                 _orbitDeltaNormalizer.Reset();
@@ -235,6 +277,119 @@ public sealed class ViewportInteractionAdapter
                 _requestRender();
                 break;
 
+            case TouchGestureKind.MouseOrbitBegin:
+                if (IsFixedViewLocked())
+                {
+                    _mouseOrbitActive = false;
+                    _hasMouseOrbitAnchor = false;
+                    _activeGesturePivot = null;
+                    break;
+                }
+
+                _mouseOrbitActive = true;
+                _interactionStateChanged?.Invoke(true);
+                lock (_camera)
+                {
+                    CaptureGesturePivot(ev.Position);
+                    RefreshClipPlanes();
+                    _hasMouseOrbitAnchor = TryCaptureMouseOrbitAnchor();
+                }
+                break;
+
+            case TouchGestureKind.MouseOrbitDelta:
+            {
+                if (!_mouseOrbitActive || IsFixedViewLocked()) break;
+                Vector2D pixelDelta = ev.PixelDelta;
+                if (pixelDelta.Length <= 0.0)
+                    break;
+
+                double sens = MouseOrbitSensitivityRadiansPerPixel * DefaultMousePivotSpeed * MouseOrbitSpeedMultiplier;
+                double yaw = pixelDelta.X * sens;
+                double pitch = pixelDelta.Y * sens;
+                lock (_camera)
+                {
+                    Vector3d pivot = GetPivot();
+                    _camera.OrbitAroundPoint(pivot, yaw, pitch);
+                    ApplyMouseOrbitAnchorCompensation(pivot);
+                    RefreshClipPlanes();
+                }
+                _requestRender();
+                break;
+            }
+
+            case TouchGestureKind.MouseOrbitEnd:
+            {
+                bool wasMouseOrbitActive = _mouseOrbitActive;
+                _mouseOrbitActive = false;
+                _hasMouseOrbitAnchor = false;
+                _activeGesturePivot = null;
+                if (wasMouseOrbitActive)
+                    _interactionStateChanged?.Invoke(false);
+                if (!IsFixedViewLocked())
+                    _requestRender();
+                break;
+            }
+
+            case TouchGestureKind.MousePanBegin:
+                _mousePanActive = true;
+                _activeGesturePivot = _lastResolvedPivot;
+                _interactionStateChanged?.Invoke(true);
+                break;
+
+            case TouchGestureKind.MousePanDelta:
+            {
+                if (!_mousePanActive) break;
+                Vector2D pixelDelta = ev.PixelDelta;
+                if (pixelDelta.Length <= 0.0)
+                    break;
+
+                lock (_camera)
+                {
+                    PerformMousePan(pixelDelta);
+                    RefreshClipPlanes();
+                }
+                _requestRender();
+                break;
+            }
+
+            case TouchGestureKind.MousePanEnd:
+            {
+                bool wasMousePanActive = _mousePanActive;
+                _mousePanActive = false;
+                _activeGesturePivot = null;
+                if (wasMousePanActive)
+                    _interactionStateChanged?.Invoke(false);
+                _requestRender();
+                break;
+            }
+
+            case TouchGestureKind.MouseWheel:
+            {
+                double wheelNotches = ev.PixelDelta.Y;
+                if (!double.IsFinite(wheelNotches) || System.Math.Abs(wheelNotches) <= 0.0)
+                    break;
+                if (MouseWheelZoomInverted)
+                    wheelNotches = -wheelNotches;
+
+                lock (_camera)
+                {
+                    Vector3d zoomPivot = TryGetOrthoAxisAlignedCursorPivot(ev.Position) ?? GetPivot();
+                    _camera.ZoomAroundPoint(zoomPivot, wheelNotches * DefaultMouseZoomSpeed * MouseWheelZoomSpeedMultiplier);
+                    RefreshClipPlanes();
+                }
+                _requestRender();
+                break;
+            }
+
+            case TouchGestureKind.Cancel:
+                if (_mouseOrbitActive || _mousePanActive)
+                    _interactionStateChanged?.Invoke(false);
+                _mouseOrbitActive = false;
+                _mousePanActive = false;
+                _hasMouseOrbitAnchor = false;
+                _activeGesturePivot = null;
+                break;
+
             case TouchGestureKind.DoubleTap:
                 if (IsDoubleTapFitEnabled())
                     FitToScene();
@@ -292,6 +447,7 @@ public sealed class ViewportInteractionAdapter
         // rotates around the body the user actually grabbed, not the
         // scene-bounds center.
         if (_activeGesturePivot is { } captured) return captured;
+        if (_lastResolvedPivot is { } resolved) return resolved;
 
         BoundingBox? bounds = _boundsAccessor();
         if (bounds is { IsValid: true } valid)
@@ -343,6 +499,137 @@ public sealed class ViewportInteractionAdapter
         _camera.Target = _camera.Target + correction;
         cameraChanged = true;
         return true;
+    }
+
+    private void PerformMousePan(Vector2D pixelDelta)
+    {
+        Vector3d pivot = GetPivot();
+        double panScale = ComputeMousePanScale(pivot);
+        Vector3d previousPosition = _camera.Position;
+
+        _camera.Pan(-pixelDelta.X * panScale, pixelDelta.Y * panScale);
+
+        Vector3d translation = _camera.Position - previousPosition;
+        Vector3d updatedPivot = pivot + translation;
+        _lastResolvedPivot = updatedPivot;
+        _activeGesturePivot = updatedPivot;
+    }
+
+    private double ComputeMousePanScale(Vector3d pivot)
+    {
+        if (_camera.IsPerspective)
+        {
+            double distance = Vector3d.Distance(_camera.Position, pivot);
+            if (distance < MinimumPanDistance)
+                distance = _camera.Distance;
+            return distance * MousePanDistanceScale * DefaultMousePanSpeed * MousePanSpeedMultiplier;
+        }
+
+        double viewportWidthDip = _viewportWidthDipAccessor?.Invoke() ?? 1.0;
+        if (!double.IsFinite(viewportWidthDip) || viewportWidthDip < 1.0)
+            viewportWidthDip = 1.0;
+        return System.Math.Max(_camera.OrthoWidth, MinimumPanDistance) / viewportWidthDip;
+    }
+
+    private Vector3d? TryGetOrthoAxisAlignedCursorPivot(Point2D position)
+    {
+        if (_camera.IsPerspective)
+            return null;
+
+        Vector3d forward = _camera.Forward;
+        double maxAxisComponent = System.Math.Max(
+            System.Math.Abs(forward.X),
+            System.Math.Max(System.Math.Abs(forward.Y), System.Math.Abs(forward.Z)));
+        if (maxAxisComponent < 0.999)
+            return null;
+
+        if (!TryCreateWorldRay(position, out Vector3d rayOrigin, out Vector3d rayDirection))
+            return null;
+
+        double denom = Vector3d.Dot(rayDirection, forward);
+        if (System.Math.Abs(denom) < 1e-12)
+            return null;
+
+        double t = Vector3d.Dot(_camera.Target - rayOrigin, forward) / denom;
+        Vector3d pivot = rayOrigin + rayDirection * t;
+        return IsFinite(pivot) ? pivot : null;
+    }
+
+    private bool TryCaptureMouseOrbitAnchor()
+    {
+        if (TryProjectWorldToViewport(GetPivot(), out Point2D screenPosition))
+        {
+            _mouseOrbitAnchorScreenPosition = screenPosition;
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool TryProjectWorldToViewport(Vector3d world, out Point2D screenPosition)
+    {
+        screenPosition = default;
+
+        double viewportWidthDip = _viewportWidthDipAccessor?.Invoke() ?? 0.0;
+        double aspect = _aspectAccessor();
+        if (!double.IsFinite(viewportWidthDip) || viewportWidthDip <= 1.0)
+            return false;
+        if (!double.IsFinite(aspect) || aspect <= 1e-6)
+            return false;
+
+        double viewportHeightDip = viewportWidthDip / aspect;
+        if (!double.IsFinite(viewportHeightDip) || viewportHeightDip <= 1.0)
+            return false;
+
+        Matrix4d viewProjection = _camera.GetProjectionMatrix(aspect) * _camera.GetViewMatrix();
+        if (!viewProjection.TryProjectPoint(world, out Vector3d ndc))
+            return false;
+
+        if (!IsFinite(ndc))
+            return false;
+
+        screenPosition = new Point2D(
+            (ndc.X * 0.5 + 0.5) * viewportWidthDip,
+            (0.5 - ndc.Y * 0.5) * viewportHeightDip);
+        return double.IsFinite(screenPosition.X) && double.IsFinite(screenPosition.Y);
+    }
+
+    private void ApplyMouseOrbitAnchorCompensation(Vector3d pivot)
+    {
+        if (!_hasMouseOrbitAnchor)
+            return;
+
+        Vector3d forward = _camera.Forward;
+        if (forward.LengthSquared < OrbitAnchorTranslationEpsilon)
+            return;
+
+        if (!TryCreateWorldRay(_mouseOrbitAnchorScreenPosition, out Vector3d rayOrigin, out Vector3d rayDirection))
+            return;
+
+        double denominator = Vector3d.Dot(rayDirection, forward);
+        if (System.Math.Abs(denominator) < OrbitAnchorDenominatorEpsilon)
+            return;
+
+        double t = Vector3d.Dot(pivot - rayOrigin, forward) / denominator;
+        if (_camera.IsPerspective && t <= 0.0)
+            return;
+
+        Vector3d anchorHitPoint = rayOrigin + rayDirection * t;
+        Vector3d translation = pivot - anchorHitPoint;
+        if (translation.LengthSquared < OrbitAnchorTranslationEpsilon)
+            return;
+
+        Vector3d right = Vector3d.Cross(forward, _camera.UpDirection).Normalized();
+        Vector3d up = Vector3d.Cross(right, forward).Normalized();
+        if (right.LengthSquared < OrbitAnchorTranslationEpsilon
+            || up.LengthSquared < OrbitAnchorTranslationEpsilon)
+        {
+            return;
+        }
+
+        double panX = Vector3d.Dot(translation, right);
+        double panY = Vector3d.Dot(translation, up);
+        _camera.Pan(panX, panY);
     }
 
     private bool TryScreenPointToWorldOnPlane(Point2D position, Vector3d planePoint, out Vector3d worldPoint)
@@ -460,6 +747,13 @@ public sealed class ViewportInteractionAdapter
             or TouchGestureKind.PanZoomBegin
             or TouchGestureKind.PanZoomDelta
             or TouchGestureKind.PanZoomEnd
+            or TouchGestureKind.MouseOrbitBegin
+            or TouchGestureKind.MouseOrbitDelta
+            or TouchGestureKind.MouseOrbitEnd
+            or TouchGestureKind.MousePanBegin
+            or TouchGestureKind.MousePanDelta
+            or TouchGestureKind.MousePanEnd
+            or TouchGestureKind.MouseWheel
             or TouchGestureKind.DoubleTap;
 
     private sealed class GestureDeltaNormalizer

@@ -15,12 +15,27 @@ namespace FabricationAssistant.Input.Gestures.Android;
 public sealed class AndroidPointerSource : IDisposable
 {
     private const int MotionEventFlagCanceled = 0x20;
+    private const double DefaultMouseClickDragThresholdDip = 4.0;
     private static int _actionPointerFallbackLogged;
+
+    private enum MouseButtonGesture
+    {
+        None,
+        PrimaryClick,
+        Orbit,
+        Pan,
+    }
 
     private readonly ViewportTouchGestureRecognizer _recognizer = new();
     private readonly Handler _handler = new(Looper.MainLooper!);
     private float _density;
     private bool _tickScheduled;
+    private MouseButtonGesture _mouseGesture;
+    private int _mousePointerId = -1;
+    private Point2D _mouseDownPosition;
+    private Point2D _mouseLastPosition;
+    private bool _mouseMoved;
+    private bool _mouseToolDragStarted;
     private bool _secondaryPressActive;
     private bool _disposed;
     private bool _suppressFingerPointers;
@@ -33,6 +48,8 @@ public sealed class AndroidPointerSource : IDisposable
 
     /// <summary>Subscribe to receive gesture events on the UI thread.</summary>
     public event Action<TouchGestureEvent>? GestureRecognized;
+
+    public double MouseClickDragThresholdDip { get; set; } = DefaultMouseClickDragThresholdDip;
 
     /// <summary>
     /// When enabled, viewport gestures suppress finger pointers only while
@@ -64,6 +81,8 @@ public sealed class AndroidPointerSource : IDisposable
         {
             case MotionEventActions.Down:
             {
+                if (TryBeginMouseButtonGesture(motionEvent, time))
+                    break;
                 if (ShouldIgnoreActionPointer(motionEvent))
                     break;
                 if (TryFireSecondaryTap(motionEvent, time))
@@ -77,6 +96,8 @@ public sealed class AndroidPointerSource : IDisposable
 
             case MotionEventActions.PointerDown:
             {
+                if (TryBeginMouseButtonGesture(motionEvent, time))
+                    break;
                 if (ShouldIgnoreActionPointer(motionEvent))
                     break;
                 if (TryFireSecondaryTap(motionEvent, time))
@@ -91,6 +112,9 @@ public sealed class AndroidPointerSource : IDisposable
 
             case MotionEventActions.Move:
             {
+                if (TryUpdateMouseButtonGesture(motionEvent, time))
+                    break;
+
                 int pointerCount = motionEvent.PointerCount;
                 int historySize = motionEvent.HistorySize;
 
@@ -112,7 +136,13 @@ public sealed class AndroidPointerSource : IDisposable
                     break;
                 if (IsCanceled(motionEvent))
                 {
+                    CancelMouseButtonGesture(time);
                     Fire(_recognizer.Cancel(time));
+                    ClearPalmRejectionIfStylusActionPointer(motionEvent);
+                    break;
+                }
+                if (TryEndMouseButtonGesture(motionEvent, time))
+                {
                     ClearPalmRejectionIfStylusActionPointer(motionEvent);
                     break;
                 }
@@ -129,7 +159,13 @@ public sealed class AndroidPointerSource : IDisposable
                     break;
                 if (IsCanceled(motionEvent))
                 {
+                    CancelMouseButtonGesture(time);
                     Fire(_recognizer.Cancel(time));
+                    ClearPalmRejectionIfStylusActionPointer(motionEvent);
+                    break;
+                }
+                if (TryEndMouseButtonGesture(motionEvent, time))
+                {
                     ClearPalmRejectionIfStylusActionPointer(motionEvent);
                     break;
                 }
@@ -142,6 +178,7 @@ public sealed class AndroidPointerSource : IDisposable
 
             case MotionEventActions.Cancel:
             {
+                CancelMouseButtonGesture(time);
                 _secondaryPressActive = false;
                 ClearPalmRejectionSuppression();
                 Fire(_recognizer.Cancel(time));
@@ -150,13 +187,15 @@ public sealed class AndroidPointerSource : IDisposable
 
             case MotionEventActions.ButtonPress:
             {
-                TryFireSecondaryTap(motionEvent, time);
+                if (!TryBeginMouseButtonGesture(motionEvent, time))
+                    TryFireSecondaryTap(motionEvent, time);
                 break;
             }
 
             case MotionEventActions.ButtonRelease:
             {
-                _secondaryPressActive = false;
+                if (!TryEndMouseButtonGesture(motionEvent, time))
+                    ResetSecondaryPress();
                 break;
             }
         }
@@ -170,20 +209,28 @@ public sealed class AndroidPointerSource : IDisposable
         DateTime time = DateTime.UtcNow;
         return motionEvent.ActionMasked switch
         {
-            MotionEventActions.ButtonPress => TryFireSecondaryTap(motionEvent, time),
-            MotionEventActions.ButtonRelease => ResetSecondaryPress(),
+            MotionEventActions.ButtonPress => TryBeginMouseButtonGesture(motionEvent, time)
+                                               || TryFireSecondaryTap(motionEvent, time),
+            MotionEventActions.ButtonRelease => TryEndMouseButtonGesture(motionEvent, time)
+                                                 || ResetSecondaryPress(),
+            MotionEventActions.Move or MotionEventActions.HoverMove => TryUpdateMouseButtonGesture(motionEvent, time),
+            MotionEventActions.Scroll => TryFireMouseWheel(motionEvent),
+            MotionEventActions.Cancel => CancelMouseButtonGesture(time),
             _ => false,
         };
     }
 
     private bool ResetSecondaryPress()
     {
+        bool wasActive = _secondaryPressActive;
         _secondaryPressActive = false;
-        return false;
+        return wasActive;
     }
 
     private bool TryFireSecondaryTap(MotionEvent ev, DateTime time)
     {
+        if (IsMousePointerEvent(ev))
+            return false;
         if (ShouldIgnoreActionPointer(ev))
             return false;
         if (!IsSecondaryButtonPressed(ev) || _secondaryPressActive)
@@ -198,16 +245,350 @@ public sealed class AndroidPointerSource : IDisposable
         return true;
     }
 
+    private bool TryBeginMouseButtonGesture(MotionEvent ev, DateTime time)
+    {
+        if (!IsMousePointerEvent(ev))
+            return false;
+        if (ShouldIgnoreActionPointer(ev))
+            return false;
+        if (!TryGetPressedMouseGesture(ev, out MouseButtonGesture gesture))
+            return false;
+
+        if (_mouseGesture != MouseButtonGesture.None)
+            return true;
+
+        int pointerIndex = ActionPointerIndex(ev);
+        _mouseGesture = gesture;
+        _mousePointerId = ev.GetPointerId(pointerIndex);
+        _mouseDownPosition = Sample(ev, pointerIndex);
+        _mouseLastPosition = _mouseDownPosition;
+        _mouseMoved = false;
+
+        Fire(_recognizer.Cancel(time));
+
+        TouchGestureKind? beginKind = gesture switch
+        {
+            MouseButtonGesture.Orbit => TouchGestureKind.MouseOrbitBegin,
+            MouseButtonGesture.Pan => TouchGestureKind.MousePanBegin,
+            _ => null,
+        };
+
+        if (beginKind is { } kind)
+        {
+            Fire(new[]
+            {
+                new TouchGestureEvent(kind, _mouseDownPosition, Vector2D.Zero, 1.0),
+            });
+        }
+
+        return true;
+    }
+
+    private bool TryUpdateMouseButtonGesture(MotionEvent ev, DateTime time)
+    {
+        if (_mouseGesture == MouseButtonGesture.None)
+            return false;
+
+        MotionEventActions action = ev.ActionMasked;
+        if (action is not (MotionEventActions.Move or MotionEventActions.HoverMove))
+            return false;
+
+        MotionEventButtonState activeButton = ActiveMouseButton(_mouseGesture);
+        if (action == MotionEventActions.HoverMove
+            && activeButton != 0
+            && !IsButtonPressed(ev, activeButton))
+        {
+            return TryEndMouseButtonGesture(ev, time);
+        }
+
+        int pointerIndex = PointerIndexForIdOrAction(ev, _mousePointerId);
+        Point2D position = Sample(ev, pointerIndex);
+        UpdateMouseMoved(position);
+
+        Vector2D delta = position - _mouseLastPosition;
+        _mouseLastPosition = position;
+        if (delta.Length <= 0.0)
+            return true;
+
+        if (_mouseGesture == MouseButtonGesture.PrimaryClick)
+        {
+            if (!_mouseMoved)
+                return true;
+
+            if (!_mouseToolDragStarted)
+            {
+                _mouseToolDragStarted = true;
+                Fire(new[]
+                {
+                    new TouchGestureEvent(TouchGestureKind.MouseToolBegin, _mouseDownPosition, Vector2D.Zero, 1.0),
+                });
+            }
+
+            Fire(new[]
+            {
+                new TouchGestureEvent(TouchGestureKind.MouseToolDelta, position, delta, 1.0),
+            });
+            return true;
+        }
+
+        TouchGestureKind? deltaKind = _mouseGesture switch
+        {
+            MouseButtonGesture.Orbit => TouchGestureKind.MouseOrbitDelta,
+            MouseButtonGesture.Pan => TouchGestureKind.MousePanDelta,
+            _ => null,
+        };
+
+        if (deltaKind is { } kind)
+        {
+            Fire(new[]
+            {
+                new TouchGestureEvent(kind, position, delta, 1.0),
+            });
+        }
+
+        return true;
+    }
+
+    private bool TryEndMouseButtonGesture(MotionEvent ev, DateTime time)
+    {
+        if (_mouseGesture == MouseButtonGesture.None)
+            return false;
+
+        if (!IsMouseGestureRelease(ev, ActiveMouseButton(_mouseGesture)))
+            return false;
+
+        int pointerIndex = PointerIndexForIdOrAction(ev, _mousePointerId);
+        Point2D position = Sample(ev, pointerIndex);
+        UpdateMouseMoved(position);
+
+        MouseButtonGesture endedGesture = _mouseGesture;
+        bool moved = _mouseMoved;
+        ResetMouseButtonGesture();
+
+        switch (endedGesture)
+        {
+            case MouseButtonGesture.PrimaryClick:
+                if (moved)
+                {
+                    if (!_mouseToolDragStarted)
+                    {
+                        Fire(new[]
+                        {
+                            new TouchGestureEvent(TouchGestureKind.MouseToolBegin, _mouseDownPosition, Vector2D.Zero, 1.0),
+                        });
+                    }
+
+                    Fire(new[]
+                    {
+                        new TouchGestureEvent(TouchGestureKind.MouseToolEnd, position, Vector2D.Zero, 1.0),
+                    });
+                }
+                else
+                {
+                    Fire(new[]
+                    {
+                        new TouchGestureEvent(TouchGestureKind.Tap, position, Vector2D.Zero, 1.0),
+                    });
+                }
+                break;
+
+            case MouseButtonGesture.Orbit:
+                Fire(new[]
+                {
+                    new TouchGestureEvent(TouchGestureKind.MouseOrbitEnd, position, Vector2D.Zero, 1.0),
+                });
+                if (!moved)
+                {
+                    Fire(new[]
+                    {
+                        new TouchGestureEvent(TouchGestureKind.SecondaryTap, position, Vector2D.Zero, 1.0),
+                    });
+                }
+                break;
+
+            case MouseButtonGesture.Pan:
+                Fire(new[]
+                {
+                    new TouchGestureEvent(TouchGestureKind.MousePanEnd, position, Vector2D.Zero, 1.0),
+                });
+                break;
+        }
+
+        return true;
+    }
+
+    private bool CancelMouseButtonGesture(DateTime time)
+    {
+        if (_mouseGesture == MouseButtonGesture.None)
+            return false;
+
+        MouseButtonGesture endedGesture = _mouseGesture;
+        Point2D position = _mouseLastPosition;
+        ResetMouseButtonGesture();
+
+        var events = new List<TouchGestureEvent>
+        {
+            new(TouchGestureKind.Cancel, position, Vector2D.Zero, 1.0),
+        };
+
+        if (endedGesture == MouseButtonGesture.Orbit)
+            events.Add(new TouchGestureEvent(TouchGestureKind.MouseOrbitEnd, position, Vector2D.Zero, 1.0));
+        else if (endedGesture == MouseButtonGesture.Pan)
+            events.Add(new TouchGestureEvent(TouchGestureKind.MousePanEnd, position, Vector2D.Zero, 1.0));
+
+        Fire(events);
+        return true;
+    }
+
+    private bool TryFireMouseWheel(MotionEvent ev)
+    {
+        if (!IsMousePointerEvent(ev))
+            return false;
+
+        double vscroll = ev.GetAxisValue(Axis.Vscroll);
+        if (!double.IsFinite(vscroll) || System.Math.Abs(vscroll) <= 0.0)
+            return false;
+
+        int pointerIndex = ActionPointerIndex(ev);
+        Fire(new[]
+        {
+            new TouchGestureEvent(
+                TouchGestureKind.MouseWheel,
+                Sample(ev, pointerIndex),
+                new Vector2D(0.0, vscroll),
+                1.0),
+        });
+        return true;
+    }
+
+    private void UpdateMouseMoved(Point2D position)
+    {
+        double dx = position.X - _mouseDownPosition.X;
+        double dy = position.Y - _mouseDownPosition.Y;
+        double threshold = double.IsFinite(MouseClickDragThresholdDip)
+            ? System.Math.Clamp(MouseClickDragThresholdDip, 1.0, 20.0)
+            : DefaultMouseClickDragThresholdDip;
+        if (System.Math.Abs(dx) > threshold
+            || System.Math.Abs(dy) > threshold)
+        {
+            _mouseMoved = true;
+        }
+    }
+
+    private void ResetMouseButtonGesture()
+    {
+        _mouseGesture = MouseButtonGesture.None;
+        _mousePointerId = -1;
+        _mouseDownPosition = default;
+        _mouseLastPosition = default;
+        _mouseMoved = false;
+        _mouseToolDragStarted = false;
+    }
+
+    private static bool TryGetPressedMouseGesture(MotionEvent ev, out MouseButtonGesture gesture)
+    {
+        MotionEventButtonState actionButton = (MotionEventButtonState)ev.ActionButton;
+        if ((actionButton & MotionEventButtonState.Tertiary) == MotionEventButtonState.Tertiary)
+        {
+            gesture = MouseButtonGesture.Pan;
+            return true;
+        }
+
+        if ((actionButton & MotionEventButtonState.Secondary) == MotionEventButtonState.Secondary)
+        {
+            gesture = MouseButtonGesture.Orbit;
+            return true;
+        }
+
+        if ((actionButton & MotionEventButtonState.Primary) == MotionEventButtonState.Primary)
+        {
+            gesture = MouseButtonGesture.PrimaryClick;
+            return true;
+        }
+
+        if (IsButtonPressed(ev, MotionEventButtonState.Tertiary))
+        {
+            gesture = MouseButtonGesture.Pan;
+            return true;
+        }
+
+        if (IsButtonPressed(ev, MotionEventButtonState.Secondary))
+        {
+            gesture = MouseButtonGesture.Orbit;
+            return true;
+        }
+
+        if (IsButtonPressed(ev, MotionEventButtonState.Primary))
+        {
+            gesture = MouseButtonGesture.PrimaryClick;
+            return true;
+        }
+
+        gesture = MouseButtonGesture.None;
+        return false;
+    }
+
+    private static bool IsMouseGestureRelease(MotionEvent ev, MotionEventButtonState button)
+    {
+        MotionEventActions action = ev.ActionMasked;
+        if (action is MotionEventActions.Up or MotionEventActions.PointerUp or MotionEventActions.Cancel)
+            return true;
+
+        if (action != MotionEventActions.ButtonRelease)
+            return false;
+
+        if (button == 0)
+            return true;
+
+        if (IsActionButton(ev, button))
+            return true;
+
+        return ((MotionEventButtonState)ev.ActionButton) == 0
+               && !IsButtonPressed(ev, button);
+    }
+
+    private static MotionEventButtonState ActiveMouseButton(MouseButtonGesture gesture)
+        => gesture switch
+        {
+            MouseButtonGesture.PrimaryClick => MotionEventButtonState.Primary,
+            MouseButtonGesture.Orbit => MotionEventButtonState.Secondary,
+            MouseButtonGesture.Pan => MotionEventButtonState.Tertiary,
+            _ => 0,
+        };
+
+    private static bool IsPrimaryButtonPressed(MotionEvent ev)
+        => IsButtonPressed(ev, MotionEventButtonState.Primary);
+
     private static bool IsSecondaryButtonPressed(MotionEvent ev)
-        => ev.IsButtonPressed(MotionEventButtonState.Secondary)
-            || ev.IsButtonPressed(MotionEventButtonState.StylusPrimary)
-            || ev.IsButtonPressed(MotionEventButtonState.StylusSecondary);
+        => IsButtonPressed(ev, MotionEventButtonState.Secondary)
+            || IsButtonPressed(ev, MotionEventButtonState.StylusPrimary)
+            || IsButtonPressed(ev, MotionEventButtonState.StylusSecondary);
+
+    private static bool IsButtonPressed(MotionEvent ev, MotionEventButtonState button)
+        => ev.IsButtonPressed(button);
+
+    private static bool IsMousePointerEvent(MotionEvent ev)
+    {
+        if ((ev.Source & InputSourceType.Mouse) == InputSourceType.Mouse)
+            return true;
+
+        int count = ev.PointerCount;
+        for (int i = 0; i < count; i++)
+        {
+            if (ev.GetToolType(i) == MotionEventToolType.Mouse)
+                return true;
+        }
+
+        return false;
+    }
 
     public void CancelActiveGesture()
     {
         if (_disposed) return;
+        DateTime time = DateTime.UtcNow;
+        CancelMouseButtonGesture(time);
         _secondaryPressActive = false;
-        Fire(_recognizer.Cancel(DateTime.UtcNow));
+        Fire(_recognizer.Cancel(time));
     }
 
     public void NotifyStylusInput()
@@ -317,6 +698,21 @@ public sealed class AndroidPointerSource : IDisposable
 
         return 0;
     }
+
+    private static int PointerIndexForIdOrAction(MotionEvent ev, int pointerId)
+    {
+        if (pointerId >= 0)
+        {
+            int index = ev.FindPointerIndex(pointerId);
+            if (index >= 0 && index < ev.PointerCount)
+                return index;
+        }
+
+        return ActionPointerIndex(ev);
+    }
+
+    private static bool IsActionButton(MotionEvent ev, MotionEventButtonState button)
+        => (((MotionEventButtonState)ev.ActionButton) & button) == button;
 
     private static float ResolveDensity(Context context)
     {

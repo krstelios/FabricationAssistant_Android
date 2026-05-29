@@ -18,7 +18,7 @@ namespace FabricationAssistant.App.Android;
 /// <summary>
 /// Settings popup launched from the nav-rail gear icon. Built programmatically
 /// (rather than via XML) because the surface is large and repetitive: nine
-/// sections each with a mix of toggles, sensitivity SeekBars, and color
+/// sections with a mix of toggles, sensitivity SeekBars, and color
 /// pickers. Every control writes to AppSettings + invokes
 /// <see cref="OnSettingsChanged"/> so the host re-applies live without
 /// waiting for the sheet to close.
@@ -155,7 +155,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         AddRgbRow(ctx, edges, "Edge color",
             AppSettings.EdgeR, AppSettings.EdgeG, AppSettings.EdgeB,
             AppSettings.SetEdgeColor);
-        AddFloatSlider(ctx, edges, "Width", 0.05f, 2f, AppSettings.EdgeWidth, v => AppSettings.EdgeWidth = v);
+        AddFloatSlider(ctx, edges, "Normal edge thickness", 0.05f, 4f, AppSettings.EdgeWidth, v => AppSettings.EdgeWidth = v);
         AddFloatSlider(ctx, edges, "Feature angle (deg)", 1f, 150f, AppSettings.CadEdgeFeatureAngleDegrees, v => AppSettings.CadEdgeFeatureAngleDegrees = v);
         AddFloatSlider(ctx, edges, "Coplanar tolerance (deg)", 0f, 30f, AppSettings.CadEdgeCoplanarToleranceDegrees, v => AppSettings.CadEdgeCoplanarToleranceDegrees = v);
         AddFloatSlider(ctx, edges, "Weld tolerance", 1e-6f, 1e-4f, AppSettings.CadEdgeWeldToleranceScale, v => AppSettings.CadEdgeWeldToleranceScale = v);
@@ -249,6 +249,14 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         AddSwitch(ctx, measure, "Multi-measure", AppSettings.MeasureMultiMeasureEnabled, v => AppSettings.MeasureMultiMeasureEnabled = v);
         AddSwitch(ctx, measure, "Point delta breakdown", AppSettings.MeasureShowDeltaBreakdown, v => AppSettings.MeasureShowDeltaBreakdown = v);
 
+        var snap = AddSection(ctx, root, "Point Snap", "Distance and visibility");
+        AddSwitch(ctx, snap, "Enable point snap", AppSettings.MeasurePointSnapEnabled, v => AppSettings.MeasurePointSnapEnabled = v);
+        AddFloatSlider(ctx, snap, "Edge snap distance", 0.1f, 4f, AppSettings.MeasureSnapEdgeFactor, v => AppSettings.MeasureSnapEdgeFactor = v);
+        AddFloatSlider(ctx, snap, "Endpoint snap distance", 0.1f, 4f, AppSettings.MeasureSnapEndpointFactor, v => AppSettings.MeasureSnapEndpointFactor = v);
+        AddSwitch(ctx, snap, "Visible edges only", AppSettings.MeasureSnapVisibleEdgesOnly, v => AppSettings.MeasureSnapVisibleEdgesOnly = v);
+        AddFloatSlider(ctx, snap, "Visibility probe", 0.002f, 0.08f, AppSettings.MeasureSnapVisibilityProbe, v => AppSettings.MeasureSnapVisibilityProbe = v);
+        AddFloatSlider(ctx, snap, "Occlusion tolerance", 0.1f, 10f, AppSettings.MeasureSnapOcclusionToleranceFactor, v => AppSettings.MeasureSnapOcclusionToleranceFactor = v);
+
         // Section tools
         var sections = AddSection(ctx, root, "Section Tools", "Caps, planes, and gizmo");
         AddSwitch(ctx, sections, "Show section fill", AppSettings.SectionFillVisible, v => AppSettings.SectionFillVisible = v);
@@ -262,6 +270,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         AddRgbRow(ctx, sections, "Edge color",
             AppSettings.SectionEdgeR, AppSettings.SectionEdgeG, AppSettings.SectionEdgeB,
             AppSettings.SetSectionEdgeColor);
+        AddFloatSlider(ctx, sections, "Section edge thickness", 0.5f, 8f, AppSettings.SectionEdgeWidth, v => AppSettings.SectionEdgeWidth = v);
         AddRgbRow(ctx, sections, "Cap color",
             AppSettings.SectionCapR, AppSettings.SectionCapG, AppSettings.SectionCapB,
             AppSettings.SetSectionCapColor);
@@ -285,6 +294,14 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         AddFloatSlider(ctx, nav, "Orbit sensitivity", 0.1f, 5f, AppSettings.OrbitSensitivity, v => AppSettings.OrbitSensitivity = v);
         AddFloatSlider(ctx, nav, "Pan sensitivity", 0.1f, 5f, AppSettings.PanSensitivity, v => AppSettings.PanSensitivity = v);
         AddFloatSlider(ctx, nav, "Pinch-zoom sensitivity", 0.1f, 5f, AppSettings.ZoomSensitivity, v => AppSettings.ZoomSensitivity = v);
+
+        var mouse = AddSection(ctx, root, "Mouse", "Desktop-style mouse controls");
+        AddSwitch(ctx, mouse, "Enable hover", AppSettings.MouseHoverEnabled, v => AppSettings.MouseHoverEnabled = v);
+        AddSwitch(ctx, mouse, "Invert wheel zoom", AppSettings.MouseInvertWheelZoom, v => AppSettings.MouseInvertWheelZoom = v);
+        AddFloatSlider(ctx, mouse, "Right-drag orbit speed", 0.1f, 5f, AppSettings.MouseOrbitSpeed, v => AppSettings.MouseOrbitSpeed = v);
+        AddFloatSlider(ctx, mouse, "Middle-drag pan speed", 0.1f, 5f, AppSettings.MousePanSpeed, v => AppSettings.MousePanSpeed = v);
+        AddFloatSlider(ctx, mouse, "Wheel zoom speed", 0.1f, 5f, AppSettings.MouseWheelZoomSpeed, v => AppSettings.MouseWheelZoomSpeed = v);
+        AddFloatSlider(ctx, mouse, "Click vs drag threshold", 1f, 20f, AppSettings.MouseDragThresholdDip, v => AppSettings.MouseDragThresholdDip = v);
 
         AddSubtle(ctx, root, "Rendering controls apply live.");
 

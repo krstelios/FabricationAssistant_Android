@@ -87,6 +87,23 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster
     public MeasureRaycastHit? Raycast(Vector3d origin, Vector3d direction)
         => Raycast(origin, direction, collectDiagnostics: false);
 
+    public MeasureRaycastHit? RaycastForVisibility(Vector3d origin, Vector3d direction)
+    {
+        int? preferredNodeId = _preferredNodeId;
+        _preferredNodeId = null;
+        try
+        {
+            return Raycast(origin, direction, collectDiagnostics: false);
+        }
+        finally
+        {
+            _preferredNodeId = preferredNodeId;
+        }
+    }
+
+    public bool IsWorldPointVisible(Vector3d point)
+        => AndroidSectionClipper.IsPointVisible(point, GetActiveSectionPlanes(), SceneDiagonal);
+
     public MeasureRaycastHit? Raycast(Vector3d origin, Vector3d direction, bool collectDiagnostics)
     {
         Scene? scene = _sceneAccessor();

@@ -41,6 +41,77 @@ internal static class AndroidSectionClipper
         return true;
     }
 
+    public static bool TryClipRayToVisibleInterval(
+        Vector3d rayOrigin,
+        Vector3d rayDirection,
+        double intervalMin,
+        double intervalMax,
+        IReadOnlyList<SectionPlane>? planes,
+        double sceneDiagonal,
+        out double visibleMin,
+        out double visibleMax)
+    {
+        visibleMin = intervalMin;
+        visibleMax = intervalMax;
+
+        if (!IsFinite(rayOrigin)
+            || !IsFinite(rayDirection)
+            || rayDirection.LengthSquared <= 1e-24
+            || !double.IsFinite(intervalMin)
+            || !double.IsFinite(intervalMax)
+            || intervalMax < intervalMin)
+        {
+            return false;
+        }
+
+        if (planes is null || planes.Count == 0)
+            return true;
+
+        double tolerance = ResolvePlaneTolerance(sceneDiagonal);
+        int count = Math.Min(planes.Count, MaxSectionPlanes);
+        for (int i = 0; i < count; i++)
+        {
+            SectionPlane plane = planes[i];
+            double normalLength = Math.Sqrt(
+                plane.Normal.X * plane.Normal.X
+                + plane.Normal.Y * plane.Normal.Y
+                + plane.Normal.Z * plane.Normal.Z);
+            if (!double.IsFinite(normalLength) || normalLength <= 1e-12)
+                continue;
+
+            double threshold = plane.Offset - (tolerance * normalLength);
+            double originDistance =
+                (plane.Normal.X * rayOrigin.X)
+                + (plane.Normal.Y * rayOrigin.Y)
+                + (plane.Normal.Z * rayOrigin.Z);
+            double directionDistance =
+                (plane.Normal.X * rayDirection.X)
+                + (plane.Normal.Y * rayDirection.Y)
+                + (plane.Normal.Z * rayDirection.Z);
+
+            if (Math.Abs(directionDistance) <= 1e-12)
+            {
+                if (originDistance < threshold)
+                    return false;
+                continue;
+            }
+
+            double t = (threshold - originDistance) / directionDistance;
+            if (!double.IsFinite(t))
+                return false;
+
+            if (directionDistance > 0.0)
+                visibleMin = Math.Max(visibleMin, t);
+            else
+                visibleMax = Math.Min(visibleMax, t);
+
+            if (visibleMax < visibleMin)
+                return false;
+        }
+
+        return true;
+    }
+
     private static double ResolvePlaneTolerance(double sceneDiagonal)
         => Math.Max(
             PlaneTolerance,

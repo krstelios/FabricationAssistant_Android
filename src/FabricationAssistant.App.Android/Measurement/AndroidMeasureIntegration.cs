@@ -12,8 +12,8 @@ namespace FabricationAssistant.App.Android.Measurement;
 internal sealed class AndroidMeasureIntegration : IDisposable
 {
     private const int MaxVertsPerMesh = 4096;
-    internal const double AndroidEdgeSnapAngularTolerance = MeshMeasurePicker.DefaultEdgeSnapAngularTolerance * 2.0;
-    internal const double AndroidEndpointSnapAngularTolerance = MeshMeasurePicker.DefaultEndpointSnapAngularTolerance * 2.0;
+    internal const double AndroidEdgeSnapAngularTolerance = MeshMeasurePicker.DefaultEdgeSnapAngularTolerance * 1.0;
+    internal const double AndroidEndpointSnapAngularTolerance = MeshMeasurePicker.DefaultEndpointSnapAngularTolerance * 1.0;
 
     private readonly Func<Scene?> _sceneAccessor;
     private readonly Action _invalidate;
@@ -23,12 +23,16 @@ internal sealed class AndroidMeasureIntegration : IDisposable
     private readonly AndroidMeasureRaycaster _raycaster;
     private readonly MeasureTool _tool;
     private readonly MeasurementPresenter _presenter;
+    private readonly Func<EdgeSnapVisibilityRequest, bool> _snapVisibilityFilter;
     private readonly EventHandler _measurementsChangedHandler;
     private readonly EventHandler _sessionStateChangedHandler;
     private string _lastStateLogKey = "";
     private long _lastStateLogMs;
     private string _lastPresentationLogKey = "";
     private bool _multiMeasureEnabled = true;
+    private bool _snapVisibleEdgesOnly = true;
+    private double _snapVisibilityProbe = 0.01;
+    private double _snapOcclusionToleranceFactor = 1.0;
     private bool _showDeltaBreakdown;
     private BoundingBoxMode _boundingBoxMode = BoundingBoxMode.BestFit;
 
@@ -43,6 +47,8 @@ internal sealed class AndroidMeasureIntegration : IDisposable
 
         _session = new MeasurementSession(_store, _units, MeasurementTolerances.Default, undoService);
         _raycaster = new AndroidMeasureRaycaster(sceneAccessor, sectionPlanesAccessor);
+        _snapVisibilityFilter = IsSnapTargetVisible;
+        EdgeSnapService.VisibilityFilter = _snapVisibilityFilter;
         var picker = new MeshMeasurePicker(
             _raycaster,
             MeasurementTolerances.Default,
@@ -75,13 +81,32 @@ internal sealed class AndroidMeasureIntegration : IDisposable
 
     internal IMeasurementStore Store => _store;
 
-    public void ApplySettings(bool multiMeasureEnabled, bool showDeltaBreakdown, BoundingBoxMode boundingBoxMode)
+    public void ApplySettings(
+        bool multiMeasureEnabled,
+        bool showDeltaBreakdown,
+        BoundingBoxMode boundingBoxMode,
+        bool pointSnapEnabled,
+        double edgeSnapFactor,
+        double endpointSnapFactor,
+        bool snapVisibleEdgesOnly,
+        double snapVisibilityProbe,
+        double snapOcclusionToleranceFactor)
     {
         _multiMeasureEnabled = multiMeasureEnabled;
         _showDeltaBreakdown = showDeltaBreakdown;
         _boundingBoxMode = boundingBoxMode is BoundingBoxMode.AxisAligned or BoundingBoxMode.BestFit
             ? boundingBoxMode
             : BoundingBoxMode.BestFit;
+        _snapVisibleEdgesOnly = snapVisibleEdgesOnly;
+        _snapVisibilityProbe = double.IsFinite(snapVisibilityProbe)
+            ? Math.Clamp(snapVisibilityProbe, 0.002, 0.08)
+            : 0.01;
+        _snapOcclusionToleranceFactor = double.IsFinite(snapOcclusionToleranceFactor)
+            ? Math.Clamp(snapOcclusionToleranceFactor, 0.1, 10.0)
+            : 1.0;
+        EdgeSnapService.SnapEnabled = pointSnapEnabled;
+        EdgeSnapService.EdgeSnapToleranceFactor = edgeSnapFactor;
+        EdgeSnapService.EndpointSnapToleranceFactor = endpointSnapFactor;
     }
 
     public void ClearRaycastAccelerationCache(string reason)
@@ -89,6 +114,9 @@ internal sealed class AndroidMeasureIntegration : IDisposable
 
     public void Dispose()
     {
+        if (ReferenceEquals(EdgeSnapService.VisibilityFilter, _snapVisibilityFilter))
+            EdgeSnapService.VisibilityFilter = null;
+
         _store.MeasurementsChanged -= _measurementsChangedHandler;
         _session.StateChanged -= _sessionStateChangedHandler;
     }
@@ -445,6 +473,84 @@ internal sealed class AndroidMeasureIntegration : IDisposable
            || _session.HoverPoint is not null
            || _session.HoverFace is not null
            || _store.HoveredId is not null;
+
+    private bool IsSnapTargetVisible(EdgeSnapVisibilityRequest request)
+    {
+        if (!_snapVisibleEdgesOnly)
+            return true;
+
+        if (!IsFinite(request.WorldPoint)
+            || !IsFinite(request.EdgeStart)
+            || !IsFinite(request.EdgeEnd)
+            || !_raycaster.IsWorldPointVisible(request.WorldPoint))
+        {
+            return false;
+        }
+
+        return IsEdgeVisibleNearSnapTarget(request);
+    }
+
+    private bool IsEdgeVisibleNearSnapTarget(EdgeSnapVisibilityRequest request)
+    {
+        Vector3d edge = request.EdgeEnd - request.EdgeStart;
+        double length = edge.Length;
+        if (!double.IsFinite(length) || length <= 1e-9)
+            return IsWorldSampleVisibleFromCamera(request, request.WorldPoint);
+
+        Vector3d direction = edge / length;
+        double t = Vector3d.Dot(request.WorldPoint - request.EdgeStart, direction) / length;
+        t = Math.Clamp(t, 0.0, 1.0);
+        double sampleStep = _snapVisibilityProbe;
+        double sampleT;
+        if (t <= sampleStep)
+        {
+            sampleT = Math.Min(1.0, sampleStep);
+        }
+        else if (t >= 1.0 - sampleStep)
+        {
+            sampleT = Math.Max(0.0, 1.0 - sampleStep);
+        }
+        else
+        {
+            sampleT = t;
+        }
+
+        Vector3d sample = request.EdgeStart + edge * sampleT;
+        return IsWorldSampleVisibleFromCamera(request, sample);
+    }
+
+    private bool IsWorldSampleVisibleFromCamera(EdgeSnapVisibilityRequest request, Vector3d sample)
+    {
+        if (!IsFinite(sample) || !_raycaster.IsWorldPointVisible(sample))
+            return false;
+
+        Vector3d rayOrigin = request.RayOrigin;
+        Vector3d toTarget = sample - rayOrigin;
+        double targetDistance = toTarget.Length;
+        if (!double.IsFinite(targetDistance) || targetDistance <= 1e-9)
+            return false;
+
+        MeasureRaycastHit? hit = _raycaster.RaycastForVisibility(rayOrigin, toTarget / targetDistance);
+        if (hit is null)
+            return true;
+
+        double hitDistance = Vector3d.Distance(rayOrigin, hit.Value.WorldPoint);
+        return hitDistance + ResolveSnapVisibilityTolerance(targetDistance) >= targetDistance;
+    }
+
+    private double ResolveSnapVisibilityTolerance(double targetDistance)
+    {
+        double sceneDiagonal = _raycaster.SceneDiagonal;
+        double referenceLength = Math.Max(
+            double.IsFinite(sceneDiagonal) && sceneDiagonal > 0.0 ? sceneDiagonal : 1.0,
+            targetDistance);
+        return Math.Max(1.0e-6, referenceLength * 1.0e-6 * _snapOcclusionToleranceFactor);
+    }
+
+    private static bool IsFinite(Vector3d value)
+        => double.IsFinite(value.X)
+           && double.IsFinite(value.Y)
+           && double.IsFinite(value.Z);
 
     private static string Format(Vector3d value)
         => $"({value.X:0.###},{value.Y:0.###},{value.Z:0.###})";

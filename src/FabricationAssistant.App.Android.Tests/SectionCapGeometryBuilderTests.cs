@@ -174,6 +174,51 @@ public sealed class SectionCapGeometryBuilderTests
     }
 
     [Fact]
+    public void Build_DoesNotCloseSplitPrimitiveLoopWithoutGroup()
+    {
+        MeshDto[] parts = CreateSplitCrossingSegmentLoop();
+        var plane = new SectionCapPlane(Vector3.Zero, Vector3.UnitX, Vector3.UnitY, Vector3.UnitZ);
+
+        SectionCapGeometry geometry = SectionCapGeometryBuilder.Build(
+            new[]
+            {
+                new SectionCapMeshSource(parts[0], Matrix4d.Identity),
+                new SectionCapMeshSource(parts[1], Matrix4d.Identity),
+            },
+            plane,
+            new[] { plane },
+            activePlaneIndex: 0,
+            sceneDiagonal: 4.0);
+
+        Assert.Empty(geometry.TriangleVertices);
+        Assert.NotEmpty(geometry.VectorLineVertices);
+        Assert.True(geometry.Diagnostics.OpenPrunedSegmentCount > 0);
+    }
+
+    [Fact]
+    public void Build_MergesGroupedSourcesToCloseSplitPrimitiveLoop()
+    {
+        MeshDto[] parts = CreateSplitCrossingSegmentLoop();
+        var plane = new SectionCapPlane(Vector3.Zero, Vector3.UnitX, Vector3.UnitY, Vector3.UnitZ);
+
+        SectionCapGeometry geometry = SectionCapGeometryBuilder.Build(
+            new[]
+            {
+                new SectionCapMeshSource(parts[0], Matrix4d.Identity) { GroupId = 42 },
+                new SectionCapMeshSource(parts[1], Matrix4d.Identity) { GroupId = 42 },
+            },
+            plane,
+            new[] { plane },
+            activePlaneIndex: 0,
+            sceneDiagonal: 4.0);
+
+        Assert.NotEmpty(geometry.TriangleVertices);
+        Assert.True(geometry.Diagnostics.ClosedRegionCount > 0);
+        Assert.True(geometry.Diagnostics.FilledRegionCount > 0);
+        Assert.Equal(0, geometry.Diagnostics.OpenPrunedSegmentCount);
+    }
+
+    [Fact]
     public void Build_IgnoresCoplanarTriangles()
     {
         var mesh = new MeshDto
@@ -311,6 +356,35 @@ public sealed class SectionCapGeometryBuilderTests
             Indices = indices.ToArray(),
             TriangleCount = indices.Count / 3,
         };
+    }
+
+    private static MeshDto[] CreateSplitCrossingSegmentLoop()
+    {
+        var firstPositions = new List<float>();
+        var firstIndices = new List<int>();
+        AddCrossingSegmentTriangle(firstPositions, firstIndices, -1.0, -1.0, 1.0, -1.0);
+        AddCrossingSegmentTriangle(firstPositions, firstIndices, 1.0, -1.0, 1.0, 1.0);
+
+        var secondPositions = new List<float>();
+        var secondIndices = new List<int>();
+        AddCrossingSegmentTriangle(secondPositions, secondIndices, 1.0, 1.0, -1.0, 1.0);
+        AddCrossingSegmentTriangle(secondPositions, secondIndices, -1.0, 1.0, -1.0, -1.0);
+
+        return
+        [
+            new MeshDto
+            {
+                Positions = firstPositions.ToArray(),
+                Indices = firstIndices.ToArray(),
+                TriangleCount = firstIndices.Count / 3,
+            },
+            new MeshDto
+            {
+                Positions = secondPositions.ToArray(),
+                Indices = secondIndices.ToArray(),
+                TriangleCount = secondIndices.Count / 3,
+            },
+        ];
     }
 
     private static void AddCrossingSegmentTriangle(

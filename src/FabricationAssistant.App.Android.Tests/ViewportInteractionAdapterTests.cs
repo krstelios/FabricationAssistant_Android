@@ -183,6 +183,95 @@ public sealed class ViewportInteractionAdapterTests
     }
 
     [Fact]
+    public void MouseOrbitDelta_UsesDesktopMouseSpeedWithoutTouchRamp()
+    {
+        var camera = InteractionCamera();
+        var expected = InteractionCamera();
+        Vector3d pivot = Vector3d.Zero;
+
+        var adapter = new ViewportInteractionAdapter(
+            camera,
+            boundsAccessor: () => new BoundingBox(new Vector3d(-20, -20, -20), new Vector3d(20, 20, 20)),
+            aspectAccessor: () => 1.0,
+            requestRender: () => { },
+            pivotPicker: _ => pivot);
+
+        adapter.OnGesture(new TouchGestureEvent(TouchGestureKind.MouseOrbitBegin, new Point2D(100, 100), Vector2D.Zero, 1.0));
+        adapter.OnGesture(new TouchGestureEvent(TouchGestureKind.MouseOrbitDelta, new Point2D(120, 100), new Vector2D(20, 0), 1.0));
+
+        expected.OrbitAroundPoint(pivot, 20 * 0.005 * 0.8, 0.0);
+
+        AssertVectorClose(expected.Position, camera.Position);
+        AssertVectorClose(expected.Target, camera.Target);
+    }
+
+    [Fact]
+    public void MousePanDelta_UsesDesktopPerspectivePanAndCarriesPivot()
+    {
+        var camera = InteractionCamera();
+
+        var adapter = new ViewportInteractionAdapter(
+            camera,
+            boundsAccessor: () => new BoundingBox(new Vector3d(-20, -20, -20), new Vector3d(20, 20, 20)),
+            aspectAccessor: () => 1.0,
+            requestRender: () => { },
+            pivotPicker: _ => null);
+
+        adapter.SetNavigationPivot(Vector3d.Zero);
+        adapter.OnGesture(new TouchGestureEvent(TouchGestureKind.MousePanBegin, new Point2D(100, 100), Vector2D.Zero, 1.0));
+        adapter.OnGesture(new TouchGestureEvent(TouchGestureKind.MousePanDelta, new Point2D(110, 100), new Vector2D(10, 0), 1.0));
+        adapter.OnGesture(new TouchGestureEvent(TouchGestureKind.MousePanEnd, new Point2D(110, 100), Vector2D.Zero, 1.0));
+
+        var movedPivot = new Vector3d(-0.066, 0.0, 0.0);
+        Assert.Equal(movedPivot.X, camera.Target.X, precision: 9);
+
+        double distanceBefore = Vector3d.Distance(camera.Position, movedPivot);
+        adapter.OnGesture(new TouchGestureEvent(TouchGestureKind.MouseOrbitBegin, new Point2D(300, 300), Vector2D.Zero, 1.0));
+        adapter.OnGesture(new TouchGestureEvent(TouchGestureKind.MouseOrbitDelta, new Point2D(360, 300), new Vector2D(60, 0), 1.0));
+        double distanceAfter = Vector3d.Distance(camera.Position, movedPivot);
+
+        Assert.Equal(distanceBefore, distanceAfter, precision: 9);
+    }
+
+    [Fact]
+    public void MouseWheel_ZoomsAroundNavigationPivotWithDesktopNotchScale()
+    {
+        var camera = InteractionCamera();
+        var pivot = new Vector3d(2, 0, 0);
+        double distanceBefore = Vector3d.Distance(camera.Position, pivot);
+
+        var adapter = new ViewportInteractionAdapter(
+            camera,
+            boundsAccessor: () => new BoundingBox(new Vector3d(-20, -20, -20), new Vector3d(20, 20, 20)),
+            aspectAccessor: () => 1.0,
+            requestRender: () => { });
+
+        adapter.SetNavigationPivot(pivot);
+        adapter.OnGesture(new TouchGestureEvent(TouchGestureKind.MouseWheel, new Point2D(100, 100), new Vector2D(0, 1), 1.0));
+
+        Assert.Equal(distanceBefore * 0.9, Vector3d.Distance(camera.Position, pivot), precision: 9);
+    }
+
+    [Fact]
+    public void MouseWheel_OrthographicAxisAlignedViewZoomsAroundCursor()
+    {
+        var camera = OrthographicCamera(distance: 100.0, orthoWidth: 100.0);
+
+        var adapter = new ViewportInteractionAdapter(
+            camera,
+            boundsAccessor: () => new BoundingBox(new Vector3d(-50, -50, -50), new Vector3d(50, 50, 50)),
+            aspectAccessor: () => 1.0,
+            requestRender: () => { },
+            viewportWidthDipAccessor: () => 500.0);
+
+        adapter.OnGesture(new TouchGestureEvent(TouchGestureKind.MouseWheel, new Point2D(300, 250), new Vector2D(0, 1), 1.0));
+
+        Assert.Equal(90.0, camera.OrthoWidth, precision: 9);
+        Assert.Equal(1.0, camera.Target.X, precision: 9);
+        Assert.Equal(0.0, camera.Target.Z, precision: 9);
+    }
+
+    [Fact]
     public void OrbitGesture_WhenFixedViewLocked_DoesNotMoveCamera()
     {
         var camera = InteractionCamera();
@@ -343,4 +432,11 @@ public sealed class ViewportInteractionAdapterTests
             NearPlane = 0.01,
             FarPlane = distance * 2.0,
         };
+
+    private static void AssertVectorClose(Vector3d expected, Vector3d actual)
+    {
+        Assert.Equal(expected.X, actual.X, precision: 9);
+        Assert.Equal(expected.Y, actual.Y, precision: 9);
+        Assert.Equal(expected.Z, actual.Z, precision: 9);
+    }
 }

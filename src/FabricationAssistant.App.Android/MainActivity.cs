@@ -152,11 +152,20 @@ public sealed class MainActivity : AppCompatActivity
     private int _pendingHoverPickVersion;
     private int _hoverSessionVersion;
     private int _interactiveNavigationVersion;
+    private TouchGestureKind? _lastNavigationGestureKind;
+    private Point2D _lastNavigationGesturePositionDip;
+    private long _lastNavigationGestureTicks;
     private int _preferredPointerFallbackLogged;
     private bool? _appliedSpenPalmRejectionEnabled;
     private bool _spenPalmGuardActive;
     private bool _stylusHoverLogged;
     private bool _stylusSecondaryContextActive;
+    private View? _genericMousePressedView;
+    private long _genericMousePressedDownTime = -1;
+    private float _genericMousePressedRawX;
+    private float _genericMousePressedRawY;
+    private long _lastMouseTouchDownTime = -1;
+    private long _lastMouseTouchUpDownTime = -1;
     private long _lastSpenPalmToggleToastMs;
     private MaterialToolbar? _topAppBar;
     private View? _navRail;
@@ -490,11 +499,11 @@ public sealed class MainActivity : AppCompatActivity
             clipBoundsAccessor: () => GetCameraClipBounds(),
             isDoubleTapFitEnabledAccessor: () => AppSettings.DoubleTapFitScreenEnabled);
         _pointerSource.GestureRecognized += OnGestureForToolbarTools;
-        _pointerSource.GestureRecognized += _interaction.OnGesture;
+        _pointerSource.GestureRecognized += OnGestureForNavigation;
         _pointerSource.GestureRecognized += OnGestureForSelection;
         _viewport.SetOnTouchListener(new TouchProxy(_pointerSource, this));
         _viewport.SetOnHoverListener(new HoverProxy(this));
-        _viewport.SetOnGenericMotionListener(new GenericMotionProxy(_pointerSource));
+        _viewport.SetOnGenericMotionListener(new GenericMotionProxy(_pointerSource, this));
 
         _measure = new AndroidMeasureIntegration(
             () => _runtimeScene,
@@ -570,6 +579,20 @@ public sealed class MainActivity : AppCompatActivity
 #else
         RestoreSavedModel(savedInstanceState);
 #endif
+    }
+
+    public override bool DispatchTouchEvent(MotionEvent? ev)
+    {
+        TrackMouseTouchDispatch(ev);
+        return base.DispatchTouchEvent(ev);
+    }
+
+    public override bool DispatchGenericMotionEvent(MotionEvent? ev)
+    {
+        if (base.DispatchGenericMotionEvent(ev))
+            return true;
+
+        return HandleUnhandledMouseClick(ev);
     }
 
 #if DEBUG
@@ -869,10 +892,14 @@ public sealed class MainActivity : AppCompatActivity
         if (viewport is null)
             return;
 
+        string source = DescribeLastNavigationGesture();
+        LogSectionCapUiDiagnostic(
+            $"interactive navigation request: active={active}, source={source}, version={_interactiveNavigationVersion}, rendererActive={viewport.Renderer.InteractiveNavigationActive}");
+
         if (active)
         {
             _interactiveNavigationVersion++;
-            ApplyInteractiveNavigationActive(viewport, true);
+            ApplyInteractiveNavigationActive(viewport, true, source);
             return;
         }
 
@@ -880,18 +907,54 @@ public sealed class MainActivity : AppCompatActivity
         viewport.PostDelayed(() =>
         {
             if (_interactiveNavigationVersion != version)
+            {
+                LogSectionCapUiDiagnostic(
+                    $"interactive navigation deactivation skipped: staleVersion={version}, currentVersion={_interactiveNavigationVersion}, source={source}");
                 return;
-            ApplyInteractiveNavigationActive(viewport, false);
+            }
+            ApplyInteractiveNavigationActive(viewport, false, source);
         }, 220);
     }
 
-    private static void ApplyInteractiveNavigationActive(ViewportSurfaceView viewport, bool active)
+    private void ApplyInteractiveNavigationActive(ViewportSurfaceView viewport, bool active, string source)
     {
         if (viewport.Renderer.InteractiveNavigationActive == active)
+        {
+            LogSectionCapUiDiagnostic(
+                $"interactive navigation unchanged: active={active}, source={source}");
             return;
+        }
 
+        LogSectionCapUiDiagnostic(
+            $"interactive navigation applied: active={active}, source={source}");
         viewport.Renderer.InteractiveNavigationActive = active;
         viewport.RequestRender();
+    }
+
+    private string DescribeLastNavigationGesture()
+    {
+        if (_lastNavigationGestureKind is not { } kind)
+            return "none";
+
+        double ageMs = _lastNavigationGestureTicks == 0
+            ? -1.0
+            : (Stopwatch.GetTimestamp() - _lastNavigationGestureTicks) * 1000.0 / Stopwatch.Frequency;
+        return $"{kind}@({_lastNavigationGesturePositionDip.X:0.#},{_lastNavigationGesturePositionDip.Y:0.#}) ageMs={ageMs:0.0}";
+    }
+
+    private bool ShouldLogSectionCapUiDiagnostics()
+        => AppSettings.SectionCurvesVisible
+           || AppSettings.SectionCapsVisible
+           || (_sections?.Planes.Count ?? 0) > 0;
+
+    private void LogSectionCapUiDiagnostic(string message)
+    {
+        if (!ShouldLogSectionCapUiDiagnostics())
+            return;
+
+        global::Android.Util.Log.Info(
+            "FA.SectionCap",
+            $"ui: {message}, curves={AppSettings.SectionCurvesVisible}, caps={AppSettings.SectionCapsVisible}, sectionPlanes={_sections?.Planes.Count ?? 0}, activeTool={_activeModalTool}, sectionSubMode={_activeSectionSubMode}.");
     }
 
     private void OnRecentClicked(object? sender, EventArgs e)
@@ -1217,7 +1280,13 @@ public sealed class MainActivity : AppCompatActivity
 
         root.AddView(header);
 
-        EditText serverInput = AddCloudDialogField(root, "Server", AppSettings.CloudServerUrl, isPassword: false, hint: "https://cloud.example.com");
+        EditText serverInput = AddCloudDialogField(
+            root,
+            "Server",
+            AppSettings.CloudServerUrl,
+            isPassword: false,
+            hint: "http://10.0.1.159 or https://195.97.118.165");
+        TextView[] serverProfileButtons = AddCloudServerProfileButtons(root, serverInput);
         EditText emailInput = AddCloudDialogField(root, "User / email", AppSettings.CloudUserEmail, isPassword: false, hint: "user@example.com");
         EditText passwordInput = AddCloudDialogField(
             root,
@@ -1293,6 +1362,8 @@ public sealed class MainActivity : AppCompatActivity
             SetCloudDialogCommandEnabled(signIn, !busy);
             SetCloudDialogCommandEnabled(close, !busy);
             SetCloudDialogCommandEnabled(signOut, !busy);
+            foreach (TextView button in serverProfileButtons)
+                SetCloudDialogCommandEnabled(button, !busy);
             serverInput.Enabled = !busy;
             emailInput.Enabled = !busy;
             passwordInput.Enabled = !busy;
@@ -1361,6 +1432,33 @@ public sealed class MainActivity : AppCompatActivity
             if (!_isDestroyed && dialog.IsShowing)
                 SetBusy(false);
         };
+    }
+
+    private TextView[] AddCloudServerProfileButtons(ViewGroup parent, EditText serverInput)
+    {
+        var row = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        SetMarginTop(row, Dp(6));
+
+        TextView localLan = CreateCloudDialogCommandButton("Local LAN", primary: false);
+        TextView internet = CreateCloudDialogCommandButton("Internet", primary: false);
+        localLan.Click += (_, _) => SetCloudServerInput(serverInput, CloudServerUrls.LocalLanUrl);
+        internet.Click += (_, _) => SetCloudServerInput(serverInput, CloudServerUrls.InternetUrl);
+
+        row.AddView(localLan, new LinearLayout.LayoutParams(0, Dp(40), 1f));
+        var internetParams = new LinearLayout.LayoutParams(0, Dp(40), 1f);
+        internetParams.LeftMargin = Dp(8);
+        row.AddView(internet, internetParams);
+        parent.AddView(row, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MatchParent,
+            ViewGroup.LayoutParams.WrapContent));
+
+        return [localLan, internet];
+    }
+
+    private static void SetCloudServerInput(EditText input, string value)
+    {
+        input.Text = value;
+        input.SetSelection(value.Length);
     }
 
     private EditText AddCloudDialogField(ViewGroup parent, string label, string value, bool isPassword, string? hint)
@@ -3734,6 +3832,7 @@ public sealed class MainActivity : AppCompatActivity
 
         AppSettings.SectionCurvesVisible = e.IsChecked;
         UpdateSectionRendererState();
+        RequestSectionCapDiagnosticsFromUi($"toggle section curves={e.IsChecked}");
     }
 
     private void OnSectionCapsCheckedChanged(object? sender, CompoundButton.CheckedChangeEventArgs e)
@@ -3743,6 +3842,17 @@ public sealed class MainActivity : AppCompatActivity
 
         AppSettings.SectionCapsVisible = e.IsChecked;
         UpdateSectionRendererState();
+        RequestSectionCapDiagnosticsFromUi($"toggle section caps={e.IsChecked}");
+    }
+
+    private void RequestSectionCapDiagnosticsFromUi(string reason)
+    {
+        ViewportSurfaceView? viewport = _viewport;
+        GlesViewportRenderer? renderer = viewport?.Renderer;
+        LogSectionCapUiDiagnostic(
+            $"{reason}: request diagnostics, rendererActive={renderer?.InteractiveNavigationActive.ToString() ?? "n/a"}");
+        renderer?.RequestSectionCapDiagnostics(reason);
+        viewport?.RequestRender();
     }
 
     private void OnExplodeBackClicked(object? sender, EventArgs e) => ActivateSelectTool("explode return");
@@ -4409,6 +4519,31 @@ public sealed class MainActivity : AppCompatActivity
         global::Android.Util.Log.Info("FA.ZoomWindow", "Zoom Window active.");
     }
 
+    private void OnGestureForNavigation(TouchGestureEvent ev)
+    {
+        _lastNavigationGestureKind = ev.Kind;
+        _lastNavigationGesturePositionDip = ev.Position;
+        _lastNavigationGestureTicks = Stopwatch.GetTimestamp();
+
+        if (ev.Kind is TouchGestureKind.OrbitBegin
+            or TouchGestureKind.OrbitEnd
+            or TouchGestureKind.PanZoomBegin
+            or TouchGestureKind.PanZoomEnd
+            or TouchGestureKind.MouseOrbitBegin
+            or TouchGestureKind.MouseOrbitEnd
+            or TouchGestureKind.MousePanBegin
+            or TouchGestureKind.MousePanEnd
+            or TouchGestureKind.MouseWheel
+            or TouchGestureKind.Cancel
+            or TouchGestureKind.DoubleTap)
+        {
+            LogSectionCapUiDiagnostic(
+                $"viewport gesture: kind={ev.Kind}, posDip=({ev.Position.X:0.#},{ev.Position.Y:0.#}), delta=({ev.PixelDelta.X:0.#},{ev.PixelDelta.Y:0.#}), pinch={ev.PinchScale:0.###}");
+        }
+
+        _interaction?.OnGesture(ev);
+    }
+
     private void OnGestureForToolbarTools(TouchGestureEvent ev)
     {
         if (_bodyMoveGizmoActive != GlesTransformGizmoHandle.None)
@@ -4420,17 +4555,20 @@ public sealed class MainActivity : AppCompatActivity
         switch (ev.Kind)
         {
             case TouchGestureKind.OrbitBegin:
+            case TouchGestureKind.MouseToolBegin:
                 _zoomWindowStartDip = ev.Position;
                 _zoomWindowCurrentDip = ev.Position;
                 UpdateZoomWindowOverlay();
                 break;
             case TouchGestureKind.OrbitDelta:
+            case TouchGestureKind.MouseToolDelta:
                 if (_zoomWindowStartDip is null)
                     _zoomWindowStartDip = ev.Position;
                 _zoomWindowCurrentDip = ev.Position;
                 UpdateZoomWindowOverlay();
                 break;
             case TouchGestureKind.OrbitEnd:
+            case TouchGestureKind.MouseToolEnd:
                 _zoomWindowCurrentDip = ev.Position;
                 ApplyZoomWindowSelection();
                 ActivateSelectTool("zoom window finished");
@@ -4727,6 +4865,81 @@ public sealed class MainActivity : AppCompatActivity
         }
 
         return found;
+    }
+
+    private static bool TryFindClosestSectionVisibleBoundsHit(
+        IEnumerable<BoundingBox> boundsSet,
+        Vector3d rayOrigin,
+        Vector3d rayDirection,
+        IReadOnlyList<SectionPlane> sectionPlanes,
+        double sectionToleranceScale,
+        out Vector3d hitPoint)
+    {
+        hitPoint = Vector3d.Zero;
+        double closestT = double.MaxValue;
+        bool found = false;
+
+        foreach (BoundingBox bounds in boundsSet)
+        {
+            if (!TryFindSectionVisibleBoundsHit(
+                    bounds,
+                    rayOrigin,
+                    rayDirection,
+                    sectionPlanes,
+                    sectionToleranceScale,
+                    out double t,
+                    out Vector3d candidatePoint))
+            {
+                continue;
+            }
+
+            if (t >= closestT)
+                continue;
+
+            closestT = t;
+            hitPoint = candidatePoint;
+            found = true;
+        }
+
+        return found;
+    }
+
+    private static bool TryFindSectionVisibleBoundsHit(
+        BoundingBox bounds,
+        Vector3d rayOrigin,
+        Vector3d rayDirection,
+        IReadOnlyList<SectionPlane> sectionPlanes,
+        double sectionToleranceScale,
+        out double t,
+        out Vector3d hitPoint)
+    {
+        const double HitDistanceEpsilon = 1e-6;
+
+        t = 0.0;
+        hitPoint = Vector3d.Zero;
+
+        if (!TryIntersectRayAabbInterval(rayOrigin, rayDirection, bounds, out double tMin, out double tMax))
+            return false;
+
+        if (!AndroidSectionClipper.TryClipRayToVisibleInterval(
+                rayOrigin,
+                rayDirection,
+                tMin,
+                tMax,
+                sectionPlanes,
+                sectionToleranceScale,
+                out double visibleMin,
+                out double visibleMax))
+        {
+            return false;
+        }
+
+        t = visibleMin > HitDistanceEpsilon ? visibleMin : visibleMax;
+        if (t <= HitDistanceEpsilon || t > visibleMax || !double.IsFinite(t))
+            return false;
+
+        hitPoint = rayOrigin + rayDirection * t;
+        return AndroidSectionClipper.IsPointVisible(hitPoint, sectionPlanes, sectionToleranceScale);
     }
 
     private static bool TryIntersectRayWithPlane(
@@ -6138,6 +6351,7 @@ public sealed class MainActivity : AppCompatActivity
             AppSettings.SectionEdgeG,
             AppSettings.SectionEdgeB,
             0.80f);
+        renderer.SectionEdgeWidth = AppSettings.SectionEdgeWidth;
         renderer.SectionEdgeHighlightColor = new Vector4(
             AppSettings.DimensionHighlightR,
             AppSettings.DimensionHighlightG,
@@ -6440,7 +6654,7 @@ public sealed class MainActivity : AppCompatActivity
         if (ShouldRejectFingerTouchForSpenPalmRejection(motionEvent))
             return false;
 
-        MotionEventActions action = motionEvent.ActionMasked;
+        MotionEventActions action = NormalizeViewportToolPointerAction(motionEvent);
         if (HandleAnnotationTouch(motionEvent))
             return true;
 
@@ -6489,6 +6703,25 @@ public sealed class MainActivity : AppCompatActivity
 
         BeginSectionGizmoDrag(hit, rayOrigin, rayDirection, dip);
         return true;
+    }
+
+    private static MotionEventActions NormalizeViewportToolPointerAction(MotionEvent motionEvent)
+    {
+        MotionEventActions action = motionEvent.ActionMasked;
+        if (!IsMousePointerEvent(motionEvent))
+            return action;
+
+        return action switch
+        {
+            MotionEventActions.ButtonPress when IsActionButton(motionEvent, MotionEventButtonState.Primary)
+                                                || IsPrimaryButtonPressed(motionEvent)
+                => MotionEventActions.Down,
+            MotionEventActions.ButtonRelease when IsActionButton(motionEvent, MotionEventButtonState.Primary)
+                => MotionEventActions.Up,
+            MotionEventActions.HoverMove or MotionEventActions.Move when IsPrimaryButtonPressed(motionEvent)
+                => MotionEventActions.Move,
+            _ => action,
+        };
     }
 
     private bool ShouldConsumeViewportTouchViaGestureSource()
@@ -8958,12 +9191,13 @@ public sealed class MainActivity : AppCompatActivity
         CollectVisibleBounds(_runtimeScene, out List<BoundingBox> visibleBounds, out _);
         IReadOnlyList<SectionPlane> sectionPlanes = GetActiveSectionPlanes();
         double sectionToleranceScale = _runtimeScene.Bounds.IsValid ? _runtimeScene.Bounds.Diagonal : 1.0;
-        if (TryFindClosestBoundsHit(
+        if (TryFindClosestSectionVisibleBoundsHit(
                 visibleBounds,
                 rayOrigin,
                 rayDir,
-                out Vector3d boundsHit,
-                point => AndroidSectionClipper.IsPointVisible(point, sectionPlanes, sectionToleranceScale)))
+                sectionPlanes,
+                sectionToleranceScale,
+                out Vector3d boundsHit))
         {
             resultKind = "runtime-bounds";
             return boundsHit;
@@ -8979,13 +9213,16 @@ public sealed class MainActivity : AppCompatActivity
             if (!mesh.Visible)
                 continue;
             if (!mesh.WorldBounds.IsValid) continue;
-            if (TryIntersectRayAabb(rayOrigin, rayDir, mesh.WorldBounds, out double t)
+            if (TryFindSectionVisibleBoundsHit(
+                    mesh.WorldBounds,
+                    rayOrigin,
+                    rayDir,
+                    sectionPlanes,
+                    sectionToleranceScale,
+                    out double t,
+                    out Vector3d candidateHit)
                 && t < closestT)
             {
-                Vector3d candidateHit = rayOrigin + rayDir * t;
-                if (!AndroidSectionClipper.IsPointVisible(candidateHit, sectionPlanes, sectionToleranceScale))
-                    continue;
-
                 closestT = t;
                 fallbackHitPoint = candidateHit;
             }
@@ -9063,14 +9300,31 @@ public sealed class MainActivity : AppCompatActivity
     /// </summary>
     private static bool TryIntersectRayAabb(Vector3d o, Vector3d d, BoundingBox box, out double t)
     {
-        const double DirectionEpsilon = 1e-12;
         const double HitDistanceEpsilon = 1e-6;
 
         t = 0.0;
-        if (!box.IsValid) return false;
+        if (!TryIntersectRayAabbInterval(o, d, box, out double tMin, out double tMax))
+            return false;
 
-        double tMin = 0.0;
-        double tMax = double.MaxValue;
+        // tMin is the entry. If tMin is at-or-below epsilon the camera is
+        // inside the box, in which case tMax (exit) is the meaningful hit.
+        t = tMin > HitDistanceEpsilon ? tMin : tMax;
+        return t > HitDistanceEpsilon && t < double.MaxValue;
+    }
+
+    private static bool TryIntersectRayAabbInterval(
+        Vector3d o,
+        Vector3d d,
+        BoundingBox box,
+        out double tMin,
+        out double tMax)
+    {
+        const double DirectionEpsilon = 1e-12;
+        const double HitDistanceEpsilon = 1e-6;
+
+        tMin = 0.0;
+        tMax = double.MaxValue;
+        if (!box.IsValid) return false;
 
         for (int axis = 0; axis < 3; axis++)
         {
@@ -9095,10 +9349,7 @@ public sealed class MainActivity : AppCompatActivity
             if (tMax < tMin) return false;
         }
 
-        // tMin is the entry. If tMin is at-or-below epsilon the camera is
-        // inside the box, in which case tMax (exit) is the meaningful hit.
-        t = tMin > HitDistanceEpsilon ? tMin : tMax;
-        return t > HitDistanceEpsilon && t < double.MaxValue;
+        return tMax > HitDistanceEpsilon && tMax < double.MaxValue;
     }
 
     private void OnPickResult(int? meshIndex)
@@ -9155,10 +9406,14 @@ public sealed class MainActivity : AppCompatActivity
             return false;
         }
 
-        if (!IsStylusHoverEvent(motionEvent))
+        bool isStylusHover = IsStylusHoverEvent(motionEvent);
+        bool isMouseHover = IsMousePointerEvent(motionEvent);
+        if (!isStylusHover && !isMouseHover)
+            return false;
+        if (isMouseHover && !AppSettings.MouseHoverEnabled)
             return false;
 
-        if (!_stylusHoverLogged)
+        if (isStylusHover && !_stylusHoverLogged)
         {
             _stylusHoverLogged = true;
             global::Android.Util.Log.Info("FA.SPen", "Samsung S Pen/stylus hover input detected.");
@@ -9192,7 +9447,9 @@ public sealed class MainActivity : AppCompatActivity
         {
             _stylusSecondaryContextActive = false;
         }
-        else if (_activeModalTool == AndroidModalTool.Select && _measure is not { IsActive: true })
+        else if (isStylusHover
+                 && _activeModalTool == AndroidModalTool.Select
+                 && _measure is not { IsActive: true })
         {
             if (!_stylusSecondaryContextActive)
             {
@@ -9411,6 +9668,9 @@ public sealed class MainActivity : AppCompatActivity
 
     private static bool IsStylusOrMousePointer(MotionEvent motionEvent)
     {
+        if ((motionEvent.Source & InputSourceType.Mouse) == InputSourceType.Mouse)
+            return true;
+
         int pointerIndex = motionEvent.ActionIndex;
         if (pointerIndex < 0 || pointerIndex >= motionEvent.PointerCount)
             pointerIndex = 0;
@@ -9418,6 +9678,197 @@ public sealed class MainActivity : AppCompatActivity
         MotionEventToolType toolType = motionEvent.GetToolType(pointerIndex);
         return IsStylusOrEraser(toolType) || toolType == MotionEventToolType.Mouse;
     }
+
+    private static bool IsPrimaryMouseButtonPress(MotionEvent motionEvent)
+        => IsMousePointerEvent(motionEvent)
+           && motionEvent.ActionMasked == MotionEventActions.ButtonPress
+           && (IsActionButton(motionEvent, MotionEventButtonState.Primary)
+               || IsPrimaryButtonPressed(motionEvent));
+
+    private static bool IsPrimaryMouseButtonRelease(MotionEvent motionEvent)
+        => IsMousePointerEvent(motionEvent)
+           && motionEvent.ActionMasked == MotionEventActions.ButtonRelease
+           && (IsActionButton(motionEvent, MotionEventButtonState.Primary)
+               || (((MotionEventButtonState)motionEvent.ActionButton) == 0
+                   && !IsPrimaryButtonPressed(motionEvent)));
+
+    private void TrackMouseTouchDispatch(MotionEvent? motionEvent)
+    {
+        if (motionEvent is null || !IsMousePointerEvent(motionEvent))
+            return;
+
+        switch (motionEvent.ActionMasked)
+        {
+            case MotionEventActions.Down:
+                if (IsPrimaryButtonPressed(motionEvent))
+                {
+                    _lastMouseTouchDownTime = motionEvent.DownTime;
+                    ClearGenericMousePressIfDownTimeMatches(motionEvent.DownTime);
+                }
+                break;
+
+            case MotionEventActions.Up:
+            case MotionEventActions.PointerUp:
+                _lastMouseTouchUpDownTime = motionEvent.DownTime;
+                ClearGenericMousePressIfDownTimeMatches(motionEvent.DownTime);
+                break;
+
+            case MotionEventActions.Cancel:
+                ClearGenericMousePress();
+                break;
+        }
+    }
+
+    private bool HandleUnhandledMouseClick(MotionEvent? motionEvent)
+    {
+        if (motionEvent is null || !IsMousePointerEvent(motionEvent))
+            return false;
+
+        return motionEvent.ActionMasked switch
+        {
+            MotionEventActions.ButtonPress => HandleUnhandledMouseButtonPress(motionEvent),
+            MotionEventActions.ButtonRelease => HandleUnhandledMouseButtonRelease(motionEvent),
+            MotionEventActions.Cancel => ClearGenericMousePressHandled(),
+            _ => false,
+        };
+    }
+
+    private bool HandleUnhandledMouseButtonPress(MotionEvent motionEvent)
+    {
+        if (!IsActionButton(motionEvent, MotionEventButtonState.Primary)
+            && !IsPrimaryButtonPressed(motionEvent))
+        {
+            return false;
+        }
+
+        View? target = FindClickableViewAtMousePosition(motionEvent);
+        if (target is null)
+            return false;
+
+        ClearGenericMousePress();
+        _genericMousePressedView = target;
+        _genericMousePressedDownTime = motionEvent.DownTime;
+        _genericMousePressedRawX = motionEvent.RawX;
+        _genericMousePressedRawY = motionEvent.RawY;
+        target.Pressed = true;
+        return true;
+    }
+
+    private bool HandleUnhandledMouseButtonRelease(MotionEvent motionEvent)
+    {
+        if (_genericMousePressedView is not { } pressedView)
+            return false;
+
+        bool shouldPerformClick = IsActionButton(motionEvent, MotionEventButtonState.Primary)
+                                  && _genericMousePressedDownTime != _lastMouseTouchDownTime
+                                  && _genericMousePressedDownTime != _lastMouseTouchUpDownTime
+                                  && IsScreenPointInsideView(pressedView, motionEvent.RawX, motionEvent.RawY)
+                                  && IsWithinMouseClickSlop(motionEvent.RawX, motionEvent.RawY);
+        ClearGenericMousePress();
+        if (!shouldPerformClick)
+            return true;
+
+        pressedView.PerformClick();
+        return true;
+    }
+
+    private void ClearGenericMousePressIfDownTimeMatches(long downTime)
+    {
+        if (_genericMousePressedDownTime == downTime)
+            ClearGenericMousePress();
+    }
+
+    private bool ClearGenericMousePressHandled()
+    {
+        bool hadPress = _genericMousePressedView is not null;
+        ClearGenericMousePress();
+        return hadPress;
+    }
+
+    private void ClearGenericMousePress()
+    {
+        if (_genericMousePressedView is { } pressedView)
+            pressedView.Pressed = false;
+
+        _genericMousePressedView = null;
+        _genericMousePressedDownTime = -1;
+        _genericMousePressedRawX = 0f;
+        _genericMousePressedRawY = 0f;
+    }
+
+    private View? FindClickableViewAtMousePosition(MotionEvent motionEvent)
+    {
+        View? root = Window?.DecorView;
+        if (root is null)
+            return null;
+
+        return FindClickableViewAtScreenPoint(root, motionEvent.RawX, motionEvent.RawY);
+    }
+
+    private static View? FindClickableViewAtScreenPoint(View view, float rawX, float rawY)
+    {
+        if (!IsScreenPointInsideView(view, rawX, rawY))
+            return null;
+
+        if (view is ViewGroup group)
+        {
+            for (int i = group.ChildCount - 1; i >= 0; i--)
+            {
+                View? child = group.GetChildAt(i);
+                if (child is null || child.Visibility != ViewStates.Visible)
+                    continue;
+
+                View? hit = FindClickableViewAtScreenPoint(child, rawX, rawY);
+                if (hit is not null)
+                    return hit;
+            }
+        }
+
+        return IsMouseClickTarget(view) ? view : null;
+    }
+
+    private static bool IsMouseClickTarget(View view)
+        => view.Visibility == ViewStates.Visible
+           && view.Enabled
+           && view.Clickable;
+
+    private static bool IsScreenPointInsideView(View view, float rawX, float rawY)
+    {
+        var rect = new Rect();
+        if (!view.GetGlobalVisibleRect(rect))
+            return false;
+
+        return rect.Contains((int)MathF.Floor(rawX), (int)MathF.Floor(rawY));
+    }
+
+    private bool IsWithinMouseClickSlop(float rawX, float rawY)
+    {
+        int slop = ViewConfiguration.Get(this)?.ScaledTouchSlop ?? Dp(8);
+        float dx = rawX - _genericMousePressedRawX;
+        float dy = rawY - _genericMousePressedRawY;
+        return dx * dx + dy * dy <= slop * slop;
+    }
+
+    private static bool IsMousePointerEvent(MotionEvent motionEvent)
+    {
+        if ((motionEvent.Source & InputSourceType.Mouse) == InputSourceType.Mouse)
+            return true;
+
+        int count = motionEvent.PointerCount;
+        for (int i = 0; i < count; i++)
+        {
+            if (motionEvent.GetToolType(i) == MotionEventToolType.Mouse)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsPrimaryButtonPressed(MotionEvent motionEvent)
+        => motionEvent.IsButtonPressed(MotionEventButtonState.Primary);
+
+    private static bool IsActionButton(MotionEvent motionEvent, MotionEventButtonState button)
+        => (((MotionEventButtonState)motionEvent.ActionButton) & button) == button;
 
     private async void OnOpenClicked(object? sender, EventArgs e)
     {
@@ -10859,6 +11310,22 @@ public sealed class MainActivity : AppCompatActivity
                 if (!IsStylusOrMousePointer(motionEvent))
                     return _pressedAnnotationTarget is not null;
 
+                if (IsMousePointerEvent(motionEvent))
+                {
+                    if (!IsPrimaryMouseButtonPress(motionEvent))
+                        return false;
+
+                    AnnotationHitTarget? mouseHit = HitAnnotationTarget(
+                        motionEvent.GetX(),
+                        motionEvent.GetY(),
+                        hitSlopPx);
+                    if (mouseHit is not { } mouseTarget)
+                        return false;
+
+                    _measurementLabelLayer?.Parent?.RequestDisallowInterceptTouchEvent(true);
+                    return BeginAnnotationPointerPress(mouseTarget);
+                }
+
                 AnnotationHitTarget? hit = HitAnnotationTarget(
                     motionEvent.GetX(),
                     motionEvent.GetY(),
@@ -10873,8 +11340,19 @@ public sealed class MainActivity : AppCompatActivity
                 if (!IsStylusOrMousePointer(motionEvent))
                     return _pressedAnnotationTarget is not null;
 
-                _pressedAnnotationTarget = null;
-                return true;
+                if (IsMousePointerEvent(motionEvent))
+                {
+                    if (!IsPrimaryMouseButtonRelease(motionEvent))
+                        return false;
+
+                    AnnotationHitTarget? mouseHit = HitAnnotationTarget(
+                        motionEvent.GetX(),
+                        motionEvent.GetY(),
+                        hitSlopPx);
+                    return CompleteAnnotationPointerPress(mouseHit);
+                }
+
+                return ClearAnnotationPointerPress();
 
             case MotionEventActions.Down:
             {
@@ -10885,12 +11363,8 @@ public sealed class MainActivity : AppCompatActivity
                 if (hit is not { } target)
                     return false;
 
-                _pressedAnnotationTarget = target;
                 _measurementLabelLayer?.Parent?.RequestDisallowInterceptTouchEvent(true);
-                CancelHoverPick();
-                SetHoveredMesh(0);
-                ApplyAnnotationHover(target);
-                return true;
+                return BeginAnnotationPointerPress(target);
             }
 
             case MotionEventActions.Move:
@@ -10899,26 +11373,21 @@ public sealed class MainActivity : AppCompatActivity
             case MotionEventActions.Up:
             case MotionEventActions.PointerUp:
             {
-                if (_pressedAnnotationTarget is not { } target)
+                if (_pressedAnnotationTarget is null)
                     return false;
 
-                _pressedAnnotationTarget = null;
                 AnnotationHitTarget? hit = HitAnnotationTarget(
                     motionEvent.GetX(),
                     motionEvent.GetY(),
                     hitSlopPx);
-                if (hit is { } released && released.Equals(target))
-                    ActivateAnnotationTarget(target);
-
-                return true;
+                return CompleteAnnotationPointerPress(hit);
             }
 
             case MotionEventActions.Cancel:
                 if (_pressedAnnotationTarget is null)
                     return false;
 
-                _pressedAnnotationTarget = null;
-                return true;
+                return ClearAnnotationPointerPress();
 
             default:
                 return _pressedAnnotationTarget is not null;
@@ -10933,12 +11402,33 @@ public sealed class MainActivity : AppCompatActivity
         MotionEventActions action = motionEvent.ActionMasked;
         if (action == MotionEventActions.ButtonRelease)
         {
-            _pressedAnnotationTarget = null;
-            return true;
+            if (IsMousePointerEvent(motionEvent))
+            {
+                if (!IsPrimaryMouseButtonRelease(motionEvent))
+                    return false;
+
+                AnnotationHitTarget target = isDeleteButton
+                    ? AnnotationHitTarget.MeasurementDelete(key)
+                    : AnnotationHitTarget.MeasurementLabel(key);
+                return CompleteAnnotationPointerPress(target);
+            }
+
+            return ClearAnnotationPointerPress();
         }
 
         if (action != MotionEventActions.ButtonPress)
             return false;
+
+        if (IsMousePointerEvent(motionEvent))
+        {
+            if (!IsPrimaryMouseButtonPress(motionEvent))
+                return false;
+
+            return BeginAnnotationPointerPress(
+                isDeleteButton
+                    ? AnnotationHitTarget.MeasurementDelete(key)
+                    : AnnotationHitTarget.MeasurementLabel(key));
+        }
 
         return ActivateAnnotationTargetFromStylusButton(
             isDeleteButton
@@ -10964,21 +11454,32 @@ public sealed class MainActivity : AppCompatActivity
                 if (!IsStylusOrMousePointer(motionEvent))
                     return _pressedAnnotationTarget is not null;
 
+                if (IsMousePointerEvent(motionEvent))
+                {
+                    if (!IsPrimaryMouseButtonPress(motionEvent))
+                        return false;
+
+                    return BeginAnnotationPointerPress(target);
+                }
+
                 return ActivateAnnotationTargetFromStylusButton(target, motionEvent);
 
             case MotionEventActions.ButtonRelease:
                 if (!IsStylusOrMousePointer(motionEvent))
                     return _pressedAnnotationTarget is not null;
 
-                _pressedAnnotationTarget = null;
-                return true;
+                if (IsMousePointerEvent(motionEvent))
+                {
+                    if (!IsPrimaryMouseButtonRelease(motionEvent))
+                        return false;
+
+                    return CompleteAnnotationPointerPress(target);
+                }
+
+                return ClearAnnotationPointerPress();
 
             case MotionEventActions.Down:
-                _pressedAnnotationTarget = target;
-                CancelHoverPick();
-                SetHoveredMesh(0);
-                ApplyAnnotationHover(target);
-                return true;
+                return BeginAnnotationPointerPress(target);
 
             case MotionEventActions.Move:
                 return _pressedAnnotationTarget is not null;
@@ -10991,13 +11492,10 @@ public sealed class MainActivity : AppCompatActivity
                     return false;
                 }
 
-                _pressedAnnotationTarget = null;
-                ActivateAnnotationTarget(target);
-                return true;
+                return CompleteAnnotationPointerPress(target);
 
             case MotionEventActions.Cancel:
-                _pressedAnnotationTarget = null;
-                return true;
+                return ClearAnnotationPointerPress();
 
             default:
                 return _pressedAnnotationTarget is not null;
@@ -11020,21 +11518,32 @@ public sealed class MainActivity : AppCompatActivity
                 if (!IsStylusOrMousePointer(motionEvent))
                     return _pressedAnnotationTarget is not null;
 
+                if (IsMousePointerEvent(motionEvent))
+                {
+                    if (!IsPrimaryMouseButtonPress(motionEvent))
+                        return false;
+
+                    return BeginAnnotationPointerPress(target);
+                }
+
                 return ActivateAnnotationTargetFromStylusButton(target, motionEvent);
 
             case MotionEventActions.ButtonRelease:
                 if (!IsStylusOrMousePointer(motionEvent))
                     return _pressedAnnotationTarget is not null;
 
-                _pressedAnnotationTarget = null;
-                return true;
+                if (IsMousePointerEvent(motionEvent))
+                {
+                    if (!IsPrimaryMouseButtonRelease(motionEvent))
+                        return false;
+
+                    return CompleteAnnotationPointerPress(target);
+                }
+
+                return ClearAnnotationPointerPress();
 
             case MotionEventActions.Down:
-                _pressedAnnotationTarget = target;
-                CancelHoverPick();
-                SetHoveredMesh(0);
-                ApplyAnnotationHover(target);
-                return true;
+                return BeginAnnotationPointerPress(target);
 
             case MotionEventActions.Move:
                 return _pressedAnnotationTarget is not null;
@@ -11047,13 +11556,10 @@ public sealed class MainActivity : AppCompatActivity
                     return false;
                 }
 
-                _pressedAnnotationTarget = null;
-                ActivateAnnotationTarget(target);
-                return true;
+                return CompleteAnnotationPointerPress(target);
 
             case MotionEventActions.Cancel:
-                _pressedAnnotationTarget = null;
-                return true;
+                return ClearAnnotationPointerPress();
 
             default:
                 return _pressedAnnotationTarget is not null;
@@ -11062,7 +11568,7 @@ public sealed class MainActivity : AppCompatActivity
 
     private bool HandleSectionAnnotationButtonGenericMotion(Guid id, bool isFlipButton, MotionEvent? motionEvent)
     {
-        if (motionEvent is null || !CanInteractWithSectionAnnotations() || !IsStylusHoverEvent(motionEvent))
+        if (motionEvent is null || !CanInteractWithSectionAnnotations() || !IsStylusOrMousePointer(motionEvent))
             return false;
 
         MotionEventActions action = motionEvent.ActionMasked;
@@ -11071,8 +11577,29 @@ public sealed class MainActivity : AppCompatActivity
 
         if (action == MotionEventActions.ButtonRelease)
         {
-            _pressedAnnotationTarget = null;
-            return true;
+            if (IsMousePointerEvent(motionEvent))
+            {
+                if (!IsPrimaryMouseButtonRelease(motionEvent))
+                    return false;
+
+                AnnotationHitTarget target = isFlipButton
+                    ? AnnotationHitTarget.SectionFlip(id)
+                    : AnnotationHitTarget.SectionDelete(id);
+                return CompleteAnnotationPointerPress(target);
+            }
+
+            return ClearAnnotationPointerPress();
+        }
+
+        if (IsMousePointerEvent(motionEvent))
+        {
+            if (!IsPrimaryMouseButtonPress(motionEvent))
+                return false;
+
+            return BeginAnnotationPointerPress(
+                isFlipButton
+                    ? AnnotationHitTarget.SectionFlip(id)
+                    : AnnotationHitTarget.SectionDelete(id));
         }
 
         return ActivateAnnotationTargetFromStylusButton(
@@ -11084,7 +11611,7 @@ public sealed class MainActivity : AppCompatActivity
 
     private bool HandleSectionAnnotationButtonHover(Guid id, MotionEvent? motionEvent)
     {
-        if (motionEvent is null || !CanInteractWithSectionAnnotations() || !IsStylusHoverEvent(motionEvent))
+        if (motionEvent is null || !CanInteractWithSectionAnnotations() || !IsStylusOrMousePointer(motionEvent))
             return false;
 
         MotionEventActions action = motionEvent.ActionMasked;
@@ -11105,7 +11632,7 @@ public sealed class MainActivity : AppCompatActivity
 
     private bool HandleMeasurementLabelLayerGenericMotion(MotionEvent? motionEvent)
     {
-        if (motionEvent is null || !IsStylusHoverEvent(motionEvent))
+        if (motionEvent is null || !IsStylusOrMousePointer(motionEvent))
             return false;
 
         MotionEventActions action = motionEvent.ActionMasked;
@@ -11114,9 +11641,23 @@ public sealed class MainActivity : AppCompatActivity
 
         if (action == MotionEventActions.ButtonRelease)
         {
-            _pressedAnnotationTarget = null;
-            return true;
+            if (IsMousePointerEvent(motionEvent))
+            {
+                if (!IsPrimaryMouseButtonRelease(motionEvent))
+                    return false;
+
+                AnnotationHitTarget? released = HitAnnotationTarget(
+                    motionEvent.GetX(),
+                    motionEvent.GetY(),
+                    Dp(MeasurementTouchHitSlopDp));
+                return CompleteAnnotationPointerPress(released);
+            }
+
+            return ClearAnnotationPointerPress();
         }
+
+        if (IsMousePointerEvent(motionEvent) && !IsPrimaryMouseButtonPress(motionEvent))
+            return false;
 
         AnnotationHitTarget? hit = HitAnnotationTarget(
             motionEvent.GetX(),
@@ -11125,7 +11666,38 @@ public sealed class MainActivity : AppCompatActivity
         if (hit is not { } target)
             return false;
 
+        if (IsMousePointerEvent(motionEvent))
+            return BeginAnnotationPointerPress(target);
+
         return ActivateAnnotationTargetFromStylusButton(target, motionEvent);
+    }
+
+    private bool BeginAnnotationPointerPress(AnnotationHitTarget target)
+    {
+        _pressedAnnotationTarget = target;
+        CancelHoverPick();
+        SetHoveredMesh(0);
+        ApplyAnnotationHover(target);
+        return true;
+    }
+
+    private bool CompleteAnnotationPointerPress(AnnotationHitTarget? releasedTarget)
+    {
+        if (_pressedAnnotationTarget is not { } pressed)
+            return false;
+
+        _pressedAnnotationTarget = null;
+        if (releasedTarget is { } released && released.Equals(pressed))
+            ActivateAnnotationTarget(pressed);
+
+        return true;
+    }
+
+    private bool ClearAnnotationPointerPress()
+    {
+        bool hadPress = _pressedAnnotationTarget is not null;
+        _pressedAnnotationTarget = null;
+        return hadPress;
     }
 
     private bool ActivateAnnotationTargetFromStylusButton(AnnotationHitTarget target, MotionEvent motionEvent)
@@ -11163,7 +11735,7 @@ public sealed class MainActivity : AppCompatActivity
 
     private bool HandleAnnotationHover(MotionEvent motionEvent)
     {
-        if (!IsStylusHoverEvent(motionEvent))
+        if (!IsStylusOrMousePointer(motionEvent))
             return false;
 
         if (HitAnnotationTarget(motionEvent.GetX(), motionEvent.GetY(), hitSlopPx: 0f) is not { } target)
@@ -12785,7 +13357,7 @@ public sealed class MainActivity : AppCompatActivity
         if (_pointerSource is not null)
             _pointerSource.GestureRecognized -= OnGestureForToolbarTools;
         if (_pointerSource is not null && _interaction is not null)
-            _pointerSource.GestureRecognized -= _interaction.OnGesture;
+            _pointerSource.GestureRecognized -= OnGestureForNavigation;
         if (_pointerSource is not null)
             _pointerSource.GestureRecognized -= OnGestureForSelection;
         _pointerSource?.Dispose();
@@ -12895,7 +13467,13 @@ public sealed class MainActivity : AppCompatActivity
             _interaction.OrbitSensitivityMultiplier = AppSettings.OrbitSensitivity;
             _interaction.PanSensitivityMultiplier = AppSettings.PanSensitivity;
             _interaction.ZoomSensitivityMultiplier = AppSettings.ZoomSensitivity;
+            _interaction.MouseOrbitSpeedMultiplier = AppSettings.MouseOrbitSpeed;
+            _interaction.MousePanSpeedMultiplier = AppSettings.MousePanSpeed;
+            _interaction.MouseWheelZoomSpeedMultiplier = AppSettings.MouseWheelZoomSpeed;
+            _interaction.MouseWheelZoomInverted = AppSettings.MouseInvertWheelZoom;
         }
+        if (_pointerSource is not null)
+            _pointerSource.MouseClickDragThresholdDip = AppSettings.MouseDragThresholdDip;
     }
 
     private void ApplySectionSettings()
@@ -12924,7 +13502,13 @@ public sealed class MainActivity : AppCompatActivity
         _measure?.ApplySettings(
             AppSettings.MeasureMultiMeasureEnabled,
             AppSettings.MeasureShowDeltaBreakdown,
-            MeasureBoxModeFromSettings());
+            MeasureBoxModeFromSettings(),
+            AppSettings.MeasurePointSnapEnabled,
+            AppSettings.MeasureSnapEdgeFactor,
+            AppSettings.MeasureSnapEndpointFactor,
+            AppSettings.MeasureSnapVisibleEdgesOnly,
+            AppSettings.MeasureSnapVisibilityProbe,
+            AppSettings.MeasureSnapOcclusionToleranceFactor);
 
         if (_measure is null || !_measure.IsActive)
             _lastInteractiveMeasureMode = MeasureModeFromSettings();
@@ -13417,7 +14001,15 @@ public sealed class MainActivity : AppCompatActivity
     private sealed class GenericMotionProxy : Java.Lang.Object, View.IOnGenericMotionListener
     {
         private readonly AndroidPointerSource _source;
-        public GenericMotionProxy(AndroidPointerSource source) => _source = source;
-        public bool OnGenericMotion(View? v, MotionEvent? e) => _source.OnGenericMotion(e);
+        private readonly MainActivity _activity;
+
+        public GenericMotionProxy(AndroidPointerSource source, MainActivity activity)
+        {
+            _source = source;
+            _activity = activity;
+        }
+
+        public bool OnGenericMotion(View? v, MotionEvent? e)
+            => _activity.OnViewportRawTouch(e) || _source.OnGenericMotion(e);
     }
 }

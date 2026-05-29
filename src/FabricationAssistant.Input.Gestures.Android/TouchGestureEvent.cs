@@ -12,13 +12,23 @@ public enum TouchGestureKind
     PanZoomDelta,
     PanZoomEnd,
     SecondaryTap,
+    MouseOrbitBegin,
+    MouseOrbitDelta,
+    MouseOrbitEnd,
+    MousePanBegin,
+    MousePanDelta,
+    MousePanEnd,
+    MouseWheel,
+    MouseToolBegin,
+    MouseToolDelta,
+    MouseToolEnd,
     Cancel,
 }
 
 /// <summary>
 /// One recognized gesture event. Position is in viewport-DIP coordinates.
 /// PixelDelta is the move-since-last-frame in viewport coordinates and is
-/// only populated for OrbitDelta and PanZoomDelta. PinchScale is
+/// populated for drag and wheel delta events. PinchScale is
 /// currentDistance/previousDistance for PanZoomDelta and 1.0 otherwise.
 /// </summary>
 public readonly record struct TouchGestureEvent(

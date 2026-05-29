@@ -65,4 +65,77 @@ public sealed class AndroidSectionClipperTests
 
         Assert.True(AndroidSectionClipper.IsPointVisible(new Vector3d(0, 0, -100), [plane]));
     }
+
+    [Fact]
+    public void TryClipRayToVisibleInterval_StartsAtSectionPlaneWhenBoundsEntryIsHidden()
+    {
+        var plane = new SectionPlane(
+            Guid.NewGuid(),
+            Vector3.Zero,
+            Vector3.UnitX,
+            Vector3.UnitY,
+            Vector3.UnitZ);
+
+        bool clipped = AndroidSectionClipper.TryClipRayToVisibleInterval(
+            new Vector3d(0, 0, -5),
+            new Vector3d(0, 0, 1),
+            intervalMin: 1.0,
+            intervalMax: 10.0,
+            [plane],
+            sceneDiagonal: 10.0,
+            out double visibleMin,
+            out double visibleMax);
+
+        Assert.True(clipped);
+        Assert.InRange(visibleMin, 4.999, 5.001);
+        Assert.Equal(10.0, visibleMax, precision: 6);
+    }
+
+    [Fact]
+    public void TryClipRayToVisibleInterval_EndsAtSectionPlaneWhenRayLeavesVisibleSide()
+    {
+        var plane = new SectionPlane(
+            Guid.NewGuid(),
+            Vector3.Zero,
+            Vector3.UnitX,
+            Vector3.UnitY,
+            Vector3.UnitZ);
+
+        bool clipped = AndroidSectionClipper.TryClipRayToVisibleInterval(
+            new Vector3d(0, 0, 5),
+            new Vector3d(0, 0, -1),
+            intervalMin: 1.0,
+            intervalMax: 10.0,
+            [plane],
+            sceneDiagonal: 10.0,
+            out double visibleMin,
+            out double visibleMax);
+
+        Assert.True(clipped);
+        Assert.Equal(1.0, visibleMin, precision: 6);
+        Assert.InRange(visibleMax, 4.999, 5.001);
+    }
+
+    [Fact]
+    public void TryClipRayToVisibleInterval_RejectsIntervalFullyBehindSectionPlane()
+    {
+        var plane = new SectionPlane(
+            Guid.NewGuid(),
+            Vector3.Zero,
+            Vector3.UnitX,
+            Vector3.UnitY,
+            Vector3.UnitZ);
+
+        bool clipped = AndroidSectionClipper.TryClipRayToVisibleInterval(
+            new Vector3d(0, 0, -5),
+            new Vector3d(1, 0, 0),
+            intervalMin: 1.0,
+            intervalMax: 10.0,
+            [plane],
+            sceneDiagonal: 10.0,
+            out _,
+            out _);
+
+        Assert.False(clipped);
+    }
 }
