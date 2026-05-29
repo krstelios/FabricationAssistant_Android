@@ -124,8 +124,8 @@
     <string name="preferences_zoom_sensitivity">Pinch-zoom sensitivity</string>
     <string name="preferences_msaa_samples">Anti-aliasing</string>
     <string name="preferences_msaa_off">Off</string>
-    <string name="preferences_msaa_2x">2×</string>
-    <string name="preferences_msaa_4x">4×</string>
+    <string name="preferences_msaa_2x">2x</string>
+    <string name="preferences_msaa_4x">4x</string>
     <string name="preferences_msaa_live_hint">Anti-aliasing changes apply immediately.</string>
     <string name="preferences_rendering_live_hint">Rendering controls apply live.</string>
 </resources>
