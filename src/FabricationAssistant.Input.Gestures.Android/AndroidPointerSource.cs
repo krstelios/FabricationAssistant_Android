@@ -131,6 +131,12 @@ public sealed class AndroidPointerSource : IDisposable
 
             case MotionEventActions.Up:
             {
+                // S12#2: the touch sequence ended - drop any pending long-press
+                // tick and clear the latch so the next press re-arms. Otherwise a
+                // press that starts within the long-press window of this tap gets
+                // no tick posted and its long-press silently never fires (under
+                // RenderMode.WhenDirty nothing else re-drives Tick).
+                CancelLongPressTick();
                 _secondaryPressActive = false;
                 if (ShouldIgnoreActionPointer(motionEvent))
                     break;
@@ -178,6 +184,7 @@ public sealed class AndroidPointerSource : IDisposable
 
             case MotionEventActions.Cancel:
             {
+                CancelLongPressTick();
                 CancelMouseButtonGesture(time);
                 _secondaryPressActive = false;
                 ClearPalmRejectionSuppression();
@@ -784,6 +791,15 @@ public sealed class AndroidPointerSource : IDisposable
             _tickScheduled = false;
             Fire(_recognizer.Tick(DateTime.UtcNow));
         }, (long)ViewportTouchGestureRecognizer.LongPressDurationMs);
+    }
+
+    // S12#2: clears the pending long-press tick and the latch so a subsequent
+    // press can schedule a fresh tick. _handler is dedicated to the tick.
+    private void CancelLongPressTick()
+    {
+        if (!_tickScheduled) return;
+        _tickScheduled = false;
+        _handler.RemoveCallbacksAndMessages(null);
     }
 
     private void Fire(IReadOnlyList<TouchGestureEvent> events)
