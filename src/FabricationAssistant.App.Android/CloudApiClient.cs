@@ -567,7 +567,7 @@ public sealed class CloudApiClient : IDisposable
                 ? package.DisplayName.Replace(" / ", "_") + ".fa"
                 : version.FileName;
             localPath = CreateCloudTempPath(package.PackageId, counter, fileName);
-            global::Android.Util.Log.Info("FA.Cloud", "Cloud download temp path: " + localPath);
+            global::Android.Util.Log.Debug("FA.Cloud", "Cloud download temp path: " + localPath);
             EnsureDownloadSpace(localPath, version.SizeBytes);
             await DownloadFileAsync(downloadUrl, localPath, version.SizeBytes, progress, ct).ConfigureAwait(false);
 
@@ -579,7 +579,7 @@ public sealed class CloudApiClient : IDisposable
                 throw new CloudApiException("Downloaded cloud model failed SHA-256 verification.");
             }
 
-            global::Android.Util.Log.Info("FA.Cloud", "Cloud download verified: " + localPath);
+            global::Android.Util.Log.Debug("FA.Cloud", "Cloud download verified: " + localPath);
             string displayName = $"{package.DisplayName} - C{counter}" + (isReadOnly ? " (read-only)" : "");
             return new CloudDownloadedModel(
                 package,
@@ -760,7 +760,7 @@ public sealed class CloudApiClient : IDisposable
     {
         if (!string.IsNullOrWhiteSpace(path))
         {
-            global::Android.Util.Log.Info("FA.Cloud", "Deleting cloud temp file: " + path);
+            global::Android.Util.Log.Debug("FA.Cloud", "Deleting cloud temp file: " + path);
             TryDelete(path);
             TryDeleteEmptyParents(path, GetCloudOpenCacheRoot());
         }
@@ -1147,16 +1147,20 @@ public sealed class CloudApiClient : IDisposable
         {
             CloudAuthSession session = SnapshotRequiredSession();
             HttpRequestMessage request = requestFactory();
-            ValidateAuthorizedRequestUri(session, request.RequestUri);
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", session.AccessToken);
-
+            // S22#4: dispose the request (and its content - e.g. an upload
+            // FileStream) on every exit path via finally, including non-transient
+            // send failures that bypass the retry catch below. Ownership of the
+            // returned response passes to the caller; disposing the request after
+            // SendAsync returns does not affect the response stream.
             try
             {
+                ValidateAuthorizedRequestUri(session, request.RequestUri);
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", session.AccessToken);
+
                 HttpResponseMessage response = await _http.SendAsync(request, completion, ct).ConfigureAwait(false);
                 if (response.StatusCode == HttpStatusCode.Unauthorized)
                 {
                     response.Dispose();
-                    request.Dispose();
                     if (authAttempts++ >= 1
                         || !await TryRefreshAsync(session, ct).ConfigureAwait(false))
                     {
@@ -1174,21 +1178,22 @@ public sealed class CloudApiClient : IDisposable
                     transientAttempts++;
                     TimeSpan delay = GetRetryDelay(transientAttempts, response);
                     response.Dispose();
-                    request.Dispose();
                     await Task.Delay(delay, ct).ConfigureAwait(false);
                     continue;
                 }
 
-                request.Dispose();
                 return response;
             }
             catch (Exception ex) when (IsTransientNetworkError(ex, ct)
                                        && CanRetryRequest(request)
                                        && transientAttempts < MaxTransientRetries)
             {
-                request.Dispose();
                 transientAttempts++;
                 await Task.Delay(GetRetryDelay(transientAttempts, response: null), ct).ConfigureAwait(false);
+            }
+            finally
+            {
+                request.Dispose();
             }
         }
     }
