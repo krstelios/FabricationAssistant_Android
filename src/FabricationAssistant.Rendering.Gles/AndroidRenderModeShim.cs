@@ -4,8 +4,10 @@ namespace FabricationAssistant.Rendering.Gles;
 /// Maps RenderMode values to what the Android Gles renderer supports.
 /// RenderMode.Realistic is not implemented on Android (no PBR / HDR / IBL
 /// pipeline); it maps to Shaded with a one-time log.
-/// The persisted setting stays as Realistic so the choice survives across
-/// sessions and activates correctly when the same project is opened on desktop.
+/// This shim only changes the *effective* render mode; the persisted setting
+/// keeps the user's requested value (e.g. Realistic) so the choice survives
+/// across sessions. (It does not guarantee a particular cross-platform mapping -
+/// the Android and desktop RenderMode enum orderings are not assumed identical.)
 /// </summary>
 public static class AndroidRenderModeShim
 {
