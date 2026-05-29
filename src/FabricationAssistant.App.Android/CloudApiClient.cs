@@ -22,6 +22,9 @@ public sealed class CloudApiClient : IDisposable
     private const long MinimumStreamingDownloadFreeBytes = 64L * 1024L * 1024L;
     private const int WriterSaveChunkBytes = 16 * 1024 * 1024;
     private static readonly TimeSpan OperationPollTimeout = TimeSpan.FromMinutes(5);
+    // S22#3: bound for control-plane calls (refresh, etc.) whose request token
+    // would otherwise be unbounded against a half-dead server.
+    private static readonly TimeSpan ControlPlaneTimeout = TimeSpan.FromSeconds(30);
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -34,6 +37,13 @@ public sealed class CloudApiClient : IDisposable
     {
         AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
         UseProxy = false,
+        // S22#3: bound the TCP+TLS connect so an unreachable/half-dead server
+        // fails fast instead of hanging SendAsync forever. The overall
+        // HttpClient.Timeout stays infinite (intentional for large streaming
+        // uploads/downloads). PooledConnectionLifetime recycles connections so
+        // a stale route does not wedge later requests.
+        ConnectTimeout = TimeSpan.FromSeconds(15),
+        PooledConnectionLifetime = TimeSpan.FromMinutes(5),
     });
     private readonly object _sync = new();
     private readonly object _refreshSync = new();
@@ -1226,11 +1236,17 @@ public sealed class CloudApiClient : IDisposable
 
         try
         {
+            // S22#3: previously passed CancellationToken.None, so with no
+            // per-request bound a half-dead server could hang the refresh
+            // forever (the only escape was destroying the activity). Bound it
+            // with a linked CancelAfter that is also canceled on client dispose.
+            using var refreshCts = CancellationTokenSource.CreateLinkedTokenSource(_disposeCts.Token);
+            refreshCts.CancelAfter(ControlPlaneTimeout);
             CloudRefreshResult result = await PostJsonNoAuthAsync<CloudRefreshResult>(
                 staleSession.ServerUrl,
                 "/auth/refresh",
                 new { refresh_token = refreshToken },
-                CancellationToken.None).ConfigureAwait(false);
+                refreshCts.Token).ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(result.AccessToken))
                 return false;
 
@@ -1249,6 +1265,13 @@ public sealed class CloudApiClient : IDisposable
                 _secureStore.SaveRefreshToken(refreshed.RefreshToken, refreshed.RefreshTokenExpiresAt);
             RaiseSessionChanged();
             return true;
+        }
+        catch (OperationCanceledException)
+        {
+            // Bounded control-plane timeout (S22#3) or client dispose. Treat as
+            // a failed refresh rather than surfacing a raw cancellation.
+            global::Android.Util.Log.Warn("FA.Cloud", "Cloud token refresh timed out or was canceled.");
+            return false;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
