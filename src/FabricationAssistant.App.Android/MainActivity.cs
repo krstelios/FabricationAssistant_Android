@@ -10759,7 +10759,26 @@ public sealed class MainActivity : AppCompatActivity
 
             UpdateLoadingDetail("Model ready");
             if (addToRecent)
-                RecentFilesStore.Add(ApplicationContext!, uri);
+            {
+                // Recording a recent file probes existing entries' access via
+                // blocking ContentResolver round-trips (up to the 5s per-entry
+                // timeout for offline/cloud URIs). Run off the UI thread so a
+                // slow entry can't jank the just-finished load; the store's
+                // static Gate lock serializes it against the panel's load.
+                var recentContext = ApplicationContext!;
+                var recentUri = uri;
+                _ = Task.Run(() =>
+                {
+                    try
+                    {
+                        RecentFilesStore.Add(recentContext, recentUri);
+                    }
+                    catch (Exception ex)
+                    {
+                        global::Android.Util.Log.Warn("FA.Recent", "Failed to record recent file: " + ex.Message);
+                    }
+                });
+            }
             _lastLoadedUriText = persistForRestore ? uri.ToString() : null;
             _currentLocalSaveUri = addToRecent ? uri : null;
             _lastLoadedDocument = document;

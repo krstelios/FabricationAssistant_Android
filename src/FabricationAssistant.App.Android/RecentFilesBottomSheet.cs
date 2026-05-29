@@ -22,6 +22,7 @@ public sealed class RecentFilesBottomSheet : BottomSheetDialogFragment, IDisposa
     private LinearLayout? _contentRoot;
     private readonly List<MaterialCardView> _recentCards = [];
     private bool _disposed;
+    private int _refreshGeneration;
 
     public Action<RecentFileEntry>? OnRecentFileSelected { get; set; }
 
@@ -94,23 +95,60 @@ public sealed class RecentFilesBottomSheet : BottomSheetDialogFragment, IDisposa
 
     private void RefreshContent(Context ctx)
     {
-        if (_contentRoot is null)
+        LinearLayout? root = _contentRoot;
+        if (root is null)
             return;
 
         foreach (MaterialCardView card in _recentCards)
             card.SetOnClickListener(null);
         _recentCards.Clear();
-        _contentRoot.RemoveAllViews();
+        root.RemoveAllViews();
+        AddHeader(ctx, root);
 
-        RecentFileEntry[] entries = RecentFilesStore.Load(ctx).Take(10).ToArray();
-        AddHeader(ctx, _contentRoot);
-        if (entries.Length == 0)
-            AddEmptyState(ctx, _contentRoot);
-        else
+        // RecentFilesStore.Load probes each entry's access via a ContentResolver
+        // binder round-trip (up to a 5s timeout per offline/cloud URI), so it can
+        // block for many seconds and ANR if run on the UI thread. Load off-thread
+        // and post the rows back; the panel shows its header immediately. A
+        // generation token + still-attached checks make stale/post-dispose
+        // results no-ops.
+        int generation = ++_refreshGeneration;
+        var handler = new Handler(Looper.MainLooper!);
+        Task.Run(() =>
         {
-            foreach (RecentFileEntry entry in entries)
-                AddRecentRow(ctx, _contentRoot, entry);
+            RecentFileEntry[] entries;
+            try
+            {
+                entries = RecentFilesStore.Load(ctx).Take(10).ToArray();
+            }
+            catch (Exception ex)
+            {
+                global::Android.Util.Log.Warn("FA.Recent", "Failed to load recent files: " + ex.Message);
+                entries = Array.Empty<RecentFileEntry>();
+            }
+
+            handler.Post(() => PopulateRecentRows(ctx, root, generation, entries));
+        });
+    }
+
+    private void PopulateRecentRows(Context ctx, LinearLayout root, int generation, RecentFileEntry[] entries)
+    {
+        // Ignore results from a superseded refresh or after the sheet's content
+        // was torn down / replaced. The header was already added synchronously.
+        if (_disposed
+            || generation != _refreshGeneration
+            || !ReferenceEquals(root, _contentRoot))
+        {
+            return;
         }
+
+        if (entries.Length == 0)
+        {
+            AddEmptyState(ctx, root);
+            return;
+        }
+
+        foreach (RecentFileEntry entry in entries)
+            AddRecentRow(ctx, root, entry);
     }
 
     private void DisposeManagedContent()
