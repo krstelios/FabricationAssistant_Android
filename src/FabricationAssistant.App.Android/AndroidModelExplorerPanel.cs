@@ -18,6 +18,7 @@ internal sealed class AndroidModelExplorerPanel : IDisposable
     private readonly HashSet<int> _highlightedPresentedIds = new();
     private readonly HashSet<int> _pathPresentedIds = new();
     private readonly List<MaterialButton> _actionButtons = new();
+    private readonly StyledTooltipRegistry _tooltips = new();
 
     private Scene? _scene;
     private AndroidModelExplorerTree? _tree;
@@ -84,7 +85,8 @@ internal sealed class AndroidModelExplorerPanel : IDisposable
             () => _highlightedPresentedIds,
             () => _pathPresentedIds,
             ToggleNodeExpansion,
-            ToggleNodeVisibility);
+            ToggleNodeVisibility,
+            _tooltips);
 
         _list = new ListView(ctx)
         {
@@ -101,6 +103,7 @@ internal sealed class AndroidModelExplorerPanel : IDisposable
             1f));
 
         SetScene(_sceneAccessor());
+        _tooltips.AttachTree(ctx, root, includeStaticText: true);
         return root;
     }
 
@@ -140,6 +143,7 @@ internal sealed class AndroidModelExplorerPanel : IDisposable
 
         _adapter?.Dispose();
         _adapter = null;
+        _tooltips.Dispose();
         _list = null;
         _status = null;
         _summary = null;
@@ -322,6 +326,7 @@ internal sealed class AndroidModelExplorerPanel : IDisposable
         var button = new MaterialButton(ctx)
         {
             Text = text,
+            ContentDescription = text,
         };
         button.SetAllCaps(false);
         button.SetMinHeight(0);
@@ -442,6 +447,7 @@ internal sealed class AndroidModelExplorerPanel : IDisposable
         private readonly Func<IReadOnlySet<int>> _pathAccessor;
         private readonly Action<AndroidModelExplorerNode> _toggleExpansion;
         private readonly Action<AndroidModelExplorerNode> _toggleVisibility;
+        private readonly StyledTooltipRegistry _tooltips;
 
         public ModelExplorerAdapter(
             Context ctx,
@@ -450,7 +456,8 @@ internal sealed class AndroidModelExplorerPanel : IDisposable
             Func<IReadOnlySet<int>> highlightedAccessor,
             Func<IReadOnlySet<int>> pathAccessor,
             Action<AndroidModelExplorerNode> toggleExpansion,
-            Action<AndroidModelExplorerNode> toggleVisibility)
+            Action<AndroidModelExplorerNode> toggleVisibility,
+            StyledTooltipRegistry tooltips)
         {
             _ctx = ctx;
             _rows = rows;
@@ -459,6 +466,7 @@ internal sealed class AndroidModelExplorerPanel : IDisposable
             _pathAccessor = pathAccessor;
             _toggleExpansion = toggleExpansion;
             _toggleVisibility = toggleVisibility;
+            _tooltips = tooltips;
         }
 
         public override AndroidModelExplorerRow this[int position] => _rows[position];
@@ -486,6 +494,7 @@ internal sealed class AndroidModelExplorerPanel : IDisposable
             root.SetGravity(GravityFlags.CenterVertical);
             root.SetMinimumHeight(Dp(_ctx, 36));
             root.SetPadding(Dp(_ctx, 2), 0, Dp(_ctx, 4), 0);
+            root.ContentDescription = "Select " + node.DisplayName;
             root.Background = CreateRowBackground(_ctx, selected, highlighted, onPath);
 
             var indent = new Space(_ctx);
@@ -503,6 +512,9 @@ internal sealed class AndroidModelExplorerPanel : IDisposable
             expand.SetTextColor(ColorRes(_ctx, Resource.Color.fa_text_secondary));
             expand.Clickable = node.Children.Count > 0;
             expand.Focusable = false;
+            expand.ContentDescription = node.Children.Count == 0
+                ? null
+                : node.IsExpanded ? "Collapse " + node.DisplayName : "Expand " + node.DisplayName;
             expand.SetOnClickListener(node.Children.Count > 0
                 ? new NodeActionClickListener(_toggleExpansion, node)
                 : null);
@@ -516,6 +528,7 @@ internal sealed class AndroidModelExplorerPanel : IDisposable
             icon.SetTextSize(ComplexUnitType.Sp, 11f);
             icon.SetTypeface(Typeface.Default, TypefaceStyle.Bold);
             icon.SetTextColor(ColorRes(_ctx, Resource.Color.fa_text_secondary));
+            icon.ContentDescription = node.NodeType.ToString();
             root.AddView(icon, new LinearLayout.LayoutParams(Dp(_ctx, 24), Dp(_ctx, 36)));
 
             var label = new TextView(_ctx)
@@ -551,6 +564,7 @@ internal sealed class AndroidModelExplorerPanel : IDisposable
             visibility.SetOnClickListener(new NodeActionClickListener(_toggleVisibility, node));
             root.AddView(visibility, new LinearLayout.LayoutParams(Dp(_ctx, 40), Dp(_ctx, 36)));
 
+            _tooltips.AttachTree(_ctx, root, includeStaticText: true);
             return root;
         }
 
@@ -946,6 +960,9 @@ internal sealed class AndroidModelExplorerTree
         if (node.Parent is null)
             return false;
 
+        if (IsSplitMaterialPrimitiveShape(node, visibleOwner))
+            return true;
+
         if (string.IsNullOrWhiteSpace(node.SourceNodeName)
             && IsAutoGeneratedNodeLabel(node.DisplayName))
         {
@@ -957,6 +974,15 @@ internal sealed class AndroidModelExplorerTree
             return false;
 
         return SubtreeBelongsToSourceKey(node, ownerSourceKey);
+    }
+
+    private static bool IsSplitMaterialPrimitiveShape(SceneNode node, SceneNode visibleOwner)
+    {
+        return ReferenceEquals(node.Parent, visibleOwner)
+               && node.NodeType == SceneNodeType.Shape
+               && visibleOwner.NodeType == SceneNodeType.Part
+               && visibleOwner.MeshId is null
+               && node.MeshId.HasValue;
     }
 
     private static bool SubtreeBelongsToSourceKey(SceneNode node, string ownerSourceKey)

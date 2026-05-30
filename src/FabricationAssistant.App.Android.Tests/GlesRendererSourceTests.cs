@@ -16,6 +16,52 @@ public sealed class GlesRendererSourceTests
     }
 
     [Fact]
+    public void SplitMaterialPrimitiveMeshes_SelectTheirParentBody()
+    {
+        string gpuMesh = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.Rendering.Gles\GpuMesh.cs"));
+        Assert.Contains("public int SelectableNodeId { get; set; } = -1;", gpuMesh);
+
+        string uploader = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.Rendering.Gles\SceneUploader.cs"));
+        Assert.Contains("gpu.SelectableNodeId = ResolveSelectableNodeId(nodesById, node);", uploader);
+
+        string resolver = ExtractMethod(uploader, "private static int ResolveSelectableNodeId");
+        Assert.Contains("node.NodeType == SceneNodeType.Shape", resolver);
+        Assert.Contains("parent.NodeType == SceneNodeType.Part", resolver);
+        Assert.Contains("parent.MeshId is null", resolver);
+        Assert.Contains("return parent.Id;", resolver);
+
+        string scene = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.Rendering.Gles\GpuScene.cs"));
+        string pickMethod = ExtractMethod(scene, "public bool TryGetSelectableNodeIdForMeshIndex");
+        Assert.Contains("mesh.SelectableNodeId >= 0", pickMethod);
+        Assert.Contains("? mesh.SelectableNodeId", pickMethod);
+        Assert.Contains(": mesh.SourceNodeId", pickMethod);
+
+        string mainActivity = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\MainActivity.cs"));
+        string selectionMethod = ExtractMethod(mainActivity, "private void OnPickResult");
+        Assert.Contains("TryGetSelectableNodeIdForMeshIndex", selectionMethod);
+    }
+
+    [Fact]
+    public void ModelExplorerHidesSplitMaterialPrimitiveShapes()
+    {
+        string explorer = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\AndroidModelExplorerPanel.cs"));
+
+        string hideMethod = ExtractMethod(explorer, "private static bool ShouldHideFromExplorer");
+        Assert.Contains("IsSplitMaterialPrimitiveShape(node, visibleOwner)", hideMethod);
+
+        string splitMethod = ExtractMethod(explorer, "private static bool IsSplitMaterialPrimitiveShape");
+        Assert.Contains("node.NodeType == SceneNodeType.Shape", splitMethod);
+        Assert.Contains("visibleOwner.NodeType == SceneNodeType.Part", splitMethod);
+        Assert.Contains("visibleOwner.MeshId is null", splitMethod);
+        Assert.Contains("node.MeshId.HasValue", splitMethod);
+    }
+
+    [Fact]
     public void SectionCapContourMask_UsesContourGeometryWithDepthOnlyOnCapPass()
     {
         string renderer = File.ReadAllText(ResolveRepoPath(
@@ -67,6 +113,20 @@ public sealed class GlesRendererSourceTests
         Assert.Contains("depthMask: true", overlay);
         Assert.Contains("DrawRibbonPositions(view, projection, lineVertices, color, depthTest: true", overlay);
         Assert.Contains("_gl.DepthMask(depthMask);", overlay);
+    }
+
+    [Fact]
+    public void SectionCapSourceFilter_IncludesTransparentVisibleMeshes()
+    {
+        string renderer = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.Rendering.Gles\GlesViewportRenderer.cs"));
+
+        string filter = ExtractMethod(renderer, "private bool ShouldRenderSectionCapSourceMesh");
+        Assert.Contains("!mesh.Visible", filter);
+        Assert.Contains("IsXrayBackgroundMesh(mesh)", filter);
+        Assert.Contains("return true;", filter);
+        Assert.DoesNotContain("GetEffectiveMeshAlpha", filter);
+        Assert.DoesNotContain("OpaqueAlphaThreshold", filter);
     }
 
     [Fact]
@@ -189,4 +249,31 @@ public sealed class GlesRendererSourceTests
 
     private static string ResolveRepoPath(string relativeToTestProject, [CallerFilePath] string caller = "")
         => Path.GetFullPath(Path.Combine(Path.GetDirectoryName(caller)!, relativeToTestProject));
+
+    private static string ExtractMethod(string source, string signature)
+    {
+        int start = source.IndexOf(signature, StringComparison.Ordinal);
+        Assert.True(start >= 0, $"{signature} was not found.");
+
+        int braceStart = source.IndexOf('{', start);
+        Assert.True(braceStart > start, $"{signature} body was not found.");
+
+        int depth = 0;
+        for (int i = braceStart; i < source.Length; i++)
+        {
+            if (source[i] == '{')
+            {
+                depth++;
+            }
+            else if (source[i] == '}')
+            {
+                depth--;
+                if (depth == 0)
+                    return source[start..(i + 1)];
+            }
+        }
+
+        Assert.Fail($"{signature} body was not closed.");
+        return string.Empty;
+    }
 }

@@ -16,12 +16,31 @@ public static class AndroidCameraClipPlanes
     private const double NearPlaneFrontFaceScale = 0.5;
     private const double FarPlaneSceneMarginScale = 0.02;
     private const double FarPlaneSpanMarginScale = 0.05;
+    private static bool s_manualPerspectiveClipPlanesEnabled;
+    private static double s_manualPerspectiveNearPlane = MinimumNearPlane;
+    private static double s_manualPerspectiveFarPlane = 10000.0;
+
+    public static void ConfigureManualPerspectiveClipPlanes(bool enabled, double nearPlane, double farPlane)
+    {
+        if (!enabled || !IsValidPerspectiveClipPlanes(nearPlane, farPlane))
+        {
+            s_manualPerspectiveClipPlanesEnabled = false;
+            return;
+        }
+
+        s_manualPerspectiveNearPlane = nearPlane;
+        s_manualPerspectiveFarPlane = farPlane;
+        s_manualPerspectiveClipPlanesEnabled = true;
+    }
 
     public static void Update(CameraState camera, BoundingBox sceneBounds)
     {
         ArgumentNullException.ThrowIfNull(camera);
 
         camera.UpdateClipPlanes(sceneBounds);
+        if (TryApplyManualPerspectiveClipPlanes(camera))
+            return;
+
         if (!camera.IsPerspective || !sceneBounds.IsValid)
             return;
 
@@ -60,6 +79,27 @@ public static class AndroidCameraClipPlanes
         camera.NearPlane = near;
         camera.FarPlane = far;
     }
+
+    private static bool TryApplyManualPerspectiveClipPlanes(CameraState camera)
+    {
+        if (!s_manualPerspectiveClipPlanesEnabled || !camera.IsPerspective)
+            return false;
+
+        double near = s_manualPerspectiveNearPlane;
+        double far = s_manualPerspectiveFarPlane;
+        if (!IsValidPerspectiveClipPlanes(near, far))
+            return false;
+
+        camera.NearPlane = near;
+        camera.FarPlane = far;
+        return true;
+    }
+
+    private static bool IsValidPerspectiveClipPlanes(double nearPlane, double farPlane)
+        => double.IsFinite(nearPlane)
+           && double.IsFinite(farPlane)
+           && nearPlane >= MinimumNearPlane
+           && farPlane > nearPlane;
 
     public static BoundingBox IncludeGroundGrid(
         BoundingBox sceneBounds,

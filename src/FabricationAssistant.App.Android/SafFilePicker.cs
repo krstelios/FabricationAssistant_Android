@@ -7,7 +7,7 @@ using AndroidUri = Android.Net.Uri;
 namespace FabricationAssistant.App.Android;
 
 /// <summary>
-/// Wraps Storage Access Framework ACTION_OPEN_DOCUMENT into a single async call.
+/// Wraps Storage Access Framework document intents into a single async call.
 /// The contract is registered once during MainActivity.OnCreate; PickAsync() can
 /// be called repeatedly afterwards. The returned task completes with the picked
 /// content URI or null if the user cancelled.
@@ -62,12 +62,53 @@ public sealed class SafFilePicker : IDisposable
         return pending.Task;
     }
 
+    public Task<AndroidUri?> CreateAsync(string mimeType, string displayName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(mimeType);
+        ArgumentException.ThrowIfNullOrWhiteSpace(displayName);
+        TaskCompletionSource<AndroidUri?> pending;
+        CancellationTokenSource timeoutCts;
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_pending is not null)
+                throw new InvalidOperationException("A file picker is already active.");
+
+            pending = new TaskCompletionSource<AndroidUri?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            timeoutCts = new CancellationTokenSource();
+            _pending = pending;
+            _timeoutCts = timeoutCts;
+        }
+
+        try
+        {
+            _launcher.Launch(CreateDocumentIntent(mimeType, displayName));
+        }
+        catch
+        {
+            CancelPending("create document launch failed");
+            throw;
+        }
+        _ = CancelPendingAfterTimeoutAsync(timeoutCts.Token);
+        return pending.Task;
+    }
+
     private static Intent CreateOpenDocumentIntent(string[] mimeTypes)
     {
         Intent intent = new(Intent.ActionOpenDocument);
         intent.AddCategory(Intent.CategoryOpenable);
         intent.SetType("*/*");
         intent.PutExtra(Intent.ExtraMimeTypes, mimeTypes);
+        intent.AddFlags(ActivityFlags.GrantReadUriPermission | ActivityFlags.GrantWriteUriPermission | ActivityFlags.GrantPersistableUriPermission);
+        return intent;
+    }
+
+    private static Intent CreateDocumentIntent(string mimeType, string displayName)
+    {
+        Intent intent = new(Intent.ActionCreateDocument);
+        intent.AddCategory(Intent.CategoryOpenable);
+        intent.SetType(mimeType);
+        intent.PutExtra(Intent.ExtraTitle, displayName);
         intent.AddFlags(ActivityFlags.GrantReadUriPermission | ActivityFlags.GrantWriteUriPermission | ActivityFlags.GrantPersistableUriPermission);
         return intent;
     }

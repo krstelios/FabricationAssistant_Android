@@ -350,7 +350,8 @@ public sealed class GlesViewportRenderer : IDisposable
     public void OnSurfaceCreated()
     {
         _guard.InitializeOnCurrentThread();
-        _msaaFbo?.Reset();
+        // S8#3: DisposeResources below already disposes _msaaFbo (TryDispose ->
+        // Destroy + null), so the explicit Reset() here was redundant.
         DisposeResources(disposeScene: false);
 
         _gl = GL.GetApi(new SurfaceViewGlContext());
@@ -2215,9 +2216,10 @@ public sealed class GlesViewportRenderer : IDisposable
         if (IsXrayBackgroundMesh(mesh))
             return false;
 
-        var appearance = _appearance;
-        bool clay = appearance.Mode == RenderMode.Clay;
-        return GetEffectiveMeshAlpha(mesh, appearance, clay) >= OpaqueAlphaThreshold;
+        // Section curves and caps are geometric results. Material/global alpha
+        // only controls surface rendering, so transparent-but-visible bodies
+        // must still participate in section geometry.
+        return true;
     }
 
     private static Dictionary<int, SceneNodeDto>? BuildSectionCapNodeLookup(DocumentDto document)

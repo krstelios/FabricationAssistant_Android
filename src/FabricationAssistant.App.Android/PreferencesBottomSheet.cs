@@ -11,6 +11,7 @@ using Google.Android.Material.BottomSheet;
 using Google.Android.Material.Button;
 using Google.Android.Material.Card;
 using Google.Android.Material.MaterialSwitch;
+using System.Globalization;
 using AlertDialog = AndroidX.AppCompat.App.AlertDialog;
 
 namespace FabricationAssistant.App.Android;
@@ -31,6 +32,15 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
     private int _sheetWidthOverridePx;
     private FrameLayout? _resizeHandle;
     private readonly List<AlertDialog> _colorPickerDialogs = new();
+    private readonly StyledTooltipRegistry _styledTooltips = new();
+    private readonly Handler _logRefreshHandler = new(Looper.MainLooper!);
+    private AndroidLogcatFeed? _logFeed;
+    private ScrollView? _logScroll;
+    private TextView? _logStatus;
+    private TextView? _logText;
+    private MaterialButton? _logLiveButton;
+    private bool _logPanelExpanded;
+    private bool _logRefreshQueued;
     private bool _disposed;
 
     public Action? OnSettingsChanged { get; set; }
@@ -88,6 +98,8 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
 
         _disposed = true;
         DismissColorPickerDialogs();
+        DisposeLogFeed();
+        DisposeStyledTooltips();
         OnSettingsChanged = null;
     }
 
@@ -138,6 +150,9 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         AddSwitch(ctx, helpers, "Show axes gizmo", AppSettings.ShowAxes, v => AppSettings.ShowAxes = v);
         AddToggleRow(ctx, helpers, new[] { "Perspective", "Orthographic" },
             AppSettings.IsPerspective ? 0 : 1, idx => AppSettings.IsPerspective = (idx == 0));
+        AddSwitch(ctx, helpers, "Manual clip planes", AppSettings.ManualCameraClipPlanesEnabled, v => AppSettings.ManualCameraClipPlanesEnabled = v);
+        AddFloatField(ctx, helpers, "Near clip (mm)", AppSettings.CameraNearClipMm, AppSettings.SetCameraNearClipMm);
+        AddFloatField(ctx, helpers, "Far clip (mm)", AppSettings.CameraFarClipMm, AppSettings.SetCameraFarClipMm);
 
         // ── Scene colors ───────────────────────────────────────────────
         var colors = AddSection(ctx, root, "Scene Colors", "Background and surface");
@@ -195,9 +210,11 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
 
         // ── AA + occlusion ─────────────────────────────────────────────
         var aa = AddSection(ctx, root, "Anti-aliasing & Occlusion", "MSAA, contour, SSAO");
-        int msaaIdx = AppSettings.MsaaSamples switch { 0 => 0, 2 => 1, _ => 2 };
-        AddToggleRow(ctx, aa, new[] { "Off", "2x", "4x" }, msaaIdx,
-            idx => AppSettings.MsaaSamples = idx switch { 0 => 0, 1 => 2, _ => 4 });
+        // S8#4/S9#1: expose 8x (the renderer + AppSettings clamp already support
+        // it; devices that cap lower clamp down at GL_MAX_SAMPLES).
+        int msaaIdx = AppSettings.MsaaSamples switch { 0 => 0, 2 => 1, 4 => 2, _ => 3 };
+        AddToggleRow(ctx, aa, new[] { "Off", "2x", "4x", "8x" }, msaaIdx,
+            idx => AppSettings.MsaaSamples = idx switch { 0 => 0, 1 => 2, 2 => 4, _ => 8 });
         AddSubtle(ctx, aa, "MSAA applies immediately.");
         AddFloatSlider(ctx, aa, "Contour strength", 0f, 1.2f, AppSettings.ContourStrength, v => AppSettings.ContourStrength = v);
         AddFloatSlider(ctx, aa, "Contour falloff", 0.5f, 6f, AppSettings.ContourPower, v => AppSettings.ContourPower = v);
@@ -307,9 +324,19 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         AddFloatSlider(ctx, mouse, "Wheel zoom speed", 0.1f, 5f, AppSettings.MouseWheelZoomSpeed, v => AppSettings.MouseWheelZoomSpeed = v);
         AddFloatSlider(ctx, mouse, "Click vs drag threshold", 1f, 20f, AppSettings.MouseDragThresholdDip, v => AppSettings.MouseDragThresholdDip = v);
 
+        var diagnostics = AddSection(
+            ctx,
+            root,
+            "Diagnostics",
+            "Live app console logs",
+            expandedByDefault: false,
+            onExpandedChanged: expanded => OnLogPanelExpandedChanged(ctx, expanded));
+        AddLogPanel(ctx, diagnostics);
+
         AddSubtle(ctx, root, "Rendering controls apply live.");
 
         scroll.AddView(root);
+        _styledTooltips.AttachTree(ctx, scroll, includeStaticText: true);
         return scroll;
     }
 
@@ -326,6 +353,8 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
             return;
 
         ViewGroup.LayoutParams? layoutParams = currentView.LayoutParameters;
+        DisposeLogFeed();
+        DisposeStyledTooltips();
         parent.RemoveViewAt(index);
         View replacement = CreateEmbeddedView(ctx);
         parent.AddView(replacement, index, layoutParams);
@@ -665,6 +694,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         reset.SetPadding(Dp(ctx, 12), 0, Dp(ctx, 12), 0);
         reset.LayoutParameters = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WrapContent, Dp(ctx, 36));
         reset.ContentDescription = "Reset settings";
+        SetTooltip(ctx, reset, "Reset settings");
         reset.Click += (_, _) => resetToDefaults();
         row.AddView(reset);
 
@@ -676,7 +706,8 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         ViewGroup parent,
         string title,
         string summary,
-        bool expandedByDefault = false)
+        bool expandedByDefault = false,
+        Action<bool>? onExpandedChanged = null)
     {
         var card = new MaterialCardView(ctx)
         {
@@ -717,8 +748,10 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         var arrow = new ImageView(ctx);
         arrow.SetImageResource(Resource.Drawable.ic_chevron_right);
         arrow.SetColorFilter(GetColor(ctx, Resource.Color.fa_text_secondary));
-        arrow.ContentDescription = title;
+        arrow.ContentDescription = title + ", expand or collapse section";
         arrow.LayoutParameters = new LinearLayout.LayoutParams(Dp(ctx, 24), Dp(ctx, 24));
+        SetTooltip(ctx, header, title);
+        SetTooltip(ctx, arrow, title + ", expand or collapse section");
 
         header.AddView(titleGroup);
         header.AddView(arrow);
@@ -734,6 +767,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         {
             isExpanded = !isExpanded;
             ApplySectionState(ctx, card, content, arrow, isExpanded);
+            onExpandedChanged?.Invoke(isExpanded);
             ReanchorSheetAfterContentChange(content);
         };
 
@@ -762,6 +796,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
     {
         var sw = new MaterialSwitch(ctx) { Text = label, Checked = initial };
         sw.ContentDescription = FormatSwitchContentDescription(label, initial);
+        SetTooltip(ctx, sw, label);
         sw.SetTextColor(GetColor(ctx, Resource.Color.fa_text_primary));
         var lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MatchParent, LinearLayout.LayoutParams.WrapContent);
         lp.BottomMargin = Dp(ctx, 6);
@@ -801,6 +836,9 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
             ? InputTypes.ClassText | InputTypes.TextVariationPassword
             : InputTypes.ClassText | InputTypes.TextVariationUri;
         input.ContentDescription = label;
+        SetTooltip(ctx, row, label);
+        SetTooltip(ctx, labelTv, label);
+        SetTooltip(ctx, input, label, useLongClick: false);
         input.TextChanged += (_, _) => save(input.Text ?? "");
         row.AddView(input, new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MatchParent,
@@ -808,6 +846,37 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
 
         parent.AddView(row);
         return input;
+    }
+
+    private EditText AddFloatField(Context ctx, ViewGroup parent, string label, float initial, Action<float> save)
+    {
+        var input = AddTextField(
+            ctx,
+            parent,
+            label,
+            initial.ToString("G9", CultureInfo.InvariantCulture),
+            text =>
+            {
+                if (!TryParseFloatField(text, out float value))
+                    return;
+
+                save(value);
+                NotifySettingsChanged();
+            });
+        input.InputType = InputTypes.ClassNumber | InputTypes.NumberFlagDecimal;
+        return input;
+    }
+
+    private static bool TryParseFloatField(string? text, out float value)
+    {
+        if (float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value))
+            return float.IsFinite(value);
+
+        if (float.TryParse(text, NumberStyles.Float, CultureInfo.CurrentCulture, out value))
+            return float.IsFinite(value);
+
+        value = 0.0f;
+        return false;
     }
 
     private void AddFloatSlider(Context ctx, ViewGroup parent, string label, float min, float max, float initial, Action<float> save)
@@ -819,8 +888,11 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
 
         var labelTv = new TextView(ctx) { Text = FormatSliderValue(label, initial) };
         labelTv.SetTextColor(GetColor(ctx, Resource.Color.fa_text_secondary));
+        SetTooltip(ctx, row, label);
+        SetTooltip(ctx, labelTv, label);
 
-        var seek = new SeekBar(ctx);
+        var seek = new SeekBar(ctx) { ContentDescription = label };
+        SetTooltip(ctx, seek, label);
         seek.Max = 1000;
         int progressInit = System.Math.Clamp((int)System.Math.Round((initial - min) / (max - min) * 1000f), 0, 1000);
         seek.Progress = progressInit;
@@ -859,8 +931,11 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
 
         var labelTv = new TextView(ctx) { Text = $"{label}: {initial}" };
         labelTv.SetTextColor(GetColor(ctx, Resource.Color.fa_text_secondary));
+        SetTooltip(ctx, row, label);
+        SetTooltip(ctx, labelTv, label);
 
-        var seek = new SeekBar(ctx);
+        var seek = new SeekBar(ctx) { ContentDescription = label };
+        SetTooltip(ctx, seek, label);
         seek.Max = max - min;
         seek.Progress = System.Math.Clamp(initial - min, 0, max - min);
         seek.ProgressChanged += (_, e) =>
@@ -893,12 +968,14 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         row.LayoutParameters = lp;
         row.SetGravity(GravityFlags.CenterVertical);
         row.SetPadding(0, Dp(ctx, 3), 0, Dp(ctx, 3));
+        SetTooltip(ctx, row, label);
 
         var labelTv = new TextView(ctx) { Text = label };
         labelTv.LayoutParameters = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WrapContent, 1f);
         labelTv.Ellipsize = TextUtils.TruncateAt.End;
         labelTv.SetSingleLine(true);
         labelTv.SetTextColor(GetColor(ctx, Resource.Color.fa_text_primary));
+        SetTooltip(ctx, labelTv, label);
         row.AddView(labelTv);
 
         var swatch = new View(ctx);
@@ -906,6 +983,8 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         swatchLp.LeftMargin = Dp(ctx, 8);
         swatchLp.RightMargin = Dp(ctx, 10);
         swatch.LayoutParameters = swatchLp;
+        swatch.ContentDescription = label + " color swatch";
+        SetTooltip(ctx, swatch, label);
         row.AddView(swatch);
 
         var hexTv = new TextView(ctx);
@@ -913,6 +992,8 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         hexTv.SetTextColor(GetColor(ctx, Resource.Color.fa_text_secondary));
         hexTv.SetTypeface(global::Android.Graphics.Typeface.Monospace, global::Android.Graphics.TypefaceStyle.Normal);
         hexTv.SetMinWidth(Dp(ctx, 72));
+        hexTv.ContentDescription = label + " color value";
+        SetTooltip(ctx, hexTv, label);
         row.AddView(hexTv);
 
         var pick = new MaterialButton(ctx, null, Resource.Attribute.materialButtonOutlinedStyle)
@@ -927,6 +1008,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         pickLp.LeftMargin = Dp(ctx, 8);
         pick.LayoutParameters = pickLp;
         pick.ContentDescription = $"Pick {label} color";
+        SetTooltip(ctx, pick, $"Pick {label} color");
         row.AddView(pick);
 
         void ApplyRowState()
@@ -981,6 +1063,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         root.AddView(valueRow, valueRowLp);
 
         var preview = new View(ctx);
+        preview.ContentDescription = $"{label} color preview";
         var previewLp = new LinearLayout.LayoutParams(Dp(ctx, 74), Dp(ctx, 44));
         previewLp.RightMargin = Dp(ctx, 12);
         valueRow.AddView(preview, previewLp);
@@ -990,6 +1073,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
             Text = ToHexColor(currentR, currentG, currentB),
             InputType = InputTypes.ClassText | InputTypes.TextFlagCapCharacters | InputTypes.TextFlagNoSuggestions,
         };
+        hexInput.ContentDescription = $"{label} hex color";
         hexInput.SetSingleLine(true);
         hexInput.SetSelectAllOnFocus(true);
         hexInput.SetTextColor(GetColor(ctx, Resource.Color.fa_text_primary));
@@ -1000,18 +1084,21 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         valueRow.AddView(hexInput, new LinearLayout.LayoutParams(0, Dp(ctx, 44), 1f));
 
         var colorPlane = new ColorPlaneView(ctx);
+        colorPlane.ContentDescription = $"{label} saturation and brightness";
         colorPlane.SetColor(hue, saturation, value);
         var planeLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MatchParent, Dp(ctx, 212));
         planeLp.BottomMargin = Dp(ctx, 12);
         root.AddView(colorPlane, planeLp);
 
         var hueSlider = new HueSliderView(ctx);
+        hueSlider.ContentDescription = $"{label} hue";
         hueSlider.SetHue(hue);
         var hueLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MatchParent, Dp(ctx, 34));
         hueLp.BottomMargin = Dp(ctx, 10);
         root.AddView(hueSlider, hueLp);
 
         var detail = new TextView(ctx);
+        detail.ContentDescription = $"{label} hue, saturation, and brightness value";
         detail.SetTextColor(GetColor(ctx, Resource.Color.fa_text_secondary));
         detail.SetTextSize(ComplexUnitType.Px, Dp(ctx, 12));
         detail.Gravity = GravityFlags.CenterHorizontal;
@@ -1096,9 +1183,11 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         TrackColorPickerDialog(dialog, windowBackground, root, preview, hexInput);
 
         Button? positive = dialog.GetButton((int)global::Android.Content.DialogButtonType.Positive);
+        _styledTooltips.AttachTree(ctx, root, includeStaticText: true);
         if (positive is not null)
         {
             positive.SetTextColor(GetColor(ctx, Resource.Color.fa_accent_500));
+            _styledTooltips.Attach(ctx, positive, "Apply color");
             positive.Click += (_, _) =>
             {
                 if (!TryParseHexColor(hexInput.Text, out int parsedR, out int parsedG, out int parsedB))
@@ -1114,7 +1203,11 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         }
 
         Button? negative = dialog.GetButton((int)global::Android.Content.DialogButtonType.Negative);
-        negative?.SetTextColor(GetColor(ctx, Resource.Color.fa_accent_500));
+        if (negative is not null)
+        {
+            negative.SetTextColor(GetColor(ctx, Resource.Color.fa_accent_500));
+            _styledTooltips.Attach(ctx, negative, "Cancel color edit");
+        }
     }
 
     private static GradientDrawable CreateColorDialogContentBackground(Context ctx)
@@ -1650,6 +1743,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
     {
         var tv = new TextView(ctx) { Text = label };
         tv.SetTextColor(GetColor(ctx, Resource.Color.fa_text_primary));
+        SetTooltip(ctx, tv, label);
         SetMarginBottom(tv, Dp(ctx, 4));
         parent.AddView(tv);
         AddToggleRow(ctx, parent, labels, initialIndex, save);
@@ -1674,6 +1768,8 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
                 Text = labels[i],
             };
             btn.Id = View.GenerateViewId();
+            btn.ContentDescription = labels[i];
+            SetTooltip(ctx, btn, labels[i]);
             ids[i] = btn.Id;
             if (labels.Length >= 4)
             {
@@ -1694,12 +1790,233 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         parent.AddView(group);
     }
 
+    private void AddLogPanel(Context ctx, ViewGroup parent)
+    {
+        _logStatus = new TextView(ctx)
+        {
+            Text = "Expand Diagnostics to start the live app log feed.",
+        };
+        _logStatus.SetTextSize(ComplexUnitType.Px, Dp(ctx, 12));
+        _logStatus.SetTextColor(GetColor(ctx, Resource.Color.fa_text_secondary));
+        SetMarginBottom(_logStatus, Dp(ctx, 8));
+        parent.AddView(_logStatus);
+
+        var controls = new LinearLayout(ctx)
+        {
+            Orientation = Orientation.Horizontal,
+        };
+        controls.SetGravity(GravityFlags.CenterVertical);
+        SetMarginBottom(controls, Dp(ctx, 8));
+
+        _logLiveButton = CreateLogButton(ctx, "Start", "Start live logs");
+        _logLiveButton.Click += (_, _) =>
+        {
+            if (_logFeed?.IsRunning == true)
+                StopLogFeed();
+            else
+                StartLogFeed(ctx);
+        };
+        controls.AddView(_logLiveButton, LogButtonLayout(ctx, first: true));
+
+        MaterialButton refresh = CreateLogButton(ctx, "Refresh", "Refresh visible logs");
+        refresh.Click += (_, _) => UpdateLogPanelText(scrollToBottom: true);
+        controls.AddView(refresh, LogButtonLayout(ctx, first: false));
+
+        MaterialButton copy = CreateLogButton(ctx, "Copy", "Copy visible logs");
+        copy.Click += (_, _) => CopyVisibleLogs(ctx);
+        controls.AddView(copy, LogButtonLayout(ctx, first: false));
+
+        MaterialButton clear = CreateLogButton(ctx, "Clear", "Clear visible logs");
+        clear.Click += (_, _) =>
+        {
+            _logFeed?.Clear();
+            UpdateLogPanelText(scrollToBottom: false);
+        };
+        controls.AddView(clear, LogButtonLayout(ctx, first: false));
+
+        parent.AddView(controls, new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MatchParent,
+            LinearLayout.LayoutParams.WrapContent));
+
+        _logScroll = new ScrollView(ctx)
+        {
+            FillViewport = true,
+            Background = CreateLogPanelBackground(ctx),
+        };
+        _logScroll.SetPadding(Dp(ctx, 10), Dp(ctx, 8), Dp(ctx, 10), Dp(ctx, 8));
+
+        _logText = new TextView(ctx)
+        {
+            Text = "(no logs yet)",
+        };
+        _logText.SetTextColor(GetColor(ctx, Resource.Color.fa_text_secondary));
+        _logText.SetTextSize(ComplexUnitType.Px, Dp(ctx, 11));
+        _logText.SetTypeface(global::Android.Graphics.Typeface.Monospace, global::Android.Graphics.TypefaceStyle.Normal);
+        _logText.SetTextIsSelectable(true);
+        _logScroll.AddView(_logText, new ScrollView.LayoutParams(
+            ViewGroup.LayoutParams.MatchParent,
+            ViewGroup.LayoutParams.WrapContent));
+
+        parent.AddView(_logScroll, new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MatchParent,
+            Dp(ctx, 220)));
+
+        AddSubtle(ctx, parent, "Shows logcat entries for this app process only. Use Copy before closing Settings if you want to keep the visible log.");
+    }
+
+    private MaterialButton CreateLogButton(Context ctx, string text, string tooltip)
+    {
+        var button = new MaterialButton(ctx, null, Resource.Attribute.materialButtonOutlinedStyle)
+        {
+            Text = text,
+            ContentDescription = tooltip,
+        };
+        button.SetMinWidth(0);
+        button.SetMinimumWidth(0);
+        button.SetTextColor(GetColor(ctx, Resource.Color.fa_accent_500));
+        button.SetTextSize(ComplexUnitType.Px, Dp(ctx, 12));
+        button.SetPadding(Dp(ctx, 8), 0, Dp(ctx, 8), 0);
+        SetTooltip(ctx, button, tooltip);
+        return button;
+    }
+
+    private static LinearLayout.LayoutParams LogButtonLayout(Context ctx, bool first)
+    {
+        var lp = new LinearLayout.LayoutParams(0, Dp(ctx, 34), 1f);
+        if (!first)
+            lp.LeftMargin = Dp(ctx, 6);
+        return lp;
+    }
+
+    private static GradientDrawable CreateLogPanelBackground(Context ctx)
+    {
+        var background = new GradientDrawable();
+        background.SetShape(ShapeType.Rectangle);
+        background.SetColor(GetColor(ctx, Resource.Color.fa_app_background));
+        background.SetCornerRadius(Dp(ctx, 6));
+        background.SetStroke(Dp(ctx, 1), GetColor(ctx, Resource.Color.fa_border));
+        return background;
+    }
+
+    private void OnLogPanelExpandedChanged(Context ctx, bool expanded)
+    {
+        _logPanelExpanded = expanded;
+        if (expanded)
+            StartLogFeed(ctx);
+        else
+            StopLogFeed();
+    }
+
+    private void StartLogFeed(Context ctx)
+    {
+        if (_disposed)
+            return;
+
+        _logFeed ??= new AndroidLogcatFeed();
+        _logFeed.Start();
+        UpdateLogPanelText(scrollToBottom: true);
+        ScheduleLogRefresh();
+    }
+
+    private void StopLogFeed()
+    {
+        _logFeed?.Stop();
+        UpdateLogPanelText(scrollToBottom: false);
+    }
+
+    private void DisposeLogFeed()
+    {
+        _logRefreshHandler.RemoveCallbacksAndMessages(null);
+        _logRefreshQueued = false;
+        _logPanelExpanded = false;
+        _logFeed?.Dispose();
+        _logFeed = null;
+        _logScroll = null;
+        _logStatus = null;
+        _logText = null;
+        _logLiveButton = null;
+    }
+
+    private void ScheduleLogRefresh()
+    {
+        if (_disposed || !_logPanelExpanded || _logRefreshQueued)
+            return;
+
+        _logRefreshQueued = true;
+        _logRefreshHandler.PostDelayed(() =>
+        {
+            _logRefreshQueued = false;
+            if (_disposed || !_logPanelExpanded)
+                return;
+
+            UpdateLogPanelText(scrollToBottom: true);
+            if (_logFeed?.IsRunning == true)
+                ScheduleLogRefresh();
+        }, 500);
+    }
+
+    private void UpdateLogPanelText(bool scrollToBottom)
+    {
+        AndroidLogcatFeed? feed = _logFeed;
+        bool running = feed?.IsRunning == true;
+
+        if (_logLiveButton is not null)
+            _logLiveButton.Text = running ? "Pause" : "Start";
+
+        if (_logStatus is not null)
+        {
+            _logStatus.Text = feed is null
+                ? "Expand Diagnostics to start the live app log feed."
+                : running
+                    ? "Live log feed running."
+                    : !string.IsNullOrWhiteSpace(feed.LastError)
+                        ? "Log feed stopped: " + feed.LastError
+                        : "Live log feed paused.";
+        }
+
+        string text = feed?.SnapshotText() ?? string.Empty;
+        if (_logText is not null)
+            _logText.Text = string.IsNullOrWhiteSpace(text) ? "(no logs yet)" : text;
+
+        if (scrollToBottom && _logScroll is not null)
+            _logScroll.Post(() => _logScroll?.FullScroll(FocusSearchDirection.Down));
+    }
+
+    private void CopyVisibleLogs(Context ctx)
+    {
+        string text = _logFeed?.SnapshotText() ?? _logText?.Text ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(text) || string.Equals(text, "(no logs yet)", StringComparison.Ordinal))
+        {
+            Toast.MakeText(ctx, "No logs to copy", ToastLength.Short)?.Show();
+            return;
+        }
+
+        if (ctx.GetSystemService(Context.ClipboardService) is global::Android.Content.ClipboardManager clipboard)
+        {
+            clipboard.PrimaryClip = ClipData.NewPlainText("Fabrication Assistant logs", text);
+            Toast.MakeText(ctx, "Logs copied", ToastLength.Short)?.Show();
+        }
+    }
+
     private void NotifySettingsChanged()
     {
         if (Activity is { IsDestroyed: true })
             return;
 
         OnSettingsChanged?.Invoke();
+    }
+
+    private void SetTooltip(Context ctx, View? view, string? text, bool useLongClick = true)
+    {
+        if (view is null || string.IsNullOrWhiteSpace(text))
+            return;
+
+        _styledTooltips.Attach(ctx, view, text, useLongClick);
+    }
+
+    private void DisposeStyledTooltips()
+    {
+        _styledTooltips.Dispose();
     }
 
     private void AddSubtle(Context ctx, ViewGroup parent, string text)

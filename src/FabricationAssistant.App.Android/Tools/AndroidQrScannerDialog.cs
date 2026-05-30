@@ -7,6 +7,7 @@ using Android.OS;
 using Android.Text;
 using Android.Views;
 using Android.Widget;
+using FabricationAssistant.App.Android;
 using ZXing;
 using ZXing.Common;
 
@@ -26,6 +27,7 @@ internal sealed class AndroidQrScannerDialog : Dialog, ISurfaceHolderCallback, g
     private readonly Action<int> _isolateMatch;
     private readonly Action<int> _isolateXrayMatch;
     private readonly BarcodeReaderGeneric _reader;
+    private readonly StyledTooltipRegistry _tooltips = new();
     private readonly bool _isWideLayout;
 
     private SurfaceView? _preview;
@@ -112,6 +114,7 @@ internal sealed class AndroidQrScannerDialog : Dialog, ISurfaceHolderCallback, g
 
         SetContentView(scroll);
         RenderResult();
+        _tooltips.AttachTree(Context, scroll, includeStaticText: true);
     }
 
     protected override void OnStart()
@@ -132,6 +135,12 @@ internal sealed class AndroidQrScannerDialog : Dialog, ISurfaceHolderCallback, g
     {
         StopCamera();
         base.OnStop();
+    }
+
+    public override void Dismiss()
+    {
+        _tooltips.Dispose();
+        base.Dismiss();
     }
 
     public void SurfaceCreated(ISurfaceHolder holder)
@@ -269,6 +278,7 @@ internal sealed class AndroidQrScannerDialog : Dialog, ISurfaceHolderCallback, g
         _manualInput = new EditText(Context)
         {
             Hint = "FA1:PART_NUMBER",
+            ContentDescription = "QR payload",
             TextSize = 15.0f,
             Background = CreateInputBackground(),
         };
@@ -581,20 +591,22 @@ internal sealed class AndroidQrScannerDialog : Dialog, ISurfaceHolderCallback, g
         if (_matchesContainer is null)
             return;
 
+        _tooltips.DisposeTree(_matchesContainer);
         _matchesContainer.RemoveAllViews();
         if (_currentResult.Matches.Count == 0)
         {
-        var empty = new TextView(Context)
-        {
-            Text = string.IsNullOrWhiteSpace(_currentResult.LastScan) ? "No scan yet." : "No matching parts.",
-            TextSize = 13.5f,
-            Gravity = GravityFlags.CenterVertical,
-        };
+            var empty = new TextView(Context)
+            {
+                Text = string.IsNullOrWhiteSpace(_currentResult.LastScan) ? "No scan yet." : "No matching parts.",
+                TextSize = 13.5f,
+                Gravity = GravityFlags.CenterVertical,
+            };
             empty.SetTextColor(ColorRes(Resource.Color.fa_text_disabled));
             empty.SetPadding(Dp(10), Dp(12), Dp(10), Dp(12));
             _matchesContainer.AddView(empty, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MatchParent,
                 ViewGroup.LayoutParams.WrapContent));
+            _tooltips.Attach(Context, empty, empty.Text);
             return;
         }
 
@@ -617,6 +629,7 @@ internal sealed class AndroidQrScannerDialog : Dialog, ISurfaceHolderCallback, g
         };
         row.SetGravity(GravityFlags.CenterVertical);
         row.SetPadding(Dp(8), Dp(7), Dp(8), Dp(7));
+        row.ContentDescription = "Select match " + match.DisplayName;
         row.Click += (_, _) =>
         {
             _selectedMatchIndex = index;
@@ -673,6 +686,7 @@ internal sealed class AndroidQrScannerDialog : Dialog, ISurfaceHolderCallback, g
         {
             BottomMargin = Dp(2),
         });
+        _tooltips.AttachTree(Context, row, includeStaticText: true);
     }
 
     private void UpdateActionButtons()
@@ -726,6 +740,7 @@ internal sealed class AndroidQrScannerDialog : Dialog, ISurfaceHolderCallback, g
         var button = new TextView(Context)
         {
             Text = text,
+            ContentDescription = text,
             TextSize = 14.5f,
             Gravity = GravityFlags.Center,
             Clickable = true,

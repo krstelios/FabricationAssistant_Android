@@ -20,12 +20,18 @@ internal sealed class StyledTooltipController : Java.Lang.Object, View.IOnHoverL
     private readonly WeakReference<View> _anchor;
     private readonly Handler _handler = new(Looper.MainLooper!);
     private readonly Action<StyledTooltipController> _requestDismissOthers;
+    private readonly bool _useLongClick;
     private PopupWindow? _popup;
     private string _text;
     private bool _disposed;
     private int _showGeneration;
 
-    public StyledTooltipController(Context context, View anchor, string text, Action<StyledTooltipController> requestDismissOthers)
+    public StyledTooltipController(
+        Context context,
+        View anchor,
+        string text,
+        Action<StyledTooltipController> requestDismissOthers,
+        bool useLongClick = true)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(anchor);
@@ -35,9 +41,11 @@ internal sealed class StyledTooltipController : Java.Lang.Object, View.IOnHoverL
         _anchor = new WeakReference<View>(anchor);
         _text = text;
         _requestDismissOthers = requestDismissOthers;
+        _useLongClick = useLongClick;
 
         anchor.SetOnHoverListener(this);
-        anchor.SetOnLongClickListener(this);
+        if (_useLongClick)
+            anchor.SetOnLongClickListener(this);
         if (Build.VERSION.SdkInt >= BuildVersionCodes.O)
             anchor.TooltipText = null;
     }
@@ -127,7 +135,8 @@ internal sealed class StyledTooltipController : Java.Lang.Object, View.IOnHoverL
         if (_anchor.TryGetTarget(out View? anchor))
         {
             anchor.SetOnHoverListener(null);
-            anchor.SetOnLongClickListener(null);
+            if (_useLongClick)
+                anchor.SetOnLongClickListener(null);
         }
         Dismiss();
     }

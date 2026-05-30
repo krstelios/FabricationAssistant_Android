@@ -9,8 +9,15 @@
         android:strokeWidth="1.6"
         android:strokeLineCap="round"
         android:strokeLineJoin="round"
-        android:pathData="M5,5h14v14h-14z" />
+        android:pathData="M9,4H19V14H9Z" />
     <path
         android:fillColor="@color/fa_toolbar_icon_accent"
-        android:pathData="M8,8h8v8h-8z" />
+        android:pathData="M5,7H15V17H5Z" />
+    <path
+        android:fillColor="@android:color/transparent"
+        android:strokeColor="@color/fa_toolbar_icon_main"
+        android:strokeWidth="1.6"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M5,7H15V17H5ZM5,7L9,4M15,7L19,4M15,17L19,14" />
 </vector>

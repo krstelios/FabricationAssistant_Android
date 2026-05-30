@@ -47,6 +47,7 @@ public static class SceneUploader
                     gpu.MeshIndex = i + 1;
                     gpu.SourceMeshId = i;
                     gpu.SourceNodeId = -1;
+                    gpu.SelectableNodeId = -1;
                     gpu.DiffuseColor = TryExtractRgba(meshDto.DefaultColor) ?? new[] { 0.7f, 0.7f, 0.7f, 1.0f };
                     gpu.DoubleSided = meshDto.IsDoubleSided;
                     gpu.WorldTransform = null;
@@ -58,6 +59,10 @@ public static class SceneUploader
                 }
                 return meshes;
             }
+
+            var nodesById = new Dictionary<int, SceneNodeDto>(document.Nodes.Count);
+            foreach (SceneNodeDto node in document.Nodes)
+                nodesById[node.Id] = node;
 
             int instance = 0;
             foreach (var node in document.Nodes)
@@ -71,6 +76,7 @@ public static class SceneUploader
                 gpu.MeshIndex = instance;
                 gpu.SourceMeshId = meshId;
                 gpu.SourceNodeId = node.Id;
+                gpu.SelectableNodeId = ResolveSelectableNodeId(nodesById, node);
                 gpu.DiffuseColor = TryExtractRgba(node.Color)
                     ?? TryExtractRgba(meshDto.DefaultColor)
                     ?? new[] { 0.7f, 0.7f, 0.7f, 1.0f };
@@ -123,6 +129,22 @@ public static class SceneUploader
         {
             gpu?.Dispose();
         }
+    }
+
+    private static int ResolveSelectableNodeId(
+        IReadOnlyDictionary<int, SceneNodeDto> nodesById,
+        SceneNodeDto node)
+    {
+        if (node.ParentId >= 0
+            && node.NodeType == SceneNodeType.Shape
+            && nodesById.TryGetValue(node.ParentId, out SceneNodeDto? parent)
+            && parent.NodeType == SceneNodeType.Part
+            && parent.MeshId is null)
+        {
+            return parent.Id;
+        }
+
+        return node.Id;
     }
 
     /// <summary>

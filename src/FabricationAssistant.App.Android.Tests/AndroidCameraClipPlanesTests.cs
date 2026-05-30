@@ -72,6 +72,68 @@ public sealed class AndroidCameraClipPlanesTests
     }
 
     [Fact]
+    public void ManualPerspectiveClipPlanesOverrideAutomaticPerspectiveSlab()
+    {
+        var camera = new CameraState
+        {
+            IsPerspective = true,
+            Position = new Vector3d(0, -10, 0),
+            Target = Vector3d.Zero,
+            UpDirection = Vector3d.UnitZ,
+            WorldUpDirection = Vector3d.UnitZ,
+        };
+        var bounds = new BoundingBox(new Vector3d(-1, -1, -1), new Vector3d(1, 1, 1));
+
+        try
+        {
+            AndroidCameraClipPlanes.ConfigureManualPerspectiveClipPlanes(
+                enabled: true,
+                nearPlane: 2.5,
+                farPlane: 250.0);
+
+            AndroidCameraClipPlanes.Update(camera, bounds);
+
+            Assert.Equal(2.5, camera.NearPlane, precision: 9);
+            Assert.Equal(250.0, camera.FarPlane, precision: 9);
+        }
+        finally
+        {
+            AndroidCameraClipPlanes.ConfigureManualPerspectiveClipPlanes(false, 0.0, 0.0);
+        }
+    }
+
+    [Fact]
+    public void ManualPerspectiveClipPlanesDoNotAffectOrthographicCamera()
+    {
+        var camera = new CameraState
+        {
+            IsPerspective = false,
+            Position = new Vector3d(0, -10, 0),
+            Target = Vector3d.Zero,
+            UpDirection = Vector3d.UnitZ,
+            WorldUpDirection = Vector3d.UnitZ,
+        };
+        var bounds = new BoundingBox(new Vector3d(-1, -1, -1), new Vector3d(1, 1, 1));
+
+        try
+        {
+            AndroidCameraClipPlanes.ConfigureManualPerspectiveClipPlanes(
+                enabled: true,
+                nearPlane: 2.5,
+                farPlane: 250.0);
+
+            AndroidCameraClipPlanes.Update(camera, bounds);
+
+            Assert.NotEqual(2.5, camera.NearPlane, precision: 9);
+            Assert.NotEqual(250.0, camera.FarPlane, precision: 9);
+        }
+        finally
+        {
+            AndroidCameraClipPlanes.ConfigureManualPerspectiveClipPlanes(false, 0.0, 0.0);
+        }
+    }
+
+    [Fact]
     public void IncludeGroundGrid_WhenGridVisible_ExpandsToRenderedGridQuad()
     {
         var bounds = new BoundingBox(new Vector3d(-1, -2, 3), new Vector3d(3, 4, 5));

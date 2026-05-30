@@ -139,7 +139,7 @@ public sealed class MainActivity : AppCompatActivity
     private AnnotationHitTarget? _pressedAnnotationTarget;
     private AnnotationHitTarget? _lastStylusButtonActivationTarget;
     private long _lastStylusButtonActivationEventTime = -1;
-    private readonly Dictionary<View, StyledTooltipController> _styledTooltips = new();
+    private readonly StyledTooltipRegistry _styledTooltips = new();
     private readonly HashSet<int> _selectedNodeIds = new();
     private readonly HashSet<int> _xrayOpaqueNodeIds = new();
     private int[] _xrayBackgroundNodeIds = Array.Empty<int>();
@@ -323,6 +323,7 @@ public sealed class MainActivity : AppCompatActivity
     private bool _isDestroyed;
     private string? _lastLoadedUriText;
     private DocumentDto? _lastLoadedDocument;
+    private string? _lastLoadedFaArchivePath;
     private bool _lastLoadedDocumentReleasedForMemoryPressure;
     private readonly CancellationTokenSource _activityDestroyCts = new();
     private string? _activeModelDisplayName;
@@ -341,6 +342,7 @@ public sealed class MainActivity : AppCompatActivity
     private CancellationTokenSource? _cloudHeartbeatCts;
     private CancellationTokenSource? _saveCts;
     private CloudOpenSession? _activeCloudSession;
+    private string _lastSaveButtonStateLogKey = "";
     private readonly SemaphoreSlim _cloudSessionGate = new(1, 1);
     private int _cloudSessionEndInProgress;
     private int _cloudAccessRevocationInProgress;
@@ -576,6 +578,7 @@ public sealed class MainActivity : AppCompatActivity
         BindPropertiesPanel();
 
         BindBottomToolbar();
+        ApplyMissingTooltipsToAppTree();
 
         // All supported window sizes use the persistent side toolbar.
 #if DEBUG
@@ -712,6 +715,7 @@ public sealed class MainActivity : AppCompatActivity
         if (IsCloudTempUriText(uriText))
         {
             _lastLoadedUriText = null;
+            _lastLoadedFaArchivePath = null;
             return;
         }
 
@@ -726,7 +730,7 @@ public sealed class MainActivity : AppCompatActivity
 
     private void BindViewportChrome()
     {
-        _topAppBar = FindViewById<MaterialToolbar>(Resource.Id.topAppBar);
+        _topAppBar = FindTopAppBar();
         UpdateAppTitle();
         _navRail = FindViewById<View>(Resource.Id.navRail);
         _navRailDivider = FindViewById<View>(Resource.Id.navRailDivider);
@@ -734,6 +738,44 @@ public sealed class MainActivity : AppCompatActivity
         CaptureBottomAppBarBaseBottomMargin();
         _leftToolPanel = FindViewById<FrameLayout>(Resource.Id.leftToolPanel);
         _leftToolPanelDivider = FindViewById<View>(Resource.Id.leftToolPanelDivider);
+    }
+
+    private MaterialToolbar? FindTopAppBar()
+    {
+        View? topAppBarView = FindViewById<View>(Resource.Id.topAppBar);
+        if (topAppBarView is MaterialToolbar toolbar)
+            return toolbar;
+
+        if (topAppBarView is not null)
+        {
+            global::Android.Util.Log.Warn(
+                "FA.Startup",
+                $"topAppBar id resolved to {topAppBarView.GetType().FullName}; searching inflated layout for MaterialToolbar.");
+        }
+
+        return FindDescendantOfType<MaterialToolbar>(FindViewById<View>(Resource.Id.root));
+    }
+
+    private static T? FindDescendantOfType<T>(View? view)
+        where T : View
+    {
+        if (view is null)
+            return null;
+
+        if (view is T typed)
+            return typed;
+
+        if (view is not ViewGroup group)
+            return null;
+
+        for (int i = 0; i < group.ChildCount; i++)
+        {
+            T? match = FindDescendantOfType<T>(group.GetChildAt(i));
+            if (match is not null)
+                return match;
+        }
+
+        return null;
     }
 
     private void BindLeftToolPanel()
@@ -809,9 +851,11 @@ public sealed class MainActivity : AppCompatActivity
         {
             _propertiesToggle.Selected = _propertiesPanelExpanded;
             _propertiesToggle.Rotation = _propertiesPanelExpanded ? 0f : 180f;
-            _propertiesToggle.ContentDescription = GetString(_propertiesPanelExpanded
+            int descriptionId = _propertiesPanelExpanded
                 ? Resource.String.cd_close_properties
-                : Resource.String.cd_open_properties);
+                : Resource.String.cd_open_properties;
+            _propertiesToggle.ContentDescription = GetString(descriptionId);
+            SetTooltip(_propertiesToggle, descriptionId);
         }
     }
 
@@ -1189,9 +1233,11 @@ public sealed class MainActivity : AppCompatActivity
         bool signedIn = _cloudClient?.IsSignedIn == true;
         _cloudAccountButton.Selected = signedIn;
         _cloudAccountButton.Alpha = signedIn ? 1f : 0.78f;
-        _cloudAccountButton.ContentDescription = signedIn
+        string description = signedIn
             ? "FA Cloud account signed in"
-            : GetString(Resource.String.cd_cloud_account);
+            : GetString(Resource.String.cd_cloud_account) ?? "FA Cloud account";
+        _cloudAccountButton.ContentDescription = description;
+        SetTooltip(_cloudAccountButton, description);
     }
 
     private void UpdateAppTitle()
@@ -1353,6 +1399,7 @@ public sealed class MainActivity : AppCompatActivity
 
         dialog.SetContentView(root);
         ShowOwnedDialog(dialog);
+        _styledTooltips.AttachTree(this, dialog.Window?.DecorView, includeStaticText: true);
         int screenWidth = Resources?.DisplayMetrics?.WidthPixels ?? Dp(460);
         int width = Math.Min(Dp(520), Math.Max(Dp(340), screenWidth - Dp(56)));
         dialog.Window?.SetBackgroundDrawable(new ColorDrawable(Color.Transparent));
@@ -2127,6 +2174,7 @@ public sealed class MainActivity : AppCompatActivity
     private void ShowCloudDialog(global::Android.App.Dialog dialog)
     {
         ShowOwnedDialog(dialog);
+        _styledTooltips.AttachTree(this, dialog.Window?.DecorView, includeStaticText: true);
         int screenWidth = Resources?.DisplayMetrics?.WidthPixels ?? Dp(460);
         int width = Math.Min(Dp(520), Math.Max(Dp(340), screenWidth - Dp(56)));
         dialog.Window?.SetBackgroundDrawable(new ColorDrawable(Color.Transparent));
@@ -2345,6 +2393,14 @@ public sealed class MainActivity : AppCompatActivity
             return;
         }
 
+        AndroidUri? selectedLocalSaveDestination = null;
+        if (_activeCloudSession is null && _currentLocalSaveUri is null)
+        {
+            selectedLocalSaveDestination = await RequestLocalSaveDestinationAsync(archivePath).ConfigureAwait(true);
+            if (selectedLocalSaveDestination is null)
+                return;
+        }
+
         var cts = new CancellationTokenSource();
         _saveCts = cts;
         _isSaveInProgress = true;
@@ -2358,7 +2414,7 @@ public sealed class MainActivity : AppCompatActivity
             if (_activeCloudSession is { } cloudSession)
                 await SaveCloudModelAsync(cloudSession, snapshot, cts.Token).ConfigureAwait(true);
             else
-                await SaveLocalModelAsync(archivePath, snapshot, cts.Token).ConfigureAwait(true);
+                await SaveLocalModelAsync(archivePath, snapshot, cts.Token, selectedLocalSaveDestination).ConfigureAwait(true);
 
             Toast.MakeText(this, "Model saved", ToastLength.Short)?.Show();
         }
@@ -2390,7 +2446,34 @@ public sealed class MainActivity : AppCompatActivity
 
     private string? GetCurrentFaArchivePath()
     {
-        ScenePackageInfoDto? packageInfo = _runtimeScene?.PackageInfo;
+        string? path = TryResolveFaArchivePath(_runtimeScene?.PackageInfo);
+        if (path is not null)
+            return path;
+
+        path = TryResolveFaArchivePath(_lastLoadedDocument?.PackageInfo);
+        if (path is not null)
+            return path;
+
+        if (!string.IsNullOrWhiteSpace(_lastLoadedFaArchivePath)
+            && File.Exists(_lastLoadedFaArchivePath))
+        {
+            return _lastLoadedFaArchivePath;
+        }
+
+        CloudOpenSession? cloudSession = _activeCloudSession;
+        if (cloudSession is not null
+            && !string.IsNullOrWhiteSpace(cloudSession.LocalPath)
+            && cloudSession.LocalPath.EndsWith(".fa", StringComparison.OrdinalIgnoreCase)
+            && File.Exists(cloudSession.LocalPath))
+        {
+            return cloudSession.LocalPath;
+        }
+
+        return null;
+    }
+
+    private static string? TryResolveFaArchivePath(ScenePackageInfoDto? packageInfo)
+    {
         if (!AndroidScenePackageState.IsFa(packageInfo))
             return null;
 
@@ -2413,20 +2496,116 @@ public sealed class MainActivity : AppCompatActivity
         return string.Equals(left, right, StringComparison.Ordinal);
     }
 
+    private bool CanWriteLocalDestination(AndroidUri uri, bool? knownWritable)
+    {
+        if (string.Equals(uri.Scheme, "file", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (knownWritable.HasValue)
+            return knownWritable.Value;
+
+        if (!string.Equals(uri.Scheme, "content", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return RecentFilesStore.GetPersistedUriAccess(this, uri).CanWrite;
+    }
+
+    private async Task<AndroidUri?> RequestLocalSaveDestinationAsync(string archivePath)
+    {
+        if (_picker is null)
+            return null;
+
+        SetImportNavigationEnabled(false);
+        _openPickerInFlight = true;
+        try
+        {
+            string displayName = ResolveSaveDocumentDisplayName(archivePath);
+            AndroidUri? destination = await _picker.CreateAsync("application/octet-stream", displayName).ConfigureAwait(true);
+            if (destination is not null)
+                RecentFilesStore.TryTakePersistableReadWritePermission(this, destination);
+            return destination;
+        }
+        catch (System.OperationCanceledException)
+        {
+            return null;
+        }
+        catch (Exception ex)
+        {
+            ShowError("Could not choose save location", ex.GetBaseException().Message);
+            return null;
+        }
+        finally
+        {
+            _openPickerInFlight = false;
+            SetImportNavigationEnabled(true);
+            UpdateSaveButton();
+        }
+    }
+
+    private string ResolveSaveDocumentDisplayName(string archivePath)
+    {
+        string? displayName = _activeModelDisplayName;
+        if (string.IsNullOrWhiteSpace(displayName))
+            displayName = global::System.IO.Path.GetFileName(archivePath);
+
+        displayName = global::System.IO.Path.GetFileName(displayName.Trim());
+        if (string.IsNullOrWhiteSpace(displayName))
+            displayName = "model.fa";
+
+        return displayName.EndsWith(".fa", StringComparison.OrdinalIgnoreCase)
+            ? displayName
+            : global::System.IO.Path.ChangeExtension(displayName, ".fa");
+    }
+
     private async Task SaveLocalModelAsync(
         string archivePath,
         AndroidViewerStateSnapshot snapshot,
-        CancellationToken ct)
+        CancellationToken ct,
+        AndroidUri? selectedDestination = null)
     {
+        AndroidUri? destination = selectedDestination ?? _currentLocalSaveUri;
+        if (destination is null)
+            throw new InvalidOperationException("Android opened this local file read-only. Reopen it from the file picker with write access before saving.");
+
         UpdateLoadingDetail("Writing viewer state...");
         await _viewerStateSave!.SaveAsync(archivePath, snapshot, ct).ConfigureAwait(false);
 
-        AndroidUri? destination = _currentLocalSaveUri;
-        if (destination is null)
-            throw new InvalidOperationException("No writable local file is associated with this model.");
-
         UpdateLoadingDetail("Updating local file...");
-        await CopyArchiveToLocalDestinationAsync(archivePath, destination, ct).ConfigureAwait(false);
+        try
+        {
+            await CopyArchiveToLocalDestinationAsync(archivePath, destination, ct).ConfigureAwait(false);
+            if (selectedDestination is not null)
+                CommitLocalSaveDestination(selectedDestination);
+        }
+        catch (Exception ex) when (IsFileAccessRevoked(ex))
+        {
+            _currentLocalSaveUri = null;
+            global::Android.Util.Log.Warn("FA.Save", "Android denied write access to local destination: " + ex.GetBaseException().Message);
+            throw new InvalidOperationException("Android did not grant write access to this local file. Reopen it from the file picker with write access before saving.");
+        }
+    }
+
+    private void CommitLocalSaveDestination(AndroidUri destination)
+    {
+        _currentLocalSaveUri = destination;
+        _lastLoadedUriText = destination.ToString();
+        UpdateSaveButton();
+
+        var recentContext = ApplicationContext;
+        if (recentContext is not null)
+        {
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    RecentFilesStore.Add(recentContext, destination);
+                }
+                catch (Exception ex)
+                {
+                    global::Android.Util.Log.Warn("FA.Recent", "Failed to record saved file: " + ex.Message);
+                }
+            });
+        }
     }
 
     private async Task SaveCloudModelAsync(
@@ -3326,6 +3505,7 @@ public sealed class MainActivity : AppCompatActivity
             _lastLoadedUriText = null;
             _currentLocalSaveUri = null;
             _lastLoadedDocument = null;
+            _lastLoadedFaArchivePath = null;
             _lastLoadedDocumentReleasedForMemoryPressure = false;
             _activeModelDisplayName = null;
             UpdateAppTitle();
@@ -4175,13 +4355,21 @@ public sealed class MainActivity : AppCompatActivity
         SetButtonEnabled(_navRedoButton, canRedo);
 
         if (_navUndoButton is not null)
-            _navUndoButton.ContentDescription = BuildUndoRedoDescription(
+        {
+            string description = BuildUndoRedoDescription(
                 Resource.String.cd_nav_undo,
                 _undoService?.PeekUndoLabel);
+            _navUndoButton.ContentDescription = description;
+            SetTooltip(_navUndoButton, description);
+        }
         if (_navRedoButton is not null)
-            _navRedoButton.ContentDescription = BuildUndoRedoDescription(
+        {
+            string description = BuildUndoRedoDescription(
                 Resource.String.cd_nav_redo,
                 _undoService?.PeekRedoLabel);
+            _navRedoButton.ContentDescription = description;
+            SetTooltip(_navRedoButton, description);
+        }
     }
 
     private string BuildUndoRedoDescription(int actionStringResourceId, string? label)
@@ -4194,20 +4382,83 @@ public sealed class MainActivity : AppCompatActivity
 
     private void UpdateSaveButton()
     {
+        bool hasActiveLoad = HasActiveLoad();
+        bool hasCloudOpen = _cloudOpenCts is not null;
+        bool hasCloudReload = IsCloudReloadAvailableForActiveSession();
+        bool hasLocalArchive = GetCurrentFaArchivePath() is not null;
+        bool hasWritableSaveTarget = _activeCloudSession is null
+                                     || _activeCloudSession is { LockId.Length: > 0, IsReadOnly: false };
         bool canSave = !_isSaveInProgress
-                       && !HasActiveLoad()
-                       && _cloudOpenCts is null
-                       && !IsCloudReloadAvailableForActiveSession()
-                       && GetCurrentFaArchivePath() is not null
-                       && (_currentLocalSaveUri is not null
-                           || _activeCloudSession is { LockId.Length: > 0, IsReadOnly: false });
+                       && !hasActiveLoad
+                       && !hasCloudOpen
+                       && !hasCloudReload
+                       && hasLocalArchive
+                       && hasWritableSaveTarget;
         SetButtonEnabled(_saveButton, canSave);
+        LogSaveButtonState(
+            canSave,
+            hasActiveLoad,
+            hasCloudOpen,
+            hasCloudReload,
+            hasLocalArchive,
+            hasWritableSaveTarget);
         if (_saveButton is not null)
         {
-            _saveButton.ContentDescription = _isSaveInProgress
+            string description = _isSaveInProgress
                 ? "Saving model"
-                : GetString(Resource.String.cd_save_model);
+                : GetString(Resource.String.cd_save_model) ?? "Save model";
+            _saveButton.ContentDescription = description;
+            SetTooltip(_saveButton, description);
         }
+    }
+
+    private void LogSaveButtonState(
+        bool canSave,
+        bool hasActiveLoad,
+        bool hasCloudOpen,
+        bool hasCloudReload,
+        bool hasLocalArchive,
+        bool hasWritableSaveTarget)
+    {
+        bool sceneFa = AndroidScenePackageState.IsFa(_runtimeScene?.PackageInfo);
+        bool documentFa = AndroidScenePackageState.IsFa(_lastLoadedDocument?.PackageInfo);
+        bool retainedArchive = !string.IsNullOrWhiteSpace(_lastLoadedFaArchivePath)
+                               && File.Exists(_lastLoadedFaArchivePath);
+        bool hasCloudSession = _activeCloudSession is not null;
+        bool cloudReadOnly = _activeCloudSession?.IsReadOnly == true;
+        bool cloudLocked = _activeCloudSession?.LockId?.Length > 0;
+        string key = string.Join(
+            "|",
+            canSave,
+            _isSaveInProgress,
+            hasActiveLoad,
+            hasCloudOpen,
+            hasCloudReload,
+            hasLocalArchive,
+            hasWritableSaveTarget,
+            sceneFa,
+            documentFa,
+            retainedArchive,
+            hasCloudSession,
+            cloudReadOnly,
+            cloudLocked);
+        if (string.Equals(_lastSaveButtonStateLogKey, key, StringComparison.Ordinal))
+            return;
+
+        _lastSaveButtonStateLogKey = key;
+        if (canSave)
+        {
+            global::Android.Util.Log.Info("FA.Save", "Save button enabled.");
+            return;
+        }
+
+        global::Android.Util.Log.Info(
+            "FA.Save",
+            "Save button disabled: "
+            + $"saving={_isSaveInProgress}, activeLoad={hasActiveLoad}, cloudOpen={hasCloudOpen}, "
+            + $"cloudReload={hasCloudReload}, hasFaArchive={hasLocalArchive}, writableTarget={hasWritableSaveTarget}, "
+            + $"sceneFa={sceneFa}, documentFa={documentFa}, retainedArchive={retainedArchive}, "
+            + $"cloudSession={hasCloudSession}, cloudReadOnly={cloudReadOnly}, cloudLocked={cloudLocked}.");
     }
 
     private bool HasStylusInputDevice()
@@ -4363,6 +4614,7 @@ public sealed class MainActivity : AppCompatActivity
         _renderModeWireframeButton = FindViewById<MaterialButton>(Resource.Id.renderModeWireframe);
         _renderModeShadedEdgesButton = FindViewById<MaterialButton>(Resource.Id.renderModeShadedEdges);
         _renderModeClayButton = FindViewById<MaterialButton>(Resource.Id.renderModeClay);
+        ApplyChromeTooltips();
         ApplyMainTooltips();
         ApplyMeasureTooltips();
         ApplyViewPresetTooltips();
@@ -5318,7 +5570,8 @@ public sealed class MainActivity : AppCompatActivity
 
         string? accessibilityHint = GetString(Resource.String.zoom_window_hint_accessibility);
         if (_toolZoomWindowButton is not null
-            && _styledTooltips.TryGetValue(_toolZoomWindowButton, out StyledTooltipController? tooltip))
+            && _styledTooltips.TryGet(_toolZoomWindowButton, out StyledTooltipController? tooltip)
+            && tooltip is not null)
         {
             tooltip.ShowNow(hint, accessibilityHint);
             return;
@@ -8226,6 +8479,7 @@ public sealed class MainActivity : AppCompatActivity
         var input = new EditText(this)
         {
             Text = "0.000",
+            ContentDescription = $"{titlePrefix} {label} value",
             InputType = InputTypes.ClassNumber | InputTypes.NumberFlagDecimal | InputTypes.NumberFlagSigned,
             Gravity = GravityFlags.Center,
             Background = CreateSectionGizmoInputBackground(),
@@ -8254,6 +8508,7 @@ public sealed class MainActivity : AppCompatActivity
         });
 
         TextView ok = CreateSectionGizmoPopupButton("OK");
+        ok.ContentDescription = $"Apply {titlePrefix} {label}";
         inputRow.AddView(ok, new LinearLayout.LayoutParams(Dp(48), Dp(40))
         {
             RightMargin = Dp(6),
@@ -8284,6 +8539,8 @@ public sealed class MainActivity : AppCompatActivity
         popup.SoftInputMode = SoftInput.AdjustResize;
         if (Build.VERSION.SdkInt >= BuildVersionCodes.Lollipop)
             popup.Elevation = Dp(10);
+
+        _styledTooltips.AttachTree(this, root, includeStaticText: true);
 
         bool resolved = false;
         popup.DismissEvent += (_, _) =>
@@ -9371,6 +9628,29 @@ public sealed class MainActivity : AppCompatActivity
         SetTooltip(_measureClearButton, Resource.String.cd_measure_clear);
     }
 
+    private void ApplyChromeTooltips()
+    {
+        SetTooltip(_cloudAccountButton, _cloudAccountButton?.ContentDescription?.ToString()
+            ?? GetString(Resource.String.cd_cloud_account));
+        SetTooltip(_propertiesToggle, _propertiesToggle?.ContentDescription?.ToString()
+            ?? GetString(Resource.String.cd_toggle_properties));
+        SetTooltip(_saveButton, _saveButton?.ContentDescription?.ToString()
+            ?? GetString(Resource.String.cd_save_model));
+        SetTooltip(_navOpenButton, Resource.String.cd_nav_open);
+        SetTooltip(_navRecentButton, Resource.String.cd_nav_recent);
+        SetTooltip(_navCloudButton, Resource.String.cd_nav_cloud);
+        SetTooltip(_navUndoButton, _navUndoButton?.ContentDescription?.ToString()
+            ?? GetString(Resource.String.cd_nav_undo));
+        SetTooltip(_navRedoButton, _navRedoButton?.ContentDescription?.ToString()
+            ?? GetString(Resource.String.cd_nav_redo));
+        SetTooltip(_navModelExplorerButton, Resource.String.cd_nav_model_explorer);
+        SetTooltip(_navBomButton, Resource.String.cd_nav_bom);
+        SetTooltip(_navBomFlatButton, Resource.String.cd_nav_bom_flat);
+        SetTooltip(_navSpenPalmButton, _navSpenPalmButton?.ContentDescription?.ToString()
+            ?? GetString(Resource.String.cd_nav_spen_palm_rejection_off));
+        SetTooltip(_navSettingsButton, Resource.String.cd_nav_settings);
+    }
+
     private void ApplyMainTooltips()
     {
         SetTooltip(_toolSelectButton, Resource.String.cd_tool_select);
@@ -9560,6 +9840,7 @@ public sealed class MainActivity : AppCompatActivity
     private void RebindStyledTooltips()
     {
         DisposeStyledTooltips();
+        ApplyChromeTooltips();
         ApplyMainTooltips();
         ApplyMeasureTooltips();
         ApplyViewPresetTooltips();
@@ -9568,50 +9849,36 @@ public sealed class MainActivity : AppCompatActivity
         ApplyRenderModeTooltips();
         ApplySpenPalmRejectionState(showToast: false);
         UpdateFullscreenButtonState();
+        ApplyMissingTooltipsToAppTree();
+    }
+
+    private void ApplyMissingTooltipsToAppTree()
+    {
+        _styledTooltips.AttachTree(this, FindViewById<View>(Resource.Id.root));
     }
 
     private void SetTooltip(View? view, int stringId)
+        => SetTooltip(view, GetString(stringId));
+
+    private void SetTooltip(View? view, string? text)
     {
         if (view is null)
             return;
 
-        string? text = GetString(stringId);
         if (string.IsNullOrWhiteSpace(text))
             return;
 
-        if (view.ContentDescription is null)
-            view.ContentDescription = text;
-
-        if (_styledTooltips.TryGetValue(view, out StyledTooltipController? tooltip))
-        {
-            tooltip.UpdateText(text);
-            return;
-        }
-
-        _styledTooltips[view] = new StyledTooltipController(this, view, text, DismissStyledTooltipsExcept);
+        _styledTooltips.Attach(this, view, text);
     }
 
     private void DismissStyledTooltips()
     {
-        foreach (StyledTooltipController tooltip in _styledTooltips.Values)
-            tooltip.Dismiss();
-    }
-
-    private void DismissStyledTooltipsExcept(StyledTooltipController activeTooltip)
-    {
-        foreach (StyledTooltipController tooltip in _styledTooltips.Values)
-        {
-            if (!ReferenceEquals(tooltip, activeTooltip))
-                tooltip.Dismiss();
-        }
+        _styledTooltips.Dismiss();
     }
 
     private void DisposeStyledTooltips()
     {
-        foreach (StyledTooltipController tooltip in _styledTooltips.Values)
-            tooltip.Dispose();
-
-        _styledTooltips.Clear();
+        _styledTooltips.Dispose();
     }
 
     private static void SetVisibility(View? view, ViewStates visibility)
@@ -9898,6 +10165,7 @@ public sealed class MainActivity : AppCompatActivity
         row.SetMinHeight(Dp(ContextMenuRowHeightDp));
         row.ContentDescription = title;
         row.ImportantForAccessibility = ImportantForAccessibility.Yes;
+        SetTooltip(row, title);
         row.SetTextColor(GetColorCompat(Resource.Color.fa_text_primary));
         row.SetPadding(Dp(9), 0, Dp(9), 0);
         row.Background = CreateContextMenuRowBackground();
@@ -10188,7 +10456,7 @@ public sealed class MainActivity : AppCompatActivity
         SceneNode? selectedNode = null;
         int[] selectedNodeIds = Array.Empty<int>();
         if (selected > 0
-            && _viewport.Renderer.Scene?.TryGetSourceNodeIdForMeshIndex(selected, out int nodeId) == true)
+            && _viewport.Renderer.Scene?.TryGetSelectableNodeIdForMeshIndex(selected, out int nodeId) == true)
         {
             selectedNodeIds = [nodeId];
             selectedNode = _runtimeScene?.GetNode(nodeId);
@@ -10730,8 +10998,9 @@ public sealed class MainActivity : AppCompatActivity
             return;
         }
 
-        RecentFilesStore.TryTakePersistableReadWritePermission(this, uri);
-        await OpenModelUriAsync(uri);
+        RecentFilesStore.PersistableUriAccess uriAccess =
+            RecentFilesStore.TryTakePersistableReadWritePermission(this, uri);
+        await OpenModelUriAsync(uri, localSaveWritable: uriAccess.CanWrite);
     }
 
     private async Task<bool> OpenModelUriAsync(
@@ -10742,7 +11011,8 @@ public sealed class MainActivity : AppCompatActivity
         string? displayNameOverride = null,
         bool persistForRestore = true,
         bool copyToImportCache = true,
-        int presentationFrameCount = 1)
+        int presentationFrameCount = 1,
+        bool? localSaveWritable = null)
     {
         if (_import is null || _viewport is null || _camera is null)
             return false;
@@ -10847,8 +11117,11 @@ public sealed class MainActivity : AppCompatActivity
                 });
             }
             _lastLoadedUriText = persistForRestore ? uri.ToString() : null;
-            _currentLocalSaveUri = addToRecent ? uri : null;
+            _currentLocalSaveUri = addToRecent && CanWriteLocalDestination(uri, localSaveWritable)
+                ? uri
+                : null;
             _lastLoadedDocument = document;
+            _lastLoadedFaArchivePath = TryResolveFaArchivePath(document.PackageInfo);
             _lastLoadedDocumentReleasedForMemoryPressure = false;
             loaded = true;
             UpdateSaveButton();
@@ -14226,6 +14499,8 @@ public sealed class MainActivity : AppCompatActivity
         _pointerSource = null;
         _measure?.Dispose();
         _measure = null;
+        _propertiesPanelBinder?.Dispose();
+        _propertiesPanelBinder = null;
         _modelExplorerPanel?.Dispose();
         _modelExplorerPanel = null;
         _picker?.Dispose();
@@ -14290,6 +14565,7 @@ public sealed class MainActivity : AppCompatActivity
             if (_camera is not null)
             {
                 double aspect = GetViewportAspect();
+                ApplyCameraClipPlaneSettings();
                 lock (_camera)
                 {
                     if (!_isInFixedView)
@@ -14349,6 +14625,17 @@ public sealed class MainActivity : AppCompatActivity
         // the render-mode toolbar selected-state to match (it otherwise only
         // updated on an explicit toolbar click).
         UpdateRenderModeButtonStates();
+    }
+
+    private void ApplyCameraClipPlaneSettings()
+    {
+        double millimetersPerSceneUnit = MillimetersPerSceneUnit;
+        double nearPlane = AppSettings.CameraNearClipMm / millimetersPerSceneUnit;
+        double farPlane = AppSettings.CameraFarClipMm / millimetersPerSceneUnit;
+        AndroidCameraClipPlanes.ConfigureManualPerspectiveClipPlanes(
+            AppSettings.ManualCameraClipPlanesEnabled,
+            nearPlane,
+            farPlane);
     }
 
     private void ApplySectionSettings()

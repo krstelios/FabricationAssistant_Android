@@ -12,7 +12,7 @@ namespace FabricationAssistant.App.Android;
 public static class AppSettings
 {
     private const string FileName = "fa_settings";
-    private const int SettingsSchemaVersion = 21;
+    private const int SettingsSchemaVersion = 22;
 
     private const int DefaultAoSampleCount = SceneAppearanceDefaults.AoSampleCount;
     private const int MinAoSampleCount = 1;
@@ -95,6 +95,11 @@ public static class AppSettings
     private const float MaxMouseSpeed = 5.0f;
     private const float MinMouseDragThresholdDip = 1.0f;
     private const float MaxMouseDragThresholdDip = 20.0f;
+    private const float DefaultCameraNearClipMm = 10.0f;
+    private const float DefaultCameraFarClipMm = 5000.0f;
+    private const float MinCameraClipMm = 0.001f;
+    private const float MaxCameraNearClipMm = 10000000.0f;
+    private const float MaxCameraFarClipMm = 100000000.0f;
     private const string DefaultCloudUserEmail = "";
     private const string DefaultCloudProjectName = "";
 
@@ -148,6 +153,7 @@ public static class AppSettings
         ("outline_g", 0.62f),
         ("outline_b", 0.20f),
         ("outline_thickness", 2.5f),
+        ("camera_far_clip_mm", 50000.0f),
     ];
     private static readonly (string Key, int Expected)[] LegacyIntDefaultsToRemove =
     [
@@ -179,6 +185,8 @@ public static class AppSettings
         ("mouse_pan_speed", MinMouseSpeed, MaxMouseSpeed),
         ("mouse_wheel_zoom_speed", MinMouseSpeed, MaxMouseSpeed),
         ("mouse_drag_threshold_dip", MinMouseDragThresholdDip, MaxMouseDragThresholdDip),
+        ("camera_near_clip_mm", MinCameraClipMm, MaxCameraNearClipMm),
+        ("camera_far_clip_mm", MinCameraClipMm, MaxCameraFarClipMm),
     ];
     private static readonly (string Key, int Min, int Max)[] IntRangeGuards =
     [
@@ -271,6 +279,33 @@ public static class AppSettings
     public static void SetGridLineColor(float r, float g, float b) => PutRgb("grid_r", "grid_g", "grid_b", r, g, b);
     public static bool ShowAxes { get => Get("show_axes", true); set => Put("show_axes", value); }
     public static bool IsPerspective { get => Get("is_perspective", true); set => Put("is_perspective", value); }
+    public static bool ManualCameraClipPlanesEnabled { get => Get("manual_camera_clip_planes", false); set => Put("manual_camera_clip_planes", value); }
+    public static float CameraNearClipMm => GetFloatInRange("camera_near_clip_mm", DefaultCameraNearClipMm, MinCameraClipMm, MaxCameraNearClipMm);
+    public static float CameraFarClipMm => GetFloatInRange("camera_far_clip_mm", DefaultCameraFarClipMm, MinCameraClipMm, MaxCameraFarClipMm);
+
+    public static void SetCameraNearClipMm(float value)
+    {
+        float near = ClampCameraClipNearMm(value);
+        float far = CameraFarClipMm;
+        if (far <= near)
+            far = ResolveFarClipAboveNear(near);
+
+        Edit(editor =>
+        {
+            editor.PutFloat("camera_near_clip_mm", near);
+            editor.PutFloat("camera_far_clip_mm", far);
+        });
+    }
+
+    public static void SetCameraFarClipMm(float value)
+    {
+        float near = CameraNearClipMm;
+        float far = ClampCameraClipFarMm(value);
+        if (far <= near)
+            far = ResolveFarClipAboveNear(near);
+
+        Put("camera_far_clip_mm", far);
+    }
 
     // ── Background + surface ───────────────────────────────────────────
     public static float BackgroundR { get => Get("bg_r", 0.079f); set => Put("bg_r", Clamp01(value)); }
@@ -546,6 +581,22 @@ public static class AppSettings
     private static void Put(string k, bool v) => Edit(ed => ed.PutBoolean(k, v));
     private static void Put(string k, int v) => Edit(ed => ed.PutInt(k, v));
     private static void Put(string k, string v) => Edit(ed => ed.PutString(k, v ?? ""));
+
+    private static float ClampCameraClipNearMm(float value)
+        => float.IsFinite(value)
+            ? System.Math.Clamp(value, MinCameraClipMm, MaxCameraNearClipMm)
+            : DefaultCameraNearClipMm;
+
+    private static float ClampCameraClipFarMm(float value)
+        => float.IsFinite(value)
+            ? System.Math.Clamp(value, MinCameraClipMm, MaxCameraFarClipMm)
+            : DefaultCameraFarClipMm;
+
+    private static float ResolveFarClipAboveNear(float near)
+    {
+        float margin = System.Math.Max(near * 0.01f, 1.0f);
+        return System.Math.Clamp(near + margin, MinCameraClipMm, MaxCameraFarClipMm);
+    }
 
     private static void PutRgb(string rKey, string gKey, string bKey, float r, float g, float b)
     {

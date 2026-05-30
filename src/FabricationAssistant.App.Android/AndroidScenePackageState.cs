@@ -12,7 +12,7 @@ internal static class AndroidScenePackageState
 
     public static bool IsFa(ScenePackageInfoDto? packageInfo)
         => packageInfo is not null
-           && string.Equals(packageInfo.SourceFormat, FaSourceFormat, StringComparison.Ordinal);
+           && string.Equals(packageInfo.SourceFormat, FaSourceFormat, StringComparison.OrdinalIgnoreCase);
 
     public static string[] NormalizeOccurrenceIds(IEnumerable<string> occurrenceIds)
     {

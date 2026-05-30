@@ -370,6 +370,14 @@ public sealed class AndroidPointerSource : IDisposable
 
         MouseButtonGesture endedGesture = _mouseGesture;
         bool moved = _mouseMoved;
+        // Capture drag state BEFORE the reset: ResetMouseButtonGesture clears
+        // _mouseToolDragStarted and _mouseDownPosition, but the PrimaryClick
+        // branch below reads both. Reading them post-reset fired a spurious
+        // MouseToolBegin at (0,0) on every primary drag-release, which reset the
+        // Zoom Window start corner to the screen origin and zoomed to the wrong
+        // place even though the drawn rectangle was correct.
+        bool toolDragStarted = _mouseToolDragStarted;
+        Point2D downPosition = _mouseDownPosition;
         ResetMouseButtonGesture();
 
         switch (endedGesture)
@@ -377,11 +385,11 @@ public sealed class AndroidPointerSource : IDisposable
             case MouseButtonGesture.PrimaryClick:
                 if (moved)
                 {
-                    if (!_mouseToolDragStarted)
+                    if (!toolDragStarted)
                     {
                         Fire(new[]
                         {
-                            new TouchGestureEvent(TouchGestureKind.MouseToolBegin, _mouseDownPosition, Vector2D.Zero, 1.0),
+                            new TouchGestureEvent(TouchGestureKind.MouseToolBegin, downPosition, Vector2D.Zero, 1.0),
                         });
                     }
 

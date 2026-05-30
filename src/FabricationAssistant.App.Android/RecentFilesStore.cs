@@ -99,10 +99,12 @@ public static class RecentFilesStore
         }
     }
 
-    public static void TryTakePersistableReadPermission(Context context, AndroidUri uri)
+    public readonly record struct PersistableUriAccess(bool CanRead, bool CanWrite);
+
+    public static PersistableUriAccess TryTakePersistableReadPermission(Context context, AndroidUri uri)
         => TryTakePersistableReadWritePermission(context, uri);
 
-    public static void TryTakePersistableReadWritePermission(Context context, AndroidUri uri)
+    public static PersistableUriAccess TryTakePersistableReadWritePermission(Context context, AndroidUri uri)
     {
         try
         {
@@ -128,6 +130,35 @@ public static class RecentFilesStore
                     "Could not persist read access for recent file: " + readEx.Message);
             }
         }
+
+        return GetPersistedUriAccess(context, uri);
+    }
+
+    public static PersistableUriAccess GetPersistedUriAccess(Context context, AndroidUri uri)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(uri);
+
+        if (string.Equals(uri.Scheme, "file", StringComparison.OrdinalIgnoreCase))
+            return new PersistableUriAccess(CanRead: true, CanWrite: true);
+
+        bool canRead = false;
+        bool canWrite = false;
+        string uriText = uri.ToString() ?? string.Empty;
+        IList<UriPermission>? permissions = context.ContentResolver?.PersistedUriPermissions;
+        if (permissions is null)
+            return new PersistableUriAccess(CanRead: false, CanWrite: false);
+
+        foreach (UriPermission permission in permissions)
+        {
+            if (!string.Equals(permission.Uri?.ToString(), uriText, StringComparison.Ordinal))
+                continue;
+
+            canRead |= permission.IsReadPermission;
+            canWrite |= permission.IsWritePermission;
+        }
+
+        return new PersistableUriAccess(canRead, canWrite);
     }
 
     private static void Save(Context context, IReadOnlyList<RecentFileEntry> entries)

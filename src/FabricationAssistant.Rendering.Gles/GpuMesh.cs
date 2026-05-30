@@ -56,9 +56,17 @@ public sealed class GpuMesh : IDisposable
 
     /// <summary>
     /// Source SceneNodeDto id for this rendered instance. Used by the Android
-    /// app to bridge GPU picking back to the shared scene graph.
+    /// app to bridge GPU-backed render instances back to the shared scene
+    /// graph for transform, visibility, and exact geometry operations.
     /// </summary>
     public int SourceNodeId { get; set; } = -1;
+
+    /// <summary>
+    /// SceneNodeDto id used for body-level selection. Multi-material glTF
+    /// nodes are rendered as child Shape primitives, but selecting one
+    /// primitive should select the parent Part as the logical body.
+    /// </summary>
+    public int SelectableNodeId { get; set; } = -1;
 
     /// <summary>
     /// Runtime scene-graph visibility for this rendered instance. Updated from

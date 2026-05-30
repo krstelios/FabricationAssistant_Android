@@ -4,17 +4,13 @@
     android:viewportWidth="24"
     android:viewportHeight="24">
     <path
+        android:fillColor="@color/fa_toolbar_icon_accent"
+        android:pathData="M9,4H19V14H9Z" />
+    <path
         android:fillColor="@android:color/transparent"
         android:strokeColor="@color/fa_toolbar_icon_main"
         android:strokeWidth="1.6"
         android:strokeLineCap="round"
         android:strokeLineJoin="round"
-        android:pathData="M5,5h14v14h-14z" />
-    <path
-        android:fillColor="@android:color/transparent"
-        android:strokeColor="@color/fa_toolbar_icon_accent"
-        android:strokeWidth="1.6"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round"
-        android:pathData="M8,8h8v8h-8z" />
+        android:pathData="M9,4H19V14H9ZM5,8H15V18H5ZM5,8L9,4M15,8L19,4M15,18L19,14M5,18L9,14" />
 </vector>

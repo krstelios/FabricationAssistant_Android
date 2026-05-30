@@ -43,6 +43,7 @@ internal sealed class AndroidBomPanel : IDisposable
     private readonly List<BomPanelRow> _roots = new();
     private readonly List<BomPanelRow> _allRows = new();
     private readonly List<BomPanelRow> _visibleRows = new();
+    private readonly StyledTooltipRegistry _tooltips = new();
 
     private HorizontalScrollView? _tableScroll;
     private LinearLayout? _tableRoot;
@@ -149,7 +150,8 @@ internal sealed class AndroidBomPanel : IDisposable
             () => _selectedRow,
             ToggleRow,
             () => _columnWidthsPx,
-            () => _tableWidthPx);
+            () => _tableWidthPx,
+            _tooltips);
         _list = new ListView(ctx)
         {
             Adapter = _adapter,
@@ -189,6 +191,7 @@ internal sealed class AndroidBomPanel : IDisposable
 
         tableScroll.Post(() => RefreshColumnWidths(ctx));
         tableScroll.PostDelayed(() => RefreshColumnWidths(ctx), 120);
+        _tooltips.AttachTree(ctx, root, includeStaticText: true);
         return root;
     }
 
@@ -224,6 +227,7 @@ internal sealed class AndroidBomPanel : IDisposable
         _listScrollTouchListener?.Dispose();
         _headerScrollTouchListener = null;
         _listScrollTouchListener = null;
+        _tooltips.Dispose();
     }
 
     private void AddHeader(Context ctx, LinearLayout root)
@@ -267,6 +271,7 @@ internal sealed class AndroidBomPanel : IDisposable
         _search = new EditText(ctx)
         {
             Hint = "Search BOM",
+            ContentDescription = "Search BOM",
             ImeOptions = ImeAction.Done,
         };
         _search.SetTextSize(ComplexUnitType.Sp, 14f);
@@ -349,6 +354,7 @@ internal sealed class AndroidBomPanel : IDisposable
         var button = new MaterialButton(ctx, null, Resource.Attribute.materialButtonOutlinedStyle)
         {
             Text = text,
+            ContentDescription = text,
             InsetTop = 0,
             InsetBottom = 0,
         };
@@ -1078,6 +1084,7 @@ internal sealed class AndroidBomPanel : IDisposable
         private readonly Action<BomPanelRow> _toggle;
         private readonly Func<int[]> _columnWidthsAccessor;
         private readonly Func<int> _tableWidthAccessor;
+        private readonly StyledTooltipRegistry _tooltips;
 
         public BomPanelAdapter(
             Context ctx,
@@ -1086,7 +1093,8 @@ internal sealed class AndroidBomPanel : IDisposable
             Func<BomPanelRow?> selectedAccessor,
             Action<BomPanelRow> toggle,
             Func<int[]> columnWidthsAccessor,
-            Func<int> tableWidthAccessor)
+            Func<int> tableWidthAccessor,
+            StyledTooltipRegistry tooltips)
         {
             _ctx = ctx;
             _rows = rows;
@@ -1095,6 +1103,7 @@ internal sealed class AndroidBomPanel : IDisposable
             _toggle = toggle;
             _columnWidthsAccessor = columnWidthsAccessor;
             _tableWidthAccessor = tableWidthAccessor;
+            _tooltips = tooltips;
         }
 
         public override int Count => _rows.Count;
@@ -1111,6 +1120,7 @@ internal sealed class AndroidBomPanel : IDisposable
                 _tableWidthAccessor(),
                 Dp(_ctx, 24));
             root.SetMinimumWidth(_tableWidthAccessor());
+            root.ContentDescription = "Select BOM row " + RowTooltip(row);
             bool selected = ReferenceEquals(row, _selectedAccessor());
             root.SetBackgroundColor(selected
                 ? ColorRes(_ctx, Resource.Color.fa_highlight)
@@ -1123,8 +1133,16 @@ internal sealed class AndroidBomPanel : IDisposable
             else
                 AddConsolidatedCells(root, row);
 
+            _tooltips.AttachTree(_ctx, root, includeStaticText: true);
             return root;
         }
+
+        private static string RowTooltip(BomPanelRow row)
+            => string.IsNullOrWhiteSpace(row.PartNumber)
+                ? row.Name
+                : string.IsNullOrWhiteSpace(row.Name)
+                    ? row.PartNumber
+                    : row.PartNumber + " - " + row.Name;
 
         private void AddHierarchyCells(LinearLayout root, BomPanelRow row)
         {

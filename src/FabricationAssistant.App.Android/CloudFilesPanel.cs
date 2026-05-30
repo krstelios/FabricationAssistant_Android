@@ -19,6 +19,7 @@ public sealed class CloudFilesPanel : IDisposable
 
     private readonly CloudApiClient _client;
     private readonly List<MaterialCardView> _cards = [];
+    private readonly StyledTooltipRegistry _tooltips = new();
     private readonly CancellationTokenSource _disposeCts = new();
     private LinearLayout? _root;
     private LinearLayout? _list;
@@ -84,6 +85,7 @@ public sealed class CloudFilesPanel : IDisposable
         scroll.AddView(_root);
 
         _ = RefreshAsync(ctx, silent: false);
+        _tooltips.AttachTree(ctx, scroll, includeStaticText: true);
         return scroll;
     }
 
@@ -98,6 +100,7 @@ public sealed class CloudFilesPanel : IDisposable
         foreach (MaterialCardView card in _cards)
             card.SetOnClickListener(null);
         _cards.Clear();
+        _tooltips.Dispose();
         if (_refreshButton is not null)
             _refreshButton.Click -= OnRefreshClicked;
         if (_search is not null)
@@ -136,6 +139,7 @@ public sealed class CloudFilesPanel : IDisposable
         _refreshButton = new MaterialButton(ctx, null, Resource.Attribute.materialButtonOutlinedStyle)
         {
             Text = "Refresh",
+            ContentDescription = "Refresh cloud files",
         };
         _refreshButton.SetMinWidth(0);
         _refreshButton.SetTextSize(ComplexUnitType.Px, Dp(ctx, 12));
@@ -150,7 +154,10 @@ public sealed class CloudFilesPanel : IDisposable
 
     private void AddControls(Context ctx, ViewGroup parent)
     {
-        _projectSpinner = new Spinner(ctx);
+        _projectSpinner = new Spinner(ctx)
+        {
+            ContentDescription = "Cloud project filter",
+        };
         _projectSpinner.Background = CreateProjectSpinnerBackground(ctx);
         _projectSpinner.SetPadding(Dp(ctx, 12), 0, Dp(ctx, 10), 0);
         try
@@ -194,6 +201,7 @@ public sealed class CloudFilesPanel : IDisposable
         _search = new EditText(ctx)
         {
             Hint = "Search part or revision",
+            ContentDescription = "Search part or revision",
         };
         _search.SetSingleLine(true);
         _search.SetTextColor(GetColor(ctx, Resource.Color.fa_text_primary));
@@ -344,6 +352,7 @@ public sealed class CloudFilesPanel : IDisposable
         var button = new MaterialButton(ctx, null, Resource.Attribute.materialButtonOutlinedStyle)
         {
             Text = "Sign in",
+            ContentDescription = "Sign in to FA Cloud",
         };
         button.SetTextColor(GetColor(ctx, Resource.Color.fa_accent_500));
         button.Click += (_, _) => SignInRequested?.Invoke();
@@ -352,6 +361,7 @@ public sealed class CloudFilesPanel : IDisposable
         inner.AddView(button, lp);
 
         _list?.AddView(card);
+        _tooltips.AttachTree(ctx, card, includeStaticText: true);
     }
 
     private void RebuildList(Context ctx)
@@ -362,6 +372,7 @@ public sealed class CloudFilesPanel : IDisposable
         foreach (MaterialCardView card in _cards)
             card.SetOnClickListener(null);
         _cards.Clear();
+        _tooltips.DisposeTree(_list);
         _list.RemoveAllViews();
 
         IEnumerable<CloudPackageSummary> packages = _snapshot.Packages;
@@ -405,7 +416,10 @@ public sealed class CloudFilesPanel : IDisposable
         row.SetPadding(Dp(ctx, 12), Dp(ctx, 12), Dp(ctx, 12), Dp(ctx, 12));
         card.AddView(row);
 
-        var preview = new ImageView(ctx);
+        var preview = new ImageView(ctx)
+        {
+            ContentDescription = "Cloud file preview",
+        };
         preview.Clickable = package.IsReadyToOpen;
         preview.SetOnClickListener(clickListener);
         preview.SetImageResource(Resource.Drawable.ic_cloud);
@@ -461,6 +475,7 @@ public sealed class CloudFilesPanel : IDisposable
             AddCountersButton(ctx, textGroup, package);
 
         _list?.AddView(card);
+        _tooltips.AttachTree(ctx, card, includeStaticText: true);
         _ = LoadPreviewIntoAsync(ctx, package, preview);
     }
 
@@ -469,6 +484,7 @@ public sealed class CloudFilesPanel : IDisposable
         var button = new MaterialButton(ctx, null, Resource.Attribute.materialButtonOutlinedStyle)
         {
             Text = "Counters",
+            ContentDescription = "Choose file counter",
         };
         button.SetMinWidth(0);
         button.SetMinimumWidth(0);
@@ -526,7 +542,7 @@ public sealed class CloudFilesPanel : IDisposable
                 : $"C{version.Counter} - read-only")
             .ToArray();
 
-        new AlertDialog.Builder(ctx)
+        AlertDialog dialog = new AlertDialog.Builder(ctx)
             .SetTitle(package.DisplayName + " counters")!
             .SetItems(labels, (_, e) =>
             {
@@ -534,7 +550,10 @@ public sealed class CloudFilesPanel : IDisposable
                     PackageCounterSelected?.Invoke(package, openable[e.Which].Counter);
             })!
             .SetNegativeButton("Cancel", (_, _) => { })!
-            .Show();
+            .Show()!;
+
+        Button? cancel = dialog.GetButton((int)global::Android.Content.DialogButtonType.Negative);
+        _tooltips.Attach(ctx, cancel, "Cancel counter selection");
     }
 
     private async Task LoadPreviewIntoAsync(Context ctx, CloudPackageSummary package, ImageView preview)

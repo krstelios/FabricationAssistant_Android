@@ -480,6 +480,56 @@ public sealed class AndroidEdgeSnapServiceTests
         AssertClose(new Vector3d(2.7071067811865475, -1.7071067811865475, 0), result.Value.WorldPoint, precision: 6);
     }
 
+    [Fact]
+    public void TrySnap_TwoTangentArcsOfDifferentRadius_DoesNotExposeInternalArcJoints()
+    {
+        // A smooth compound curve: a radius-5 quarter arc joined tangentially to a
+        // radius-2 quarter arc. No single circle fits both, so the whole chain used
+        // to collapse to per-segment fallback, exposing every internal joint. The two
+        // arcs must instead be separated into two logical arc runs.
+        EdgeSnapService.MidpointSnapEnabled = false;
+        const double radiusA = 5.0;
+        const int segmentsPerArc = 8;
+        float[] edges = CompoundTangentArcEdges(radiusA, radiusB: 2.0, segmentsPerArc);
+
+        // Vertex index 2 on arc A (67.5 deg) - strictly interior, not the arc midpoint.
+        double angle = (Math.PI / 2.0) * (1.0 - 2.0 / segmentsPerArc);
+        var internalJoint = new Vector3d(radiusA * Math.Cos(angle), radiusA * Math.Sin(angle), 0);
+
+        EdgeSnapResult? result = _service.TrySnap(
+            edges,
+            Matrix4d.Identity,
+            internalJoint + new Vector3d(0, 0, 1),
+            new Vector3d(0, 0, -1),
+            EdgeTolerance,
+            EndpointTolerance);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void TrySnap_ClosedHalfEllipseWithStraightBase_KeepsStraightBaseClean()
+    {
+        // Mirrors the real plate outline: a closed loop of a straight base plus a
+        // non-circular (elliptical) curved top, with sharp 90-deg corners so the
+        // smooth-closed-loop path cannot absorb it. One mis-fitting arc sub-run used
+        // to dump the entire loop to per-segment fallback, exposing the clean base's
+        // internal joints. The straight base must stay a single logical line run.
+        EdgeSnapService.MidpointSnapEnabled = false;
+        float[] edges = HalfEllipseWithStraightBaseEdges(a: 6.0, b: 4.0, topSegments: 16, baseSegments: 4);
+        var internalBaseJoint = new Vector3d(3.0, 0.0, 0.0);
+
+        EdgeSnapResult? result = _service.TrySnap(
+            edges,
+            Matrix4d.Identity,
+            internalBaseJoint + new Vector3d(0, 0, 1),
+            new Vector3d(0, 0, -1),
+            EdgeTolerance,
+            EndpointTolerance);
+
+        Assert.Null(result);
+    }
+
     private EdgeSnapResult? TrySnapAtX(double x, float[] edgePositions)
         => _service.TrySnap(
             edgePositions,
@@ -738,6 +788,75 @@ public sealed class AndroidEdgeSnapServiceTests
         }
 
         return values;
+    }
+
+    private static float[] CompoundTangentArcEdges(double radiusA, double radiusB, int segmentsPerArc)
+    {
+        // Arc A: center (0,0), radius A, sweeping 90deg -> 0deg (clockwise), ending at (radiusA, 0)
+        // with a downward (0,-1) tangent. Arc B continues tangentially with a different radius:
+        // center (radiusA - radiusB, 0), sweeping 0deg -> -90deg. The shared tangent at (radiusA,0)
+        // makes this a smooth compound curve that no single circle can fit.
+        var points = new List<(double X, double Y)>();
+        for (int i = 0; i <= segmentsPerArc; i++)
+        {
+            double angle = (Math.PI / 2.0) * (1.0 - (double)i / segmentsPerArc);
+            points.Add((radiusA * Math.Cos(angle), radiusA * Math.Sin(angle)));
+        }
+
+        double centerBX = radiusA - radiusB;
+        for (int i = 1; i <= segmentsPerArc; i++)
+        {
+            double angle = -(Math.PI / 2.0) * ((double)i / segmentsPerArc);
+            points.Add((centerBX + radiusB * Math.Cos(angle), radiusB * Math.Sin(angle)));
+        }
+
+        return OpenEdgesFromPoints(points);
+    }
+
+    private static float[] HalfEllipseWithStraightBaseEdges(double a, double b, int topSegments, int baseSegments)
+    {
+        // Closed loop: a non-circular half ellipse from (a,0) over (0,b) to (-a,0), then a straight
+        // base back to (a,0). Sharp ~90deg corners at (+-a,0) defeat the smooth-closed-loop path.
+        var points = new List<(double X, double Y)>();
+        for (int i = 0; i <= topSegments; i++)
+        {
+            double t = Math.PI * i / topSegments;
+            points.Add((a * Math.Cos(t), b * Math.Sin(t)));
+        }
+
+        for (int i = 1; i < baseSegments; i++)
+        {
+            double x = -a + (2.0 * a) * i / baseSegments;
+            points.Add((x, 0.0));
+        }
+
+        return ClosedEdgesFromPoints(points);
+    }
+
+    private static float[] OpenEdgesFromPoints(IReadOnlyList<(double X, double Y)> points)
+    {
+        var values = new float[(points.Count - 1) * 6];
+        for (int i = 0; i + 1 < points.Count; i++)
+            WriteSegment(values, i * 6, points[i], points[i + 1]);
+        return values;
+    }
+
+    private static float[] ClosedEdgesFromPoints(IReadOnlyList<(double X, double Y)> points)
+    {
+        var values = new float[points.Count * 6];
+        for (int i = 0; i < points.Count; i++)
+            WriteSegment(values, i * 6, points[i], points[(i + 1) % points.Count]);
+        return values;
+    }
+
+    private static void WriteSegment(float[] values, int offset, (double X, double Y) a, (double X, double Y) b)
+    {
+        values[offset] = (float)a.X;
+        values[offset + 1] = (float)a.Y;
+        values[offset + 2] = 0f;
+        values[offset + 3] = (float)b.X;
+        values[offset + 4] = (float)b.Y;
+        values[offset + 5] = 0f;
     }
 
     private static void ResetSnapSettings()

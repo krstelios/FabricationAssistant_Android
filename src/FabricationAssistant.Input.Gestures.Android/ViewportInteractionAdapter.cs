@@ -373,7 +373,7 @@ public sealed class ViewportInteractionAdapter
 
                 lock (_camera)
                 {
-                    Vector3d zoomPivot = TryGetOrthoAxisAlignedCursorPivot(ev.Position) ?? GetPivot();
+                    Vector3d zoomPivot = ResolveCursorZoomPivot(ev.Position);
                     _camera.ZoomAroundPoint(zoomPivot, wheelNotches * DefaultMouseZoomSpeed * MouseWheelZoomSpeedMultiplier);
                     RefreshClipPlanes();
                 }
@@ -544,28 +544,25 @@ public sealed class ViewportInteractionAdapter
         return System.Math.Max(_camera.OrthoWidth, MinimumPanDistance) / viewportWidthDip;
     }
 
-    private Vector3d? TryGetOrthoAxisAlignedCursorPivot(Point2D position)
+    /// <summary>
+    /// Resolves the world-space point under the cursor to use as the mouse-wheel
+    /// zoom pivot, so zoom keeps the point under the pointer fixed on screen for
+    /// BOTH perspective and orthographic cameras (ZoomAroundPoint holds the pivot
+    /// screen-stationary). Prefers the geometry the cursor is over; otherwise the
+    /// cursor ray intersected with the plane through the current pivot (so empty
+    /// space still zooms toward the cursor); finally the scene pivot. The pivot is
+    /// always on the eye->cursor ray, which is what keeps the cursor point fixed.
+    /// </summary>
+    private Vector3d ResolveCursorZoomPivot(Point2D position)
     {
-        if (_camera.IsPerspective)
-            return null;
+        if (_pivotPicker?.Invoke(position) is { } picked && IsFinite(picked))
+            return picked;
 
-        Vector3d forward = _camera.Forward;
-        double maxAxisComponent = System.Math.Max(
-            System.Math.Abs(forward.X),
-            System.Math.Max(System.Math.Abs(forward.Y), System.Math.Abs(forward.Z)));
-        if (maxAxisComponent < 0.999)
-            return null;
+        Vector3d pivot = GetPivot();
+        if (TryScreenPointToWorldOnPlane(position, pivot, out Vector3d onPlane) && IsFinite(onPlane))
+            return onPlane;
 
-        if (!TryCreateWorldRay(position, out Vector3d rayOrigin, out Vector3d rayDirection))
-            return null;
-
-        double denom = Vector3d.Dot(rayDirection, forward);
-        if (System.Math.Abs(denom) < 1e-12)
-            return null;
-
-        double t = Vector3d.Dot(_camera.Target - rayOrigin, forward) / denom;
-        Vector3d pivot = rayOrigin + rayDirection * t;
-        return IsFinite(pivot) ? pivot : null;
+        return pivot;
     }
 
     private bool TryCaptureMouseOrbitAnchor()

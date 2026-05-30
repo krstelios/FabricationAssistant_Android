@@ -52,6 +52,28 @@ public sealed class GpuScene : IDisposable
         return false;
     }
 
+    public bool TryGetSelectableNodeIdForMeshIndex(int meshIndex, out int nodeId)
+    {
+        IReadOnlyList<GpuMesh> meshes = _meshes;
+        foreach (GpuMesh mesh in meshes)
+        {
+            if (mesh.MeshIndex != meshIndex)
+                continue;
+
+            int selectableNodeId = mesh.SelectableNodeId >= 0
+                ? mesh.SelectableNodeId
+                : mesh.SourceNodeId;
+            if (selectableNodeId >= 0)
+            {
+                nodeId = selectableNodeId;
+                return true;
+            }
+        }
+
+        nodeId = -1;
+        return false;
+    }
+
     public bool TryGetMeshIndexForSourceNodeId(int nodeId, out int meshIndex)
     {
         IReadOnlyList<GpuMesh> meshes = _meshes;

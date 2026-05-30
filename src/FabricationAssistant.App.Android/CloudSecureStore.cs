@@ -25,12 +25,11 @@ public sealed class CloudSecureStore
             ?? throw new InvalidOperationException("Context.GetSharedPreferences returned null.");
     }
 
-    public string? LoadRememberedPassword()
-        => LoadEncryptedString(RememberedPasswordKey);
-
-    public void SaveRememberedPassword(string? password)
-        => PutEncryptedString(RememberedPasswordKey, password);
-
+    // S22#5: SaveRememberedPassword / LoadRememberedPassword were never called
+    // (the remembered-password feature is not wired into the sign-in flow), so
+    // they and their PutEncryptedString helper were removed. ClearRememberedPassword
+    // and RememberedPasswordKey are kept (Clear is still called from the
+    // PreferencesBottomSheet sign-out path).
     public string? LoadRefreshToken()
         => LoadEncryptedString(RefreshTokenKey);
 
@@ -81,16 +80,6 @@ public sealed class CloudSecureStore
     {
         byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(value));
         return Convert.ToHexString(hash).ToLowerInvariant();
-    }
-
-    private void PutEncryptedString(string key, string? value)
-    {
-        var editor = _prefs.Edit()!;
-        if (string.IsNullOrEmpty(value))
-            editor.Remove(key);
-        else
-            editor.PutString(key, EncryptString(value));
-        editor.Apply();
     }
 
     private string? LoadEncryptedString(string key)

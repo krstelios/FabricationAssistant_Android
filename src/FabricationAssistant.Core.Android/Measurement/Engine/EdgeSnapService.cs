@@ -29,6 +29,7 @@ public sealed class EdgeSnapService
     private const int MinimumClosedLoopMidpointTargetCount = 8;
     private const int MaximumClosedLoopMidpointTargetCount = 32;
     private const int MaxVisibilityProbeCandidates = 4;
+    private const int SegmentedRunMinSegments = 3;
 
     private static readonly ConditionalWeakTable<float[], SnapModelSlot> ModelCache = new();
     private static readonly object SnapScanLogLock = new();
@@ -403,7 +404,7 @@ public sealed class EdgeSnapService
                 $"generatedPrimitives={stats.GeneratedPrimitives}, generatedLines={stats.GeneratedLines}, generatedArcs={stats.GeneratedArcs}, generatedFallbackLines={stats.GeneratedFallbackLines}, endpointTargets={stats.EndpointTargets}, midpointTargets={stats.MidpointTargets}, closedLoopMidpointTargets={stats.ClosedLoopMidpointTargets}, " +
                 $"coveredSegments={stats.CoveredSourceSegments}, coveredByStraight={stats.SourceSegmentsCoveredByStraightLines}, coveredByArcs={stats.SourceSegmentsCoveredByArcs}, coveredByFallback={stats.SourceSegmentsCoveredByFallbackLines}, coverageMismatch={stats.ValidSegments - stats.CoveredSourceSegments}, " +
                 $"chains={stats.Chains}, openChains={stats.OpenChains}, closedChains={stats.ClosedChains}, branchStops={stats.BranchStops}, branchContinuations={stats.BranchContinuations}, " +
-                $"straightRuns={stats.StraightRuns}, arcRuns={stats.ArcRuns}, openMixedRuns={stats.OpenMixedRuns}, closedMixedRuns={stats.ClosedMixedRuns}, closedCircleRuns={stats.ClosedCircleRuns}, smoothClosedRuns={stats.SmoothClosedRuns}, fallbackChains={stats.FallbackChains}, fallbackSegments={stats.FallbackSegments}, " +
+                $"straightRuns={stats.StraightRuns}, arcRuns={stats.ArcRuns}, openMixedRuns={stats.OpenMixedRuns}, closedMixedRuns={stats.ClosedMixedRuns}, segmentedChains={stats.SegmentedChains}, closedCircleRuns={stats.ClosedCircleRuns}, smoothClosedRuns={stats.SmoothClosedRuns}, fallbackChains={stats.FallbackChains}, fallbackSegments={stats.FallbackSegments}, " +
                 $"arcCandidates={stats.ArcCandidates}, arcRejects=[{stats.FormatArcRejects()}], invalidSegments={stats.InvalidSegments}, shortSegments={stats.ShortSegments}, weldedSameVertex={stats.WeldedSameVertex}, duplicateSegments={stats.DuplicateSegments}.");
 
             log(
@@ -704,6 +705,9 @@ public sealed class EdgeSnapService
                     return;
                 }
 
+                if (TryAppendSegmentedRuns(closedPoints, closed: true))
+                    return;
+
                 _stats.FallbackChains++;
                 AppendSegmentTargets(chain);
                 return;
@@ -746,6 +750,9 @@ public sealed class EdgeSnapService
                 _stats.SourceSegmentsCoveredByArcs += segmentCount;
                 return;
             }
+
+            if (TryAppendSegmentedRuns(points, closed: false))
+                return;
 
             _stats.FallbackChains++;
             AppendSegmentTargets(chain);
@@ -1403,6 +1410,141 @@ public sealed class EdgeSnapService
             for (int i = 0; i <= segmentCount; i++)
                 result[i] = points[(startSegment + i) % pointCount];
             return result;
+        }
+
+        // Curvature-driven decomposition used when the simpler ladder rungs cannot
+        // model a compound edge. It walks the chain once, greedily growing a single
+        // arc (consistent centre/radius) where it can and a straight run otherwise.
+        // Crucially it is partial-credit: a span that fits neither cleanly degrades
+        // to a one-segment line locally instead of dumping the WHOLE chain to raw
+        // per-segment fallback. That keeps arcs cleanly separated from straights and
+        // stops one bad fillet from making every joint on a long edge snappable.
+        private bool TryAppendSegmentedRuns(Vector3d[] chainPoints, bool closed)
+        {
+            Vector3d[] points = closed ? BuildClosedLinearPoints(chainPoints) : chainPoints;
+            int segmentCount = points.Length - 1;
+            if (segmentCount < SegmentedRunMinSegments)
+                return false;
+
+            var runs = new List<LogicalRun>();
+            bool anyArc = false;
+            int segment = 0;
+            while (segment < segmentCount)
+            {
+                int arcLength = GrowArcRun(points, segment, segmentCount, out ArcFitInfo arc);
+                if (arcLength >= 2)
+                {
+                    runs.Add(LogicalRun.ArcRun(segment, arcLength, arc));
+                    anyArc = true;
+                    segment += arcLength;
+                    continue;
+                }
+
+                int straightLength = GrowStraightRun(points, segment, segmentCount, out Vector3d start, out Vector3d end);
+                runs.Add(LogicalRun.Line(segment, straightLength, start, end));
+                segment += straightLength;
+            }
+
+            // Only commit when we actually recovered an arc: an all-straight result is
+            // already what the straight/fallback rungs produce, so defer to them rather
+            // than relabel an unrecognised chain.
+            if (!anyArc || runs.Count < 2)
+                return false;
+
+            int straightSegments = 0;
+            int arcSegments = 0;
+            foreach (LogicalRun run in runs)
+            {
+                if (run.IsArc)
+                {
+                    Vector3d[] runPoints = Slice(points, run.StartSegment, run.StartSegment + run.SegmentCount);
+                    AppendArcRunTargets(runPoints, run.ArcFit);
+                    arcSegments += run.SegmentCount;
+                }
+                else
+                {
+                    AppendStraightRun(run.Start, run.End);
+                    straightSegments += run.SegmentCount;
+                }
+            }
+
+            _stats.SegmentedChains++;
+            _stats.SourceSegmentsCoveredByArcs += arcSegments;
+            _stats.SourceSegmentsCoveredByStraightLines += straightSegments;
+            _stats.RecordMixedRunSample(
+                $"{(closed ? "closed" : "open")} segmented segments={segmentCount}, runs={runs.Count}, straightSegments={straightSegments}, arcSegments={arcSegments}");
+            return true;
+        }
+
+        // Longest run of segments starting at startSegment that fit a single arc
+        // (same centre/radius, monotone sweep). Returns the segment count (>= 2) or 0.
+        private int GrowArcRun(Vector3d[] points, int startSegment, int segmentCount, out ArcFitInfo arc)
+        {
+            arc = default;
+            int bestEndSegment = -1;
+            ArcFitInfo bestArc = default;
+            for (int endSegment = startSegment + 1; endSegment < segmentCount; endSegment++)
+            {
+                Vector3d[] slice = Slice(points, startSegment, endSegment + 1);
+                if (!TryResolveArcRun(slice, recordRejects: false, out ArcFitInfo candidate))
+                    break;
+
+                bestArc = candidate;
+                bestEndSegment = endSegment;
+            }
+
+            if (bestEndSegment < 0)
+                return 0;
+
+            arc = bestArc;
+            return bestEndSegment - startSegment + 1;
+        }
+
+        // Longest collinear run of segments starting at startSegment (>= 1).
+        private int GrowStraightRun(Vector3d[] points, int startSegment, int segmentCount, out Vector3d start, out Vector3d end)
+        {
+            start = points[startSegment];
+            end = points[startSegment + 1];
+            int lastSegment = startSegment;
+            while (lastSegment + 1 < segmentCount
+                && TryResolveStraightRun(points, startSegment, lastSegment + 2, out Vector3d runStart, out Vector3d runEnd))
+            {
+                lastSegment++;
+                start = runStart;
+                end = runEnd;
+            }
+
+            return lastSegment - startSegment + 1;
+        }
+
+        // Rotates a closed loop so it begins at its sharpest corner, then appends a
+        // duplicate of that corner so the loop can be segmented as a linear sequence
+        // without merging two distinct runs across the seam.
+        private static Vector3d[] BuildClosedLinearPoints(Vector3d[] closedPoints)
+        {
+            int count = closedPoints.Length;
+            int seam = 0;
+            double maxTurn = double.NegativeInfinity;
+            for (int i = 0; i < count; i++)
+            {
+                Vector3d incoming = closedPoints[i] - closedPoints[(i - 1 + count) % count];
+                Vector3d outgoing = closedPoints[(i + 1) % count] - closedPoints[i];
+                if (!TryNormalize(incoming, out incoming) || !TryNormalize(outgoing, out outgoing))
+                    continue;
+
+                double dot = System.Math.Clamp(Vector3d.Dot(incoming, outgoing), -1.0, 1.0);
+                double turn = System.Math.Acos(dot);
+                if (turn > maxTurn)
+                {
+                    maxTurn = turn;
+                    seam = i;
+                }
+            }
+
+            var linear = new Vector3d[count + 1];
+            for (int i = 0; i <= count; i++)
+                linear[i] = closedPoints[(seam + i) % count];
+            return linear;
         }
 
         private bool TryAppendClosedCircleRun(Vector3d[] points)
@@ -2171,6 +2313,8 @@ public sealed class EdgeSnapService
         public int OpenMixedRuns { get; set; }
 
         public int ClosedMixedRuns { get; set; }
+
+        public int SegmentedChains { get; set; }
 
         public int ClosedCircleRuns { get; set; }
 

@@ -8,10 +8,13 @@ using Javax.Microedition.Khronos.Egl;
 namespace FabricationAssistant.App.Android.Views;
 
 /// <summary>
-/// EGL config chooser that asks for 4x MSAA, falls back to 2x, then to no
-/// multisample. RGB8 + Depth24 + Stencil8 are preserved regardless. Replaces
-/// the parameter-based SetEGLConfigChooser call - the simple overload has no
-/// way to request EGL_SAMPLE_BUFFERS / EGL_SAMPLES.
+/// EGL config chooser for the default backbuffer. In this app it is always
+/// constructed with 0 samples (scene MSAA is done in the offscreen
+/// MsaaSceneFramebuffer, not the backbuffer), so it selects a single-sample
+/// RGB8 + Depth24 + Stencil8 config; the higher-sample fallbacks remain only
+/// for the parameterized maxSamples path. Replaces the simple
+/// SetEGLConfigChooser overload, which cannot request EGL_SAMPLE_BUFFERS /
+/// EGL_SAMPLES.
 /// </summary>
 public sealed class MultisampleConfigChooser : Java.Lang.Object, GLSurfaceView.IEGLConfigChooser
 {
