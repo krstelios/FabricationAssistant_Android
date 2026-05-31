@@ -294,6 +294,7 @@ public static class DracoGltfTranscoder
         string? json = null;
         long binOffset = 0;
         int binLength = 0;
+        int chunkIndex = 0;
         Span<byte> chunkHeader = stackalloc byte[8];
         while (fs.Position < fs.Length)
         {
@@ -305,6 +306,14 @@ public static class DracoGltfTranscoder
             uint chunkType = BinaryPrimitives.ReadUInt32LittleEndian(chunkHeader[4..]);
             if (chunkLength > int.MaxValue || fs.Position + chunkLength > fs.Length)
                 throw new InvalidDataException("GLB chunk length exceeds file bounds");
+
+            // S4-L2: the glTF 2.0 spec requires the first chunk to be JSON, and
+            // ImportFileSignatureValidator enforces that for top-level .glb imports.
+            // ReadGlb also runs on inner GLBs unpacked from .fa archives, which the
+            // top-level validator never sees, so enforce JSON-first here too instead
+            // of relying on that gate - keeping the two GLB parsers consistent.
+            if (chunkIndex == 0 && chunkType != ChunkTypeJson)
+                throw new InvalidDataException("GLB first chunk is not JSON.");
 
             if (chunkType == ChunkTypeJson)
             {
@@ -322,6 +331,7 @@ public static class DracoGltfTranscoder
             {
                 fs.Position += chunkLength;
             }
+            chunkIndex++;
         }
         if (json is null) throw new InvalidDataException("GLB missing JSON chunk");
         return new GlbSource(json, binOffset, binLength);
