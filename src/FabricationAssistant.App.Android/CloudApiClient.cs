@@ -366,6 +366,7 @@ public sealed class CloudApiClient : IDisposable
 
         _secureStore.Clear();
         AppSettings.CloudRememberCredentials = false;
+        AppSettings.CloudRememberPassword = false;
         PurgeCloudCache();
         RaiseSessionChanged();
     }

@@ -36,6 +36,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
     private readonly Handler _logRefreshHandler = new(Looper.MainLooper!);
     private AndroidLogcatFeed? _logFeed;
     private ScrollView? _logScroll;
+    private HorizontalScrollView? _logHorizontalScroll;
     private TextView? _logStatus;
     private TextView? _logText;
     private MaterialButton? _logLiveButton;
@@ -131,12 +132,12 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
             ReplaceVisibleSettingsView(ctx, scroll);
         });
 
-        // ── Render mode ────────────────────────────────────────────────
+        // Render mode
         var modeSection = AddSection(ctx, root, "Render Mode", "Shading style", expandedByDefault: true);
         AddToggleRow(ctx, modeSection, new[] { "Shaded", "Wireframe", "Clay" },
             AppSettings.RenderModeSelectionIndex, AppSettings.SetRenderModeSelectionIndex);
 
-        // ── Camera & helpers ───────────────────────────────────────────
+        // Camera and helpers
         var helpers = AddSection(ctx, root, "Camera & Helpers", "Grid, helpers, projection");
         AddSwitch(ctx, helpers, "Show ground grid", AppSettings.ShowGrid, v => AppSettings.ShowGrid = v);
         AddSwitch(ctx, helpers, "Double tap Fit Screen", AppSettings.DoubleTapFitScreenEnabled, v => AppSettings.DoubleTapFitScreenEnabled = v);
@@ -154,7 +155,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         AddFloatField(ctx, helpers, "Near clip (mm)", AppSettings.CameraNearClipMm, AppSettings.SetCameraNearClipMm);
         AddFloatField(ctx, helpers, "Far clip (mm)", AppSettings.CameraFarClipMm, AppSettings.SetCameraFarClipMm);
 
-        // ── Scene colors ───────────────────────────────────────────────
+        // Scene colors
         var colors = AddSection(ctx, root, "Scene Colors", "Background and surface");
         AddRgbRow(ctx, colors, "Background",
             AppSettings.BackgroundR, AppSettings.BackgroundG, AppSettings.BackgroundB,
@@ -164,7 +165,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
             AppSettings.SetSurfaceColor);
         AddFloatSlider(ctx, colors, "Surface opacity", 0f, 1f, AppSettings.SurfaceOpacity, v => AppSettings.SurfaceOpacity = v);
 
-        // ── CAD Edges ──────────────────────────────────────────────────
+        // CAD edges
         var edges = AddSection(ctx, root, "CAD Edges", "Edge lines and tolerances");
         AddSwitch(ctx, edges, "Enable edges", AppSettings.EdgesEnabled, AppSettings.SetEdgesEnabledFromUi);
         AddRgbRow(ctx, edges, "Edge color",
@@ -179,7 +180,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         AddFloatSlider(ctx, edges, "Surface offset F", 0f, 4f, AppSettings.SurfaceOffsetFactor, v => AppSettings.SurfaceOffsetFactor = v);
         AddFloatSlider(ctx, edges, "Surface offset U", 0f, 4f, AppSettings.SurfaceOffsetUnits, v => AppSettings.SurfaceOffsetUnits = v);
 
-        // ── Clay ───────────────────────────────────────────────────────
+        // Clay
         var clay = AddSection(ctx, root, "Clay Render", "Clay colors");
         AddRgbRow(ctx, clay, "Clay surface",
             AppSettings.ClaySurfaceR, AppSettings.ClaySurfaceG, AppSettings.ClaySurfaceB,
@@ -196,7 +197,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         AddFloatSlider(ctx, clay, "Clay edge depth bias", 0f, 0.01f, AppSettings.ClayFeatureEdgeDepthBias, v => AppSettings.ClayFeatureEdgeDepthBias = v);
         AddFloatSlider(ctx, clay, "Clay crease angle", 1f, 150f, AppSettings.ClayFeatureEdgeCreaseAngleDegrees, v => AppSettings.ClayFeatureEdgeCreaseAngleDegrees = v);
 
-        // ── Lighting ───────────────────────────────────────────────────
+        // Lighting
         var lighting = AddSection(ctx, root, "Lighting", "Light balance and specular");
         AddFloatSlider(ctx, lighting, "Base lift", 0f, 0.25f, AppSettings.BaseColorLift, v => AppSettings.BaseColorLift = v);
         AddFloatSlider(ctx, lighting, "Ambient", 0f, 1f, AppSettings.AmbientStrength, v => AppSettings.AmbientStrength = v);
@@ -208,7 +209,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         AddFloatSlider(ctx, lighting, "Specular strength", 0f, 1f, AppSettings.SpecularStrength, v => AppSettings.SpecularStrength = v);
         AddFloatSlider(ctx, lighting, "Specular power", 1f, 128f, AppSettings.SpecularPower, v => AppSettings.SpecularPower = v);
 
-        // ── AA + occlusion ─────────────────────────────────────────────
+        // AA and occlusion
         var aa = AddSection(ctx, root, "Anti-aliasing & Occlusion", "MSAA, contour, SSAO");
         // S8#4/S9#1: expose 8x (the renderer + AppSettings clamp already support
         // it; devices that cap lower clamp down at GL_MAX_SAMPLES).
@@ -233,7 +234,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         AddFloatSlider(ctx, aa, "AO blur sharpness", 0f, 32f, AppSettings.AoBlurSharpness, v => AppSettings.AoBlurSharpness = v);
         AddIntSlider(ctx, aa, "AO blur passes", 0, 8, AppSettings.AoBlurPasses, v => AppSettings.AoBlurPasses = v);
 
-        // ── Selection ──────────────────────────────────────────────────
+        // Selection
         var sel = AddSection(ctx, root, "Selection", "Highlight and outline");
         AddSwitch(ctx, sel, "Highlight selected body", AppSettings.ShowSelectionHighlight, v => AppSettings.ShowSelectionHighlight = v);
         AddSwitch(ctx, sel, "Outline selected body", AppSettings.OutlineEnabled, v => AppSettings.OutlineEnabled = v);
@@ -305,10 +306,17 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         AddSwitch(ctx, cloud, "Keep me signed in", AppSettings.CloudRememberCredentials, remember =>
         {
             AppSettings.CloudRememberCredentials = remember;
-            cloudSecureStore.ClearRememberedPassword();
+            if (!remember)
+                cloudSecureStore.ClearRefreshToken();
+        });
+        AddSwitch(ctx, cloud, "Remember password", AppSettings.CloudRememberPassword, remember =>
+        {
+            AppSettings.CloudRememberPassword = remember;
+            if (!remember)
+                cloudSecureStore.ClearRememberedPassword();
         });
 
-        // ── Navigation ─────────────────────────────────────────────────
+        // Navigation
         var nav = AddSection(ctx, root, "Navigation", "Orbit, pan, zoom");
         AddSwitch(ctx, nav, "Lightweight camera navigation", AppSettings.LightweightNavigationEnabled, v => AppSettings.LightweightNavigationEnabled = v);
         AddFloatSlider(ctx, nav, "Section gizmo scale", 0.5f, 4f, AppSettings.SectionGizmoScale, v => AppSettings.SectionGizmoScale = v);
@@ -337,6 +345,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
 
         scroll.AddView(root);
         _styledTooltips.AttachTree(ctx, scroll, includeStaticText: true);
+        DisposeDiagnosticsLogTooltips();
         return scroll;
     }
 
@@ -447,6 +456,8 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
 
         _resizeHandle?.SetOnTouchListener(null);
         _resizeHandle = CreateResizeHandle(ctx, lineAtEnd: true);
+        _resizeHandle.ContentDescription = "Resize settings panel";
+        SetTooltip(ctx, _resizeHandle, "Resize settings panel");
         _resizeHandle.SetOnTouchListener(new HorizontalResizeTouchListener(
             () => sheet.Width > 0 ? sheet.Width : CalculateSheetWidth(ctx, startOffset, viewport),
             width => ClampSheetWidth(ctx, startOffset, viewport, width),
@@ -663,7 +674,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
             : 0;
     }
 
-    // ── Builder helpers ────────────────────────────────────────────────
+    // Builder helpers
 
     private void AddHeader(Context ctx, ViewGroup parent, string text, int sizePx, Action resetToDefaults)
     {
@@ -1200,6 +1211,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
                 save(parsedR / 255f, parsedG / 255f, parsedB / 255f);
                 dialog.Dismiss();
             };
+            DialogKeyboard.ConfirmOnEnter(hexInput, positive);
         }
 
         Button? negative = dialog.GetButton((int)global::Android.Content.DialogButtonType.Negative);
@@ -1842,8 +1854,20 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         {
             FillViewport = true,
             Background = CreateLogPanelBackground(ctx),
+            HorizontalScrollBarEnabled = false,
         };
+        _logScroll.Focusable = false;
+        _logScroll.FocusableInTouchMode = false;
         _logScroll.SetPadding(Dp(ctx, 10), Dp(ctx, 8), Dp(ctx, 10), Dp(ctx, 8));
+
+        _logHorizontalScroll = new HorizontalScrollView(ctx)
+        {
+            FillViewport = true,
+            HorizontalScrollBarEnabled = true,
+        };
+        _logHorizontalScroll.Focusable = false;
+        _logHorizontalScroll.FocusableInTouchMode = false;
+        _logHorizontalScroll.OverScrollMode = OverScrollMode.IfContentScrolls;
 
         _logText = new TextView(ctx)
         {
@@ -1852,8 +1876,14 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         _logText.SetTextColor(GetColor(ctx, Resource.Color.fa_text_secondary));
         _logText.SetTextSize(ComplexUnitType.Px, Dp(ctx, 11));
         _logText.SetTypeface(global::Android.Graphics.Typeface.Monospace, global::Android.Graphics.TypefaceStyle.Normal);
-        _logText.SetTextIsSelectable(true);
-        _logScroll.AddView(_logText, new ScrollView.LayoutParams(
+        _logText.Focusable = false;
+        _logText.FocusableInTouchMode = false;
+        _logText.SetSingleLine(false);
+        _logText.SetHorizontallyScrolling(true);
+        _logHorizontalScroll.AddView(_logText, new HorizontalScrollView.LayoutParams(
+            ViewGroup.LayoutParams.WrapContent,
+            ViewGroup.LayoutParams.WrapContent));
+        _logScroll.AddView(_logHorizontalScroll, new ScrollView.LayoutParams(
             ViewGroup.LayoutParams.MatchParent,
             ViewGroup.LayoutParams.WrapContent));
 
@@ -1932,6 +1962,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         _logFeed?.Dispose();
         _logFeed = null;
         _logScroll = null;
+        _logHorizontalScroll = null;
         _logStatus = null;
         _logText = null;
         _logLiveButton = null;
@@ -1957,6 +1988,9 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
 
     private void UpdateLogPanelText(bool scrollToBottom)
     {
+        NestedScrollView? settingsScroll = FindSettingsScrollForLogPanel();
+        int settingsScrollX = settingsScroll?.ScrollX ?? 0;
+        int settingsScrollY = settingsScroll?.ScrollY ?? 0;
         AndroidLogcatFeed? feed = _logFeed;
         bool running = feed?.IsRunning == true;
 
@@ -1965,21 +1999,62 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
 
         if (_logStatus is not null)
         {
-            _logStatus.Text = feed is null
+            string statusText = feed is null
                 ? "Expand Diagnostics to start the live app log feed."
                 : running
                     ? "Live log feed running."
                     : !string.IsNullOrWhiteSpace(feed.LastError)
                         ? "Log feed stopped: " + feed.LastError
                         : "Live log feed paused.";
+            if (!string.Equals(_logStatus.Text?.ToString(), statusText, StringComparison.Ordinal))
+                _logStatus.Text = statusText;
         }
 
         string text = feed?.SnapshotText() ?? string.Empty;
+        string visibleText = string.IsNullOrWhiteSpace(text) ? "(no logs yet)" : text;
         if (_logText is not null)
-            _logText.Text = string.IsNullOrWhiteSpace(text) ? "(no logs yet)" : text;
+        {
+            if (!string.Equals(_logText.Text?.ToString(), visibleText, StringComparison.Ordinal))
+                _logText.Text = visibleText;
+        }
+
+        if (settingsScroll is not null)
+        {
+            settingsScroll.ScrollTo(settingsScrollX, settingsScrollY);
+            settingsScroll.Post(() => settingsScroll.ScrollTo(settingsScrollX, settingsScrollY));
+        }
 
         if (scrollToBottom && _logScroll is not null)
-            _logScroll.Post(() => _logScroll?.FullScroll(FocusSearchDirection.Down));
+            _logScroll.Post(ScrollLogPanelToBottom);
+    }
+
+    private NestedScrollView? FindSettingsScrollForLogPanel()
+    {
+        View? view = _logScroll;
+        while (view is not null)
+        {
+            if (view is NestedScrollView nested)
+                return nested;
+            view = view.Parent as View;
+        }
+
+        return null;
+    }
+
+    private void ScrollLogPanelToBottom()
+    {
+        if (_logScroll is null)
+            return;
+
+        NestedScrollView? settingsScroll = FindSettingsScrollForLogPanel();
+        int settingsScrollX = settingsScroll?.ScrollX ?? 0;
+        int settingsScrollY = settingsScroll?.ScrollY ?? 0;
+        View? content = _logScroll.ChildCount > 0 ? _logScroll.GetChildAt(0) : null;
+        int maxScrollY = System.Math.Max(0, (content?.Height ?? 0) - _logScroll.Height);
+        _logScroll.ScrollTo(0, maxScrollY);
+        _logHorizontalScroll?.ScrollTo(0, 0);
+        if (settingsScroll is not null)
+            settingsScroll.Post(() => settingsScroll.ScrollTo(settingsScrollX, settingsScrollY));
     }
 
     private void CopyVisibleLogs(Context ctx)
@@ -2017,6 +2092,29 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
     private void DisposeStyledTooltips()
     {
         _styledTooltips.Dispose();
+    }
+
+    private void DisposeDiagnosticsLogTooltips()
+    {
+        _styledTooltips.DisposeTree(_logScroll);
+
+        if (_logScroll is not null)
+        {
+            _logScroll.TooltipText = null;
+            _logScroll.ContentDescription = null;
+        }
+
+        if (_logHorizontalScroll is not null)
+        {
+            _logHorizontalScroll.TooltipText = null;
+            _logHorizontalScroll.ContentDescription = null;
+        }
+
+        if (_logText is not null)
+        {
+            _logText.TooltipText = null;
+            _logText.ContentDescription = null;
+        }
     }
 
     private void AddSubtle(Context ctx, ViewGroup parent, string text)

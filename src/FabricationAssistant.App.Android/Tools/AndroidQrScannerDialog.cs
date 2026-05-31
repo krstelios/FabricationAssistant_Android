@@ -303,6 +303,7 @@ internal sealed class AndroidQrScannerDialog : Dialog, ISurfaceHolderCallback, g
 
             AcceptPayload(text);
         };
+        DialogKeyboard.ConfirmOnEnter(_manualInput, submit);
         inputRow.AddView(submit, new LinearLayout.LayoutParams(Dp(82), Dp(46))
         {
             RightMargin = Dp(8),

@@ -22,5 +22,13 @@ local.properties
 # Logs
 *.log
 
+# Local debug captures
+__pycache__/
+*.pyc
+tablet_screenshot*.png
+window*.xml
+restored_refs.txt
+$path
+
 # Plan 2B: Draco source clone and prebuilt native artifacts
 deps/

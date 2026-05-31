@@ -53,13 +53,28 @@
             style="@style/FA.IconButton" />
 
         <com.google.android.material.button.MaterialButton
-            android:id="@+id/saveButton"
+            android:id="@+id/navRedoButton"
             android:layout_width="40dp"
             android:layout_height="40dp"
             android:layout_gravity="end|center_vertical"
             android:layout_marginEnd="@dimen/fa_space_s"
-            android:contentDescription="@string/cd_save_model"
-            app:icon="@drawable/ic_save"
+            android:contentDescription="@string/cd_nav_redo"
+            app:icon="@drawable/ic_redo"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="20dp"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.IconButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/navUndoButton"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_gravity="end|center_vertical"
+            android:layout_marginEnd="@dimen/fa_space_s"
+            android:contentDescription="@string/cd_nav_undo"
+            app:icon="@drawable/ic_undo"
             app:iconGravity="textStart"
             app:iconPadding="0dp"
             app:iconSize="20dp"
@@ -75,7 +90,11 @@
         android:layout_width="@dimen/fa_nav_rail_width"
         android:layout_height="0dp"
         android:background="@color/fa_nav_rail_background"
+        android:defaultFocusHighlightEnabled="false"
+        android:descendantFocusability="afterDescendants"
         android:fillViewport="true"
+        android:focusable="false"
+        android:focusableInTouchMode="false"
         android:overScrollMode="ifContentScrolls"
         android:scrollbars="none"
         app:layout_constraintTop_toBottomOf="@+id/topAppBar"
@@ -132,26 +151,12 @@
             style="@style/FA.IconButton" />
 
         <com.google.android.material.button.MaterialButton
-            android:id="@+id/navUndoButton"
+            android:id="@+id/saveButton"
             android:layout_width="@dimen/fa_nav_rail_item_width"
             android:layout_height="@dimen/fa_nav_rail_item_height"
             android:layout_marginTop="@dimen/fa_space_xs"
-            android:contentDescription="@string/cd_nav_undo"
-            app:icon="@drawable/ic_undo"
-            app:iconGravity="textStart"
-            app:iconPadding="0dp"
-            app:iconSize="@dimen/fa_nav_rail_item_icon_size"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            style="@style/FA.IconButton" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/navRedoButton"
-            android:layout_width="@dimen/fa_nav_rail_item_width"
-            android:layout_height="@dimen/fa_nav_rail_item_height"
-            android:layout_marginTop="@dimen/fa_space_xs"
-            android:contentDescription="@string/cd_nav_redo"
-            app:icon="@drawable/ic_redo"
+            android:contentDescription="@string/cd_save_model"
+            app:icon="@drawable/ic_save"
             app:iconGravity="textStart"
             app:iconPadding="0dp"
             app:iconSize="@dimen/fa_nav_rail_item_icon_size"
@@ -337,7 +342,10 @@
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_weight="1"
+            android:defaultFocusHighlightEnabled="false"
             android:fillViewport="false"
+            android:focusable="false"
+            android:focusableInTouchMode="false"
             android:scrollbars="none"
             android:overScrollMode="never">
 
@@ -649,6 +657,24 @@
             android:insetTop="0dp"
             android:insetBottom="0dp"
             style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.switchmaterial.SwitchMaterial
+            android:id="@+id/measureBoundingBoxAdditive"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_s"
+            android:visibility="gone"
+            android:checked="false"
+            android:contentDescription="@string/cd_measure_bounding_box_additive"
+            android:minWidth="88dp"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp"
+            android:text="@string/measure_bounding_box_additive"
+            android:textColor="@color/fa_text_secondary"
+            android:textSize="11sp"
+            app:thumbTint="@color/fa_switch_thumb"
+            app:trackTint="@color/fa_switch_track"
+            app:useMaterialThemeColors="false" />
 
         <com.google.android.material.switchmaterial.SwitchMaterial
             android:id="@+id/measureEndpointSnap"

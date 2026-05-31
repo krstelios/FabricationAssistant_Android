@@ -39,6 +39,7 @@
     <string name="cd_measure_face_to_point">Face to point measurement</string>
     <string name="cd_measure_face_to_face">Face to face measurement</string>
     <string name="cd_measure_bounding_box">Bounding box measurement</string>
+    <string name="cd_measure_bounding_box_additive">Additive bounding box</string>
     <string name="cd_measure_snap_endpoint">Endpoint snap</string>
     <string name="cd_measure_snap_midpoint">Midpoint snap</string>
     <string name="cd_measure_clear">Clear measurements</string>
@@ -76,8 +77,12 @@
     <string name="cd_open_drawer">Open navigation drawer</string>
     <string name="measure_select_body_first">Select a body first</string>
     <string name="measure_bounding_box_title">Bounding Box</string>
-    <string name="measure_bounding_box_select_prompt">Select a part for the bounding box.</string>
-    <string name="measure_bounding_box_select_body_message">Select a part or assembly first.\n\nThe Bounding Box measure draws a tight box around the active selection.</string>
+    <string name="measure_bounding_box_additive">Additive</string>
+    <string name="measure_bounding_box_select_prompt">Select a body</string>
+    <string name="measure_bounding_box_additive_prompt">Select bodies to add</string>
+    <string name="measure_bounding_box_select_accessibility">Bounding box mode active. Tap one body in the viewport, or select parts and assemblies from the left panels.</string>
+    <string name="measure_bounding_box_additive_accessibility">Additive bounding box mode active. Tap bodies in the viewport, or select parts and assemblies from the left panels to update one combined boundary.</string>
+    <string name="measure_bounding_box_select_body_message">Tap one body in the viewport, or select parts and assemblies from the left panels to create boundary dimensions.</string>
     <string name="body_move_select_prompt">Select a body to move.</string>
     <string name="zoom_window_hint">Drag a rectangle to zoom in</string>
     <string name="zoom_window_hint_accessibility">Zoom window mode active. Drag a rectangle to zoom in. This hint will dismiss automatically.</string>

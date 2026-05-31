@@ -218,7 +218,7 @@ public static class AppSettings
     private static ISharedPreferences Prefs =>
         _prefs ?? throw new InvalidOperationException("AppSettings.Initialize(context) must be called first.");
 
-    // ── Navigation (existing) ──────────────────────────────────────────
+    // Navigation (existing)
     public static float OrbitSensitivity { get => Get("orbit_sensitivity", 1.0f); set => Put("orbit_sensitivity", System.Math.Clamp(value, 0.1f, 5.0f)); }
     // Tuned on Galaxy S-series touch input to reduce pan overshoot on dense CAD scenes.
     public static float PanSensitivity { get => Get("pan_sensitivity", 0.87420005f); set => Put("pan_sensitivity", System.Math.Clamp(value, 0.1f, 5.0f)); }
@@ -233,7 +233,7 @@ public static class AppSettings
     public static bool MouseHoverEnabled { get => Get("mouse_hover_enabled", true); set => Put("mouse_hover_enabled", value); }
     public static bool MouseInvertWheelZoom { get => Get("mouse_invert_wheel_zoom", false); set => Put("mouse_invert_wheel_zoom", value); }
 
-    // ── Mode ───────────────────────────────────────────────────────────
+    // Mode
     // Upper bound is ModeRealistic (4) so a persisted Realistic value
     // survives across sessions. AndroidRenderModeShim maps it to Shaded
     // at draw time; the UI picker never offers Realistic as a choice.
@@ -257,7 +257,7 @@ public static class AppSettings
         RenderMode = mode;
     }
 
-    // ── Camera & helpers ───────────────────────────────────────────────
+    // Camera and helpers
     public static bool ShowGrid { get => Get("show_grid", true); set => Put("show_grid", value); }
     public static bool ShiftGridToModelMin { get => Get("shift_grid", true); set => Put("shift_grid", value); }
     public static bool UseAutomaticGridSpacing { get => Get("auto_grid_spacing", true); set => Put("auto_grid_spacing", value); }
@@ -307,7 +307,7 @@ public static class AppSettings
         Put("camera_far_clip_mm", far);
     }
 
-    // ── Background + surface ───────────────────────────────────────────
+    // Background and surface
     public static float BackgroundR { get => Get("bg_r", 0.079f); set => Put("bg_r", Clamp01(value)); }
     public static float BackgroundG { get => Get("bg_g", 0.086f); set => Put("bg_g", Clamp01(value)); }
     public static float BackgroundB { get => Get("bg_b", 0.097f); set => Put("bg_b", Clamp01(value)); }
@@ -318,7 +318,7 @@ public static class AppSettings
     public static void SetSurfaceColor(float r, float g, float b) => PutRgb("surface_r", "surface_g", "surface_b", r, g, b);
     public static float SurfaceOpacity { get => GetFloatInRange("surface_opacity", 1.0f, 0.0f, 1.0f); set => Put("surface_opacity", Clamp01(value)); }
 
-    // ── CAD Edges ──────────────────────────────────────────────────────
+    // CAD edges
     public static bool EdgesEnabled { get => Get("edges_enabled", true); set => Put("edges_enabled", value); }
 
     public static void SetEdgesEnabledFromUi(bool enabled)
@@ -346,7 +346,7 @@ public static class AppSettings
     public static float SurfaceOffsetFactor { get => GetFloatInRange("surface_offset_f", DefaultSurfaceOffsetFactor, 0.0f, 4.0f); set => Put("surface_offset_f", System.Math.Clamp(value, 0.0f, 4.0f)); }
     public static float SurfaceOffsetUnits { get => GetFloatInRange("surface_offset_u", DefaultSurfaceOffsetUnits, 0.0f, 4.0f); set => Put("surface_offset_u", System.Math.Clamp(value, 0.0f, 4.0f)); }
 
-    // ── Clay ───────────────────────────────────────────────────────────
+    // Clay
     public static float ClaySurfaceR { get => Get("clay_surface_r", 0.804f); set => Put("clay_surface_r", Clamp01(value)); }
     public static float ClaySurfaceG { get => Get("clay_surface_g", 0.796f); set => Put("clay_surface_g", Clamp01(value)); }
     public static float ClaySurfaceB { get => Get("clay_surface_b", 0.797f); set => Put("clay_surface_b", Clamp01(value)); }
@@ -365,7 +365,7 @@ public static class AppSettings
     public static float ClayFeatureEdgeDepthBias { get => GetFloatInRange("clay_edge_depth_bias", 0.0f, 0.0f, 0.01f); set => Put("clay_edge_depth_bias", System.Math.Clamp(value, 0.0f, 0.01f)); }
     public static float ClayFeatureEdgeCreaseAngleDegrees { get => GetFloatInRange("clay_edge_crease_angle", 35.0f, 1.0f, 150.0f); set => Put("clay_edge_crease_angle", System.Math.Clamp(value, 1.0f, 150.0f)); }
 
-    // ── Lighting ───────────────────────────────────────────────────────
+    // Lighting
     public static float BaseColorLift { get => GetFloatInRange("light_base_lift", 0.1095f, 0.0f, 0.25f); set => Put("light_base_lift", System.Math.Clamp(value, 0.0f, 0.25f)); }
     public static float AmbientStrength { get => GetFloatInRange("light_ambient", 0.306f, 0.0f, 1.0f); set => Put("light_ambient", Clamp01(value)); }
     public static float HeadlightStrength { get => GetFloatInRange("light_headlight", 0.14f, 0.0f, 1.0f); set => Put("light_headlight", Clamp01(value)); }
@@ -376,7 +376,7 @@ public static class AppSettings
     public static float SpecularStrength { get => GetFloatInRange("light_spec_strength", 0.354f, 0.0f, 1.0f); set => Put("light_spec_strength", Clamp01(value)); }
     public static float SpecularPower { get => GetFloatInRange("light_spec_power", 77.0f, 1.0f, 128.0f); set => Put("light_spec_power", System.Math.Clamp(value, 1.0f, 128.0f)); }
 
-    // ── AO + contour + MSAA ───────────────────────────────────────────
+    // AO, contour, and MSAA
     public static bool AmbientOcclusionEnabled { get => Get("ao_enabled", true); set => Put("ao_enabled", value); }
     public static int AoSampleCount { get => GetIntInRange("ao_sample_count", DefaultAoSampleCount, MinAoSampleCount, MaxAoSampleCount); set => Put("ao_sample_count", System.Math.Clamp(value, MinAoSampleCount, MaxAoSampleCount)); }
     public static float AoRadius { get => GetFloatInRange("ao_radius", DefaultAoRadius, MinAoRadius, MaxAoRadius); set => Put("ao_radius", System.Math.Clamp(value, MinAoRadius, MaxAoRadius)); }
@@ -396,7 +396,7 @@ public static class AppSettings
     // Read-side clamp remains defence-in-depth; schema migration removes invalid persisted values.
     public static int MsaaSamples { get => ClampAndroidMsaaSamples(Get("msaa_samples", SceneAppearanceDefaults.MsaaSamples)); set => Put("msaa_samples", ClampAndroidMsaaSamples(value)); }
 
-    // ── Selection ──────────────────────────────────────────────────────
+    // Selection
     public static bool ShowSelectionHighlight { get => Get("show_selection", true); set => Put("show_selection", value); }
     public static bool OutlineEnabled { get => Get("outline_enabled", true); set => Put("outline_enabled", value); }
     public static float OutlineR { get => Get("outline_r", 1.0f); set => Put("outline_r", Clamp01(value)); }
@@ -419,6 +419,7 @@ public static class AppSettings
     public static int MeasureModeSelectionIndex { get => GetIntInRange("measure_mode", MeasureModeFaceToFace, MeasureModePointToPoint, MeasureModeFaceToFace); set => Put("measure_mode", System.Math.Clamp(value, MeasureModePointToPoint, MeasureModeFaceToFace)); }
     public static int MeasureBoxModeSelectionIndex { get => GetIntInRange("measure_box_mode", MeasureBoxModeBestFit, MeasureBoxModeAxisAligned, MeasureBoxModeBestFit); set => Put("measure_box_mode", System.Math.Clamp(value, MeasureBoxModeAxisAligned, MeasureBoxModeBestFit)); }
     public static bool MeasureMultiMeasureEnabled { get => Get("measure_multi_enabled", true); set => Put("measure_multi_enabled", value); }
+    public static bool MeasureBoundingBoxAdditiveEnabled { get => Get("measure_bbox_additive_enabled", false); set => Put("measure_bbox_additive_enabled", value); }
     public static bool MeasureShowDeltaBreakdown { get => Get("measure_show_deltas", true); set => Put("measure_show_deltas", value); }
     public static bool MeasurePointSnapEnabled { get => Get("measure_snap_enabled", true); set => Put("measure_snap_enabled", value); }
     public static bool MeasureEndpointSnapEnabled { get => Get("measure_snap_endpoint_enabled", true); set => Put("measure_snap_endpoint_enabled", value); }
@@ -478,6 +479,7 @@ public static class AppSettings
     public static string CloudUserEmail { get => Get("cloud_user_email", DefaultCloudUserEmail); set => Put("cloud_user_email", value.Trim()); }
     public static string CloudDefaultProjectName { get => Get("cloud_default_project", DefaultCloudProjectName); set => Put("cloud_default_project", value.Trim()); }
     public static bool CloudRememberCredentials { get => Get("cloud_remember_credentials", false); set => Put("cloud_remember_credentials", value); }
+    public static bool CloudRememberPassword { get => Get("cloud_remember_password", false); set => Put("cloud_remember_password", value); }
 
     /// <summary>
     /// Populates <paramref name="appearance"/> with every persisted value in

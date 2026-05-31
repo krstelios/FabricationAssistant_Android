@@ -20,7 +20,7 @@ internal sealed class StyledTooltipController : Java.Lang.Object, View.IOnHoverL
     private readonly WeakReference<View> _anchor;
     private readonly Handler _handler = new(Looper.MainLooper!);
     private readonly Action<StyledTooltipController> _requestDismissOthers;
-    private readonly bool _useLongClick;
+    private bool _useLongClick;
     private PopupWindow? _popup;
     private string _text;
     private bool _disposed;
@@ -50,12 +50,18 @@ internal sealed class StyledTooltipController : Java.Lang.Object, View.IOnHoverL
             anchor.TooltipText = null;
     }
 
-    public void UpdateText(string text)
+    public void UpdateText(string text, bool useLongClick)
     {
         _text = text;
-        if (Build.VERSION.SdkInt >= BuildVersionCodes.O)
+        if (_anchor.TryGetTarget(out View? anchor))
         {
-            if (_anchor.TryGetTarget(out View? anchor))
+            if (useLongClick && !_useLongClick)
+            {
+                anchor.SetOnLongClickListener(this);
+                _useLongClick = true;
+            }
+
+            if (Build.VERSION.SdkInt >= BuildVersionCodes.O)
                 anchor.TooltipText = null;
         }
     }
@@ -220,7 +226,15 @@ internal sealed class StyledTooltipController : Java.Lang.Object, View.IOnHoverL
         catch
         {
             _popup = null;
-            popup.Dismiss();
+            try
+            {
+                popup.Dismiss();
+            }
+            catch
+            {
+                // Best effort cleanup after a failed show; the window may
+                // already have been rejected by the activity token.
+            }
         }
     }
 

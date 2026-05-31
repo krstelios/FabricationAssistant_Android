@@ -17,6 +17,8 @@ namespace FabricationAssistant.Rendering.Gles;
 /// </summary>
 public sealed class GlesPickRenderer : IDisposable
 {
+    private const InternalFormat PreferredDepthFormat = InternalFormat.DepthComponent32f;
+
     private readonly GL _gl;
     private readonly ShaderProgram _program;
     private uint _fbo;
@@ -26,9 +28,12 @@ public sealed class GlesPickRenderer : IDisposable
     private int _height;
     private string? _lastFramebufferError;
     private bool _loggedFramebufferUnavailable;
+    private string _lastDepthLogKey = "";
     private readonly float[] _sectionUniformScratch = new float[32];
     private HashSet<int> _xrayBackgroundNodeIdLookup = new();
     public IReadOnlyList<GlesSectionPlane> SectionPlanes { get; set; } = Array.Empty<GlesSectionPlane>();
+    public InternalFormat DepthFormat { get; private set; } = PreferredDepthFormat;
+    public int DepthBits => 32;
 
     public IReadOnlyList<int> XrayBackgroundNodeIds
     {
@@ -44,9 +49,10 @@ public sealed class GlesPickRenderer : IDisposable
     }
 
     /// <summary>
-    /// (Re)allocates the R32UI color texture and D24 depth renderbuffer at the
-    /// given size. Called from GlesViewportRenderer.OnSurfaceChanged so the
-    /// pick FBO tracks the main viewport size.
+    /// (Re)allocates the R32UI color texture and required D32F depth
+    /// renderbuffer at the given size. Called from
+    /// GlesViewportRenderer.OnSurfaceChanged so the pick FBO tracks the main
+    /// viewport size.
     /// </summary>
     public void Resize(int width, int height)
     {
@@ -55,66 +61,37 @@ public sealed class GlesPickRenderer : IDisposable
 
         DestroyResources();
 
-        _width = width;
-        _height = height;
-
         try
         {
-            _colorTexture = _gl.GenTexture();
-            _gl.BindTexture(TextureTarget.Texture2D, _colorTexture);
-            unsafe
+            string? lastFailure = null;
+            try
             {
-                _gl.TexImage2D(
-                    TextureTarget.Texture2D,
-                    level: 0,
-                    InternalFormat.R32ui,
-                    (uint)width,
-                    (uint)height,
-                    border: 0,
-                    PixelFormat.RedInteger,
-                    PixelType.UnsignedInt,
-                    pixels: (void*)0);
+                DrainGlErrors("pick depth allocation");
+                if (TryAllocateFramebuffer(width, height, PreferredDepthFormat, out lastFailure))
+                {
+                    _width = width;
+                    _height = height;
+                    DepthFormat = PreferredDepthFormat;
+                    _lastFramebufferError = null;
+                    _loggedFramebufferUnavailable = false;
+                    LogDepthSelection(width, height);
+                    return;
+                }
             }
-            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Nearest);
-            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Nearest);
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                lastFailure = ex.GetBaseException().Message;
+            }
+
             _gl.BindTexture(TextureTarget.Texture2D, 0);
-
-            _depthRb = _gl.GenRenderbuffer();
-            _gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, _depthRb);
-            _gl.RenderbufferStorage(
-                RenderbufferTarget.Renderbuffer,
-                InternalFormat.DepthComponent24,
-                (uint)width,
-                (uint)height);
             _gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, 0);
-
-            _fbo = _gl.GenFramebuffer();
-            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _fbo);
-            _gl.FramebufferTexture2D(
-                FramebufferTarget.Framebuffer,
-                FramebufferAttachment.ColorAttachment0,
-                TextureTarget.Texture2D,
-                _colorTexture,
-                level: 0);
-            _gl.FramebufferRenderbuffer(
-                FramebufferTarget.Framebuffer,
-                FramebufferAttachment.DepthAttachment,
-                RenderbufferTarget.Renderbuffer,
-                _depthRb);
-
-            var status = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
-            if (status != GLEnum.FramebufferComplete)
-            {
-                _lastFramebufferError = $"Pick FBO incomplete: 0x{(int)status:X4} ({width}x{height})";
-                _loggedFramebufferUnavailable = false;
-                Android.Util.Log.Error("FA.Pick", _lastFramebufferError);
-                _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
-                DestroyResources();
-                return;
-            }
-            _lastFramebufferError = null;
-            _loggedFramebufferUnavailable = false;
             _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+            DestroyResources();
+            _lastFramebufferError =
+                "Pick FBO incomplete with required DepthComponent32F"
+                + (string.IsNullOrWhiteSpace(lastFailure) ? "." : $": {lastFailure}");
+            _loggedFramebufferUnavailable = false;
+            Android.Util.Log.Error("FA.Pick", _lastFramebufferError);
         }
         catch
         {
@@ -124,6 +101,75 @@ public sealed class GlesPickRenderer : IDisposable
             DestroyResources();
             throw;
         }
+    }
+
+    private bool TryAllocateFramebuffer(
+        int width,
+        int height,
+        InternalFormat depthFormat,
+        out string? failureReason)
+    {
+        failureReason = null;
+        _colorTexture = _gl.GenTexture();
+        _gl.BindTexture(TextureTarget.Texture2D, _colorTexture);
+        unsafe
+        {
+            _gl.TexImage2D(
+                TextureTarget.Texture2D,
+                level: 0,
+                InternalFormat.R32ui,
+                (uint)width,
+                (uint)height,
+                border: 0,
+                PixelFormat.RedInteger,
+                PixelType.UnsignedInt,
+                pixels: (void*)0);
+        }
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Nearest);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Nearest);
+        _gl.BindTexture(TextureTarget.Texture2D, 0);
+
+        _depthRb = _gl.GenRenderbuffer();
+        _gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, _depthRb);
+        _gl.RenderbufferStorage(
+            RenderbufferTarget.Renderbuffer,
+            depthFormat,
+            (uint)width,
+            (uint)height);
+        _gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, 0);
+
+        _fbo = _gl.GenFramebuffer();
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _fbo);
+        _gl.FramebufferTexture2D(
+            FramebufferTarget.Framebuffer,
+            FramebufferAttachment.ColorAttachment0,
+            TextureTarget.Texture2D,
+            _colorTexture,
+            level: 0);
+        _gl.FramebufferRenderbuffer(
+            FramebufferTarget.Framebuffer,
+            FramebufferAttachment.DepthAttachment,
+            RenderbufferTarget.Renderbuffer,
+            _depthRb);
+
+        var status = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
+        var error = _gl.GetError();
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+        if (status == GLEnum.FramebufferComplete && error == GLEnum.NoError)
+            return true;
+
+        failureReason = $"format={depthFormat}, status=0x{(int)status:X4}, glError=0x{(int)error:X4}";
+        return false;
+    }
+
+    private void LogDepthSelection(int width, int height)
+    {
+        string key = $"{width}x{height}:{PreferredDepthFormat}";
+        if (key == _lastDepthLogKey)
+            return;
+
+        _lastDepthLogKey = key;
+        Android.Util.Log.Info("FA.Pick", $"Pick framebuffer depth={PreferredDepthFormat}, viewport={width}x{height}.");
     }
 
     /// <summary>

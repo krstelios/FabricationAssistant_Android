@@ -27,7 +27,7 @@ internal sealed class StyledTooltipRegistry : IDisposable
 
         if (_tooltips.TryGetValue(view, out StyledTooltipController? tooltip))
         {
-            tooltip.UpdateText(text);
+            tooltip.UpdateText(text, useLongClick);
             return;
         }
 

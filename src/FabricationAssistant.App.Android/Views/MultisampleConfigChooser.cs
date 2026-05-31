@@ -10,9 +10,12 @@ namespace FabricationAssistant.App.Android.Views;
 /// <summary>
 /// EGL config chooser for the default backbuffer. In this app it is always
 /// constructed with 0 samples (scene MSAA is done in the offscreen
-/// MsaaSceneFramebuffer, not the backbuffer), so it selects a single-sample
-/// RGB8 + Depth24 + Stencil8 config; the higher-sample fallbacks remain only
-/// for the parameterized maxSamples path. Replaces the simple
+/// MsaaSceneFramebuffer, not the backbuffer), so it selects a compatible
+/// single-sample RGB8 + Depth24 + Stencil8 config. The scene precision path is
+/// the required D32FS8 offscreen FBO; forcing a Depth32 EGL backbuffer prevents
+/// some Samsung/MediaTek drivers from creating the GLES context. The
+/// higher-sample fallbacks remain only for the parameterized maxSamples path.
+/// Replaces the simple
 /// SetEGLConfigChooser overload, which cannot request EGL_SAMPLE_BUFFERS /
 /// EGL_SAMPLES.
 /// </summary>
@@ -22,6 +25,7 @@ public sealed class MultisampleConfigChooser : Java.Lang.Object, GLSurfaceView.I
     // SetEGLContextClientVersion(3). Not in EGL10 constants, but the value
     // is stable across implementations.
     private const int EglOpenGlEs3Bit = 0x0040;
+    private const int BackbufferDepthSize = 24;
 
     private readonly int _maxSamples;
 
@@ -62,7 +66,7 @@ public sealed class MultisampleConfigChooser : Java.Lang.Object, GLSurfaceView.I
             IEGL10.EglGreenSize, 8,
             IEGL10.EglBlueSize, 8,
             IEGL10.EglAlphaSize, 0,
-            IEGL10.EglDepthSize, 24,
+            IEGL10.EglDepthSize, BackbufferDepthSize,
             IEGL10.EglStencilSize, 8,
             IEGL10.EglRenderableType, EglOpenGlEs3Bit,
             IEGL10.EglSampleBuffers, samples > 0 ? 1 : 0,
@@ -101,7 +105,7 @@ public sealed class MultisampleConfigChooser : Java.Lang.Object, GLSurfaceView.I
         => GetConfigAttrib(egl, display, config, IEGL10.EglRedSize) >= 8
            && GetConfigAttrib(egl, display, config, IEGL10.EglGreenSize) >= 8
            && GetConfigAttrib(egl, display, config, IEGL10.EglBlueSize) >= 8
-           && GetConfigAttrib(egl, display, config, IEGL10.EglDepthSize) >= 24
+           && GetConfigAttrib(egl, display, config, IEGL10.EglDepthSize) >= BackbufferDepthSize
            && GetConfigAttrib(egl, display, config, IEGL10.EglStencilSize) >= 8;
 
     private static int GetConfigAttrib(IEGL10 egl, EGLDisplay display, EGLConfig config, int attribute)

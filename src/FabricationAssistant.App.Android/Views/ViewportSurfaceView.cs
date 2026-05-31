@@ -288,8 +288,9 @@ public sealed class ViewportSurfaceView : GLSurfaceView
         // handle in the scene (GpuMesh VBOs, FBOs, textures) becomes
         // invalid. Set BEFORE SetEGLConfigChooser per GLSurfaceView contract.
         PreserveEGLContextOnPause = true;
-        // Default backbuffer: RGB8 + Depth24 + Stencil8, single-sample.
-        // MSAA is handled by the renderer's offscreen FBO; see Plan 3B
+        // Default backbuffer: RGB8 + Depth24 + Stencil8 for EGL context
+        // compatibility. Scene depth precision comes from the renderer's
+        // offscreen D32FS8 FBO; see Plan 3B
         // (MsaaSceneFramebuffer). The simple integer overload of
         // SetEGLConfigChooser cannot request EGL_STENCIL_SIZE, so we still
         // use MultisampleConfigChooser - just at 0 samples.

@@ -60,6 +60,26 @@ public sealed class AndroidEdgeSnapServiceTests
     }
 
     [Fact]
+    public void TrySnapPrepared_WhenCacheIsEmpty_ReturnsNull()
+    {
+        EdgeSnapResult? result = TrySnapPreparedAtX(0.5, Edges((0, 0), (1, 0)));
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void TrySnapPrepared_AfterPrepare_UsesCachedModel()
+    {
+        float[] edges = Edges((0, 0), (1, 0));
+        _service.Prepare(edges);
+
+        EdgeSnapResult? result = TrySnapPreparedAtX(0.5, edges);
+
+        Assert.NotNull(result);
+        AssertClose(new Vector3d(0.5, 0, 0), result.Value.WorldPoint);
+    }
+
+    [Fact]
     public void TrySnap_WhenVisibilityFilterRejectsTarget_ReturnsNull()
     {
         Func<EdgeSnapVisibilityRequest, bool>? previous = EdgeSnapService.VisibilityFilter;
@@ -113,6 +133,29 @@ public sealed class AndroidEdgeSnapServiceTests
 
         Assert.NotNull(result);
         AssertClose(new Vector3d(0.03, 1, 0), result.Value.WorldPoint, precision: 7);
+    }
+
+    [Fact]
+    public void TrySnap_WhenBestVisibilityCandidatesAreHidden_StillScansVisibleCandidate()
+    {
+        EdgeSnapService.MidpointSnapEnabled = false;
+        EdgeSnapService.VisibilityFilter = request => request.WorldPoint.X >= 0.02 - 1e-9;
+
+        EdgeSnapResult? result = _service.TrySnap(
+            Edges(
+                (0f, 0f), (0f, 10f),
+                (0.005f, 0f), (0.005f, 10f),
+                (0.010f, 0f), (0.010f, 10f),
+                (0.015f, 0f), (0.015f, 10f),
+                (0.020f, 0f), (0.020f, 10f)),
+            Matrix4d.Identity,
+            new Vector3d(0, 0, 1),
+            new Vector3d(0, 0, -1),
+            EdgeTolerance,
+            EndpointTolerance);
+
+        Assert.NotNull(result);
+        AssertClose(new Vector3d(0.02, 0, 0), result.Value.WorldPoint, precision: 7);
     }
 
     [Fact]
@@ -532,6 +575,15 @@ public sealed class AndroidEdgeSnapServiceTests
 
     private EdgeSnapResult? TrySnapAtX(double x, float[] edgePositions)
         => _service.TrySnap(
+            edgePositions,
+            Matrix4d.Identity,
+            new Vector3d(x, 1, 0),
+            new Vector3d(0, -1, 0),
+            EdgeTolerance,
+            EndpointTolerance);
+
+    private EdgeSnapResult? TrySnapPreparedAtX(double x, float[] edgePositions)
+        => _service.TrySnapPrepared(
             edgePositions,
             Matrix4d.Identity,
             new Vector3d(x, 1, 0),

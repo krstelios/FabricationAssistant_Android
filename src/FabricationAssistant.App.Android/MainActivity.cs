@@ -94,6 +94,7 @@ public sealed class MainActivity : AppCompatActivity
     private const int MeasurementDeleteButtonGapDp = 6;
     private const float MeasurementTouchHitSlopDp = 12f;
     private const int SectionCornerButtonSizeDp = 28;
+    private const long ToolbarDuplicateActivationGuardMs = 350;
     private const long BodyMovePromptToastDebounceMs = 1500;
     private const long SpenPalmToggleToastDebounceMs = 750;
     private const int AndroidStateEnabled = 16842910;
@@ -112,6 +113,7 @@ public sealed class MainActivity : AppCompatActivity
     private SafFilePicker? _picker;
     private ImportPipeline? _import;
     private CloudApiClient? _cloudClient;
+    private CloudSecureStore? _cloudSecureStore;
     private CloudNotificationClient? _cloudNotifications;
     private AndroidViewerStateSaveService? _viewerStateSave;
     private CameraState? _camera;
@@ -167,11 +169,18 @@ public sealed class MainActivity : AppCompatActivity
     private float _genericMousePressedRawY;
     private long _lastMouseTouchDownTime = -1;
     private long _lastMouseTouchUpDownTime = -1;
+    private View? _navRailTouchPressedView;
+    private float _navRailTouchPressedRawX;
+    private float _navRailTouchPressedRawY;
+    private int _lastNavRailActivationViewId = -1;
+    private long _lastNavRailActivationDownTime = -1;
+    private long _lastNavRailActivationUptimeMs = -1;
     private long _lastSpenPalmToggleToastMs;
     private MaterialToolbar? _topAppBar;
     private View? _navRail;
     private View? _navRailDivider;
     private View? _bottomAppBar;
+    private View? _bottomToolScroller;
     private FrameLayout? _leftToolPanel;
     private View? _leftToolPanelDivider;
     private MaterialButton? _navOpenButton;
@@ -205,6 +214,7 @@ public sealed class MainActivity : AppCompatActivity
     private MaterialButton? _measureFaceToPointButton;
     private MaterialButton? _measureFaceToFaceButton;
     private MaterialButton? _measureBoundingBoxButton;
+    private SwitchMaterial? _measureBoundingBoxAdditiveSwitch;
     private SwitchMaterial? _measureEndpointSnapSwitch;
     private SwitchMaterial? _measureMidpointSnapSwitch;
     private MaterialButton? _measureClearButton;
@@ -248,6 +258,10 @@ public sealed class MainActivity : AppCompatActivity
     private bool _isoIsPerspective = true;
     private bool _measureBoundingBoxBusy;
     private bool _measureBoundingBoxAwaitingSelection;
+    private int _measureBoundingBoxSelectionVersion;
+    private readonly HashSet<int> _measureBoundingBoxAdditiveNodeIds = new();
+    private readonly HashSet<int> _measureBoundingBoxPendingAdditiveNodeIds = new();
+    private MeasurementId? _measureBoundingBoxAdditiveMeasurementId;
     private MeasureToolMode _measureBoundingBoxRestoreMode = MeasureToolMode.PointToPoint;
     private LeftToolPanelKind _leftToolPanelKind = LeftToolPanelKind.None;
     private int _leftToolPanelAnimationVersion;
@@ -268,6 +282,9 @@ public sealed class MainActivity : AppCompatActivity
     private bool _bottomAppBarBaseBottomMarginCaptured;
     private int _lastNavigationBarInsetBottomPx;
     private MeasureToolMode _lastInteractiveMeasureMode = MeasureToolMode.PointToPoint;
+    private MeasureToolMode _lastMeasureModeActivationMode = MeasureToolMode.None;
+    private long _lastMeasureModeActivationMs;
+    private bool _measureBoundingBoxAdditiveSwitchUpdating;
     private SectionSubMode _activeSectionSubMode = SectionSubMode.None;
     private readonly List<Vector3d> _sectionCustomPoints = new();
     private Vector3d? _sectionHoverPoint;
@@ -413,6 +430,7 @@ public sealed class MainActivity : AppCompatActivity
 
         _services = AppServices.Build(ApplicationContext!);
         _import = _services.GetRequiredService<ImportPipeline>();
+        _cloudSecureStore = _services.GetRequiredService<CloudSecureStore>();
         _cloudClient = _services.GetRequiredService<CloudApiClient>();
         _cloudClient.SessionChanged += OnCloudSessionChanged;
         _cloudNotifications = _services.GetRequiredService<CloudNotificationClient>();
@@ -570,6 +588,7 @@ public sealed class MainActivity : AppCompatActivity
         _saveButton = FindViewById<MaterialButton>(Resource.Id.saveButton);
         if (_saveButton is not null)
             _saveButton.Click += OnSaveClicked;
+        ConfigureNavRailButtons();
         UpdateCloudAccountButton();
         UpdateUndoRedoButtons();
         UpdateSaveButton();
@@ -733,8 +752,11 @@ public sealed class MainActivity : AppCompatActivity
         _topAppBar = FindTopAppBar();
         UpdateAppTitle();
         _navRail = FindViewById<View>(Resource.Id.navRail);
+        ConfigureNavRailContainer();
         _navRailDivider = FindViewById<View>(Resource.Id.navRailDivider);
         _bottomAppBar = FindViewById<View>(Resource.Id.bottomAppBar);
+        _bottomToolScroller = FindViewById<View>(Resource.Id.bottomToolScroller);
+        ConfigureNonFocusableChromeContainer(_bottomToolScroller);
         CaptureBottomAppBarBaseBottomMargin();
         _leftToolPanel = FindViewById<FrameLayout>(Resource.Id.leftToolPanel);
         _leftToolPanelDivider = FindViewById<View>(Resource.Id.leftToolPanelDivider);
@@ -1122,6 +1144,10 @@ public sealed class MainActivity : AppCompatActivity
     {
         RunOnUiThread(() =>
         {
+            // S1-2: a session-change callback can be marshaled just before the handler
+            // detaches; bail before touching torn-down views/dialogs.
+            if (_isDestroyed)
+                return;
             if (_cloudClient?.IsSignedIn != true)
             {
                 _cloudReloadAvailablePackageId = null;
@@ -1159,6 +1185,9 @@ public sealed class MainActivity : AppCompatActivity
         {
             RunOnUiThread(() =>
             {
+                // S1-2: ignore a revocation marshaled after the Activity is destroyed.
+                if (_isDestroyed)
+                    return;
                 BeginCloudSessionEnded(
                     "Cloud session ended",
                     "Your FA Cloud session was revoked. Sign in again to continue.",
@@ -1272,6 +1301,29 @@ public sealed class MainActivity : AppCompatActivity
         if (_cloudClient is not { } cloudClient || _isDestroyed)
             return;
 
+        string initialEmail = AppSettings.CloudUserEmail;
+        string rememberedPassword = "";
+        bool rememberPasswordInitial = AppSettings.CloudRememberPassword;
+        if (rememberPasswordInitial && !string.IsNullOrWhiteSpace(initialEmail))
+        {
+            try
+            {
+                string serverUrl = CloudApiClient.NormalizeServerUrl(AppSettings.CloudServerUrl);
+                rememberedPassword = _cloudSecureStore?.LoadRememberedPassword(serverUrl, initialEmail) ?? "";
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+            {
+                global::Android.Util.Log.Warn("FA.Cloud.Auth", "Could not load remembered cloud password: " + ex.GetBaseException().Message);
+                rememberedPassword = "";
+            }
+
+            if (string.IsNullOrEmpty(rememberedPassword))
+            {
+                AppSettings.CloudRememberPassword = false;
+                rememberPasswordInitial = false;
+            }
+        }
+
         var dialog = new global::Android.App.Dialog(this);
         dialog.RequestWindowFeature((int)WindowFeatures.NoTitle);
         dialog.Window?.SetBackgroundDrawable(new ColorDrawable(Color.Transparent));
@@ -1331,13 +1383,34 @@ public sealed class MainActivity : AppCompatActivity
 
         root.AddView(header);
 
-        EditText emailInput = AddCloudDialogField(root, "User / email", AppSettings.CloudUserEmail, isPassword: false, hint: "user@example.com");
+        EditText emailInput = AddCloudDialogField(root, "User / email", initialEmail, isPassword: false, hint: "user@example.com");
         EditText passwordInput = AddCloudDialogField(
             root,
             "Password",
-            "",
+            rememberedPassword,
             isPassword: true,
             hint: "Password");
+        var rememberPasswordCheck = new CheckBox(this)
+        {
+            Text = "Remember my password",
+            Checked = rememberPasswordInitial,
+        };
+        rememberPasswordCheck.SetTextColor(GetColorCompat(Resource.Color.fa_text_primary));
+        rememberPasswordCheck.SetTextSize(ComplexUnitType.Px, Dp(13));
+        rememberPasswordCheck.ButtonTintList = ColorStateList.ValueOf(GetColorCompat(Resource.Color.fa_accent_500));
+        rememberPasswordCheck.ContentDescription = rememberPasswordCheck.Checked
+            ? "Remember my password, on"
+            : "Remember my password, off";
+        rememberPasswordCheck.CheckedChange += (_, e) =>
+        {
+            rememberPasswordCheck.ContentDescription = e.IsChecked
+                ? "Remember my password, on"
+                : "Remember my password, off";
+        };
+        SetMarginTop(rememberPasswordCheck, Dp(4));
+        root.AddView(rememberPasswordCheck, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MatchParent,
+            Dp(42)));
         TextView forgotPassword = CreateCloudDialogLinkButton("Forgot password?");
         var forgotParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, Dp(36));
         forgotParams.Gravity = GravityFlags.End;
@@ -1416,6 +1489,7 @@ public sealed class MainActivity : AppCompatActivity
             emailInput.Enabled = !busy;
             passwordInput.Enabled = !busy;
             projectInput.Enabled = !busy;
+            rememberPasswordCheck.Enabled = !busy;
             rememberCheck.Enabled = !busy;
         }
 
@@ -1465,6 +1539,9 @@ public sealed class MainActivity : AppCompatActivity
                 string email = emailInput.Text?.Trim() ?? "";
                 string password = passwordInput.Text ?? "";
                 string project = projectInput.Text?.Trim() ?? "";
+                bool rememberPassword = rememberPasswordCheck.Checked;
+                if (!rememberPassword)
+                    UpdateCloudRememberedPassword(AppSettings.CloudServerUrl, email, password, rememberPassword: false);
                 CloudSignInOutcome outcome = await cloudClient.SignInAsync(AppSettings.CloudServerUrl, email, password, rememberCheck.Checked, _activityDestroyCts.Token);
                 if (_isDestroyed || !dialog.IsShowing)
                     return;
@@ -1481,10 +1558,11 @@ public sealed class MainActivity : AppCompatActivity
                 if (outcome.Kind == CloudSignInOutcomeKind.TotpRequired)
                 {
                     dialog.Dismiss();
-                    ShowCloudTotpSignInDialog(outcome, project);
+                    ShowCloudTotpSignInDialog(outcome, project, rememberPassword, password);
                     return;
                 }
 
+                UpdateCloudRememberedPassword(outcome.ServerUrl, outcome.Email, password, rememberPassword);
                 subtitle.Text = email;
                 subtitle.SetTextColor(GetColorCompat(Resource.Color.fa_accent_500));
                 status.Text = "Signed in as " + email;
@@ -1510,6 +1588,10 @@ public sealed class MainActivity : AppCompatActivity
             }
         };
 
+        DialogKeyboard.ConfirmOnEnter(emailInput, signIn);
+        DialogKeyboard.ConfirmOnEnter(passwordInput, signIn);
+        DialogKeyboard.ConfirmOnEnter(projectInput, signIn);
+
         signOut.Click += async (_, _) =>
         {
             SetBusy(true);
@@ -1532,7 +1614,11 @@ public sealed class MainActivity : AppCompatActivity
         };
     }
 
-    private void ShowCloudTotpSignInDialog(CloudSignInOutcome challenge, string project)
+    private void ShowCloudTotpSignInDialog(
+        CloudSignInOutcome challenge,
+        string project,
+        bool rememberPassword,
+        string passwordToRemember)
     {
         if (_cloudClient is not { } cloudClient || _isDestroyed)
             return;
@@ -1586,6 +1672,7 @@ public sealed class MainActivity : AppCompatActivity
                     return;
                 if (!string.IsNullOrWhiteSpace(project))
                     AppSettings.CloudDefaultProjectName = project;
+                UpdateCloudRememberedPassword(challenge.ServerUrl, challenge.Email, passwordToRemember, rememberPassword);
                 Toast.MakeText(this, "Cloud sign-in complete", ToastLength.Short)?.Show();
                 dialog.Dismiss();
                 RefreshCloudPanelAfterAuthChange();
@@ -1603,6 +1690,8 @@ public sealed class MainActivity : AppCompatActivity
                     SetBusy(false);
             }
         };
+
+        DialogKeyboard.ConfirmOnEnter(codeInput, verify);
     }
 
     private void ShowCloudTotpEnrollmentDialog(CloudSignInOutcome enrollment, string project)
@@ -1758,6 +1847,8 @@ public sealed class MainActivity : AppCompatActivity
                     SetBusy(false);
             }
         };
+
+        DialogKeyboard.ConfirmOnEnter(codeInput, verify);
     }
 
     private void ShowCloudTotpBackupCodesDialog(IReadOnlyList<string> backupCodes)
@@ -1921,6 +2012,10 @@ public sealed class MainActivity : AppCompatActivity
                     SetBusy(false);
             }
         };
+
+        DialogKeyboard.ConfirmOnEnter(emailInput, next);
+        DialogKeyboard.ConfirmOnEnter(newPasswordInput, next);
+        DialogKeyboard.ConfirmOnEnter(confirmPasswordInput, next);
     }
 
     private void ShowCloudPasswordResetCodeDialog(CloudPasswordResetChallenge challenge, string newPassword)
@@ -2042,6 +2137,8 @@ public sealed class MainActivity : AppCompatActivity
                     SetBusy(false);
             }
         };
+
+        DialogKeyboard.ConfirmOnEnter(codeInput, reset);
     }
 
     private void ShowCloudPasswordResetSuccessDialog(string email)
@@ -2201,6 +2298,51 @@ public sealed class MainActivity : AppCompatActivity
         else
         {
             _cloudPanel?.Refresh();
+        }
+    }
+
+    private void UpdateCloudRememberedPassword(string serverUrl, string email, string password, bool rememberPassword)
+    {
+        AppSettings.CloudRememberPassword = rememberPassword;
+        if (_cloudSecureStore is not { } secureStore)
+        {
+            AppSettings.CloudRememberPassword = false;
+            return;
+        }
+
+        if (!rememberPassword)
+        {
+            secureStore.ClearRememberedPassword();
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(email) || string.IsNullOrEmpty(password))
+        {
+            AppSettings.CloudRememberPassword = false;
+            secureStore.ClearRememberedPassword();
+            return;
+        }
+
+        try
+        {
+            string normalizedServerUrl = CloudApiClient.NormalizeServerUrl(serverUrl);
+            secureStore.SaveRememberedPassword(normalizedServerUrl, email, password);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            AppSettings.CloudRememberPassword = false;
+            try
+            {
+                secureStore.ClearRememberedPassword();
+            }
+            catch (Exception clearEx) when (clearEx is not OutOfMemoryException and not StackOverflowException)
+            {
+                global::Android.Util.Log.Warn("FA.Cloud.Auth", "Could not clear remembered cloud password after save failure: " + clearEx.GetBaseException().Message);
+            }
+
+            global::Android.Util.Log.Warn("FA.Cloud.Auth", "Could not save remembered cloud password: " + ex.GetBaseException().Message);
+            if (!_isDestroyed)
+                Toast.MakeText(this, "Password was not saved securely", ToastLength.Short)?.Show();
         }
     }
 
@@ -2416,24 +2558,35 @@ public sealed class MainActivity : AppCompatActivity
             else
                 await SaveLocalModelAsync(archivePath, snapshot, cts.Token, selectedLocalSaveDestination).ConfigureAwait(true);
 
-            Toast.MakeText(this, "Model saved", ToastLength.Short)?.Show();
+            if (!_isDestroyed)
+                Toast.MakeText(this, "Model saved", ToastLength.Short)?.Show();
         }
         catch (System.OperationCanceledException) when (cts.IsCancellationRequested)
         {
         }
         catch (Exception ex)
         {
-            ShowError("Save failed", ex.GetBaseException().Message);
+            if (!_isDestroyed)
+                ShowError("Save failed", ex.GetBaseException().Message);
         }
         finally
         {
+            // S1-1: the save awaits with ConfigureAwait(true), so this finally resumes
+            // on the UI thread. OnDestroy cancels _saveCts, but the main looper keeps
+            // running past teardown, so a continuation can still land on a destroyed
+            // Activity. The bookkeeping below is UI-free and must always run; the UI
+            // calls would hit a torn-down window (WindowManager$BadTokenException) or
+            // no-op on detached views, so skip them once destroyed.
             if (ReferenceEquals(_saveCts, cts))
                 _saveCts = null;
             _isSaveInProgress = false;
             cts.Dispose();
-            HideLoading();
-            UpdateSaveButton();
-            UpdateUndoRedoButtons();
+            if (!_isDestroyed)
+            {
+                HideLoading();
+                UpdateSaveButton();
+                UpdateUndoRedoButtons();
+            }
         }
     }
 
@@ -3569,7 +3722,7 @@ public sealed class MainActivity : AppCompatActivity
             return;
         }
 
-        if (_activeModalTool != AndroidModalTool.Select)
+        if (_activeModalTool != AndroidModalTool.Select && !IsBoundingBoxSelectionModeActive())
             ActivateSelectTool("model explorer opened");
 
         _modelExplorerPanel ??= new AndroidModelExplorerPanel(() => _runtimeScene)
@@ -3592,7 +3745,7 @@ public sealed class MainActivity : AppCompatActivity
         if (scene is null || _modelExplorerPanel is null)
             return;
 
-        if (_activeModalTool != AndroidModalTool.Select)
+        if (_activeModalTool != AndroidModalTool.Select && !IsBoundingBoxSelectionModeActive())
             ActivateSelectTool("model explorer selection");
 
         int[] sceneNodeIds;
@@ -3621,6 +3774,9 @@ public sealed class MainActivity : AppCompatActivity
             scrollModelExplorerToSelection: false,
             explicitPresentedId: presentedNodeId,
             expandModelExplorerPath: false);
+
+        if (IsBoundingBoxSelectionModeActive())
+            _ = CommitBoundingBoxForNodesAsync(nodeIds, _measureBoundingBoxSelectionVersion, "model explorer selection");
     }
 
     private void SetModelExplorerNodeVisibility(AndroidModelExplorerNode node, bool isVisible)
@@ -3746,7 +3902,10 @@ public sealed class MainActivity : AppCompatActivity
             return;
         }
 
-        SelectNodesFromBom(scene, nodeIds);
+        bool commitBoundingBoxSelection =
+            action == AndroidBomPanelAction.Select
+            && IsBoundingBoxSelectionModeActive();
+        SelectNodesFromBom(scene, nodeIds, commitBoundingBoxSelection);
         ZoomToSelection();
 
         if (action == AndroidBomPanelAction.Isolate)
@@ -3911,13 +4070,16 @@ public sealed class MainActivity : AppCompatActivity
         => !string.IsNullOrWhiteSpace(path)
            && candidates.Contains(path, StringComparer.Ordinal);
 
-    private void SelectNodesFromBom(Scene scene, IReadOnlyList<int> nodeIds)
+    private void SelectNodesFromBom(Scene scene, IReadOnlyList<int> nodeIds, bool commitBoundingBoxSelection = false)
     {
-        if (_activeModalTool != AndroidModalTool.Select)
+        if (_activeModalTool != AndroidModalTool.Select && !commitBoundingBoxSelection)
             ActivateSelectTool("bom selection");
 
         ClearSelectedMeasurement("bom selection");
         ReplaceSelectedNodeIds(scene, nodeIds, scrollModelExplorerToSelection: true);
+
+        if (commitBoundingBoxSelection)
+            _ = CommitBoundingBoxForNodesAsync(nodeIds, _measureBoundingBoxSelectionVersion, "bom selection");
     }
 
     private void SyncModelExplorerSelectionFromViewport(bool scrollToSelection)
@@ -4345,6 +4507,296 @@ public sealed class MainActivity : AppCompatActivity
         SetSelected(_navSpenPalmButton, AppSettings.SpenPalmRejectionEnabled);
     }
 
+    private void ConfigureNavRailButtons()
+    {
+        ConfigureNavRailContainer();
+
+        foreach (MaterialButton? button in NavRailButtons())
+        {
+            if (button is null)
+                continue;
+
+            button.Focusable = false;
+            button.FocusableInTouchMode = false;
+            button.Pressed = false;
+            button.Activated = false;
+            button.Hovered = false;
+            button.SetOnTouchListener(new NavRailButtonTouchListener(this));
+            button.SetOnGenericMotionListener(new NavRailButtonGenericMotionListener(this));
+        }
+
+        UpdateLeftToolPanelButtonStates();
+        ClearNavRailTransientButtonState();
+    }
+
+    private void ConfigureNavRailContainer()
+    {
+        ConfigureNonFocusableChromeContainer(_navRail);
+        if (_navRail is ViewGroup navRailGroup)
+            navRailGroup.DescendantFocusability = DescendantFocusability.AfterDescendants;
+    }
+
+    private static void ConfigureNonFocusableChromeContainer(View? view)
+    {
+        if (view is null)
+            return;
+
+        view.Focusable = false;
+        view.FocusableInTouchMode = false;
+        view.Pressed = false;
+        view.Hovered = false;
+        if (Build.VERSION.SdkInt >= BuildVersionCodes.O)
+            view.DefaultFocusHighlightEnabled = false;
+        view.ClearFocus();
+        view.JumpDrawablesToCurrentState();
+    }
+
+    private IEnumerable<MaterialButton?> NavRailButtons()
+    {
+        yield return _navOpenButton;
+        yield return _navRecentButton;
+        yield return _navCloudButton;
+        yield return _saveButton;
+        yield return _navModelExplorerButton;
+        yield return _navBomButton;
+        yield return _navBomFlatButton;
+        yield return _navSpenPalmButton;
+        yield return _navSettingsButton;
+    }
+
+    private void ConfigureBottomToolbarButtons()
+    {
+        ConfigureNonFocusableChromeContainer(_bottomToolScroller);
+
+        foreach (MaterialButton? button in BottomToolbarButtons())
+        {
+            if (button is null)
+                continue;
+
+            button.Focusable = false;
+            button.FocusableInTouchMode = false;
+            button.Pressed = false;
+            button.Activated = false;
+            button.Hovered = false;
+            if (Build.VERSION.SdkInt >= BuildVersionCodes.O)
+                button.DefaultFocusHighlightEnabled = false;
+            button.ClearFocus();
+            button.JumpDrawablesToCurrentState();
+        }
+    }
+
+    private IEnumerable<MaterialButton?> BottomToolbarButtons()
+    {
+        yield return _toolSelectButton;
+        yield return _toolMoveButton;
+        yield return _toolZoomWindowButton;
+        yield return _toolZoomSelectedButton;
+        yield return _toolScanQrButton;
+        yield return _toolFitViewButton;
+        yield return _toolViewPresetsButton;
+        yield return _toolSectionsButton;
+        yield return _toolMeasureButton;
+        yield return _toolExplodeButton;
+        yield return _toolHideButton;
+        yield return _toolShowAllButton;
+        yield return _toolIsolateButton;
+        yield return _toolIsolateXrayButton;
+        yield return _toolRenderModesButton;
+        yield return _toolFullscreenButton;
+        yield return _measureBackButton;
+        yield return _measurePointToPointButton;
+        yield return _measureFaceToPointButton;
+        yield return _measureFaceToFaceButton;
+        yield return _measureBoundingBoxButton;
+        yield return _measureClearButton;
+        yield return _viewPresetReturnButton;
+        yield return _viewIsoButton;
+        yield return _viewFrontButton;
+        yield return _viewRightButton;
+        yield return _viewLeftButton;
+        yield return _viewTopButton;
+        yield return _viewBottomButton;
+        yield return _viewBackButton;
+        yield return _viewResetButton;
+        yield return _sectionBackButton;
+        yield return _sectionXButton;
+        yield return _sectionYButton;
+        yield return _sectionZButton;
+        yield return _sectionCustomButton;
+        yield return _sectionClearButton;
+        yield return _explodeBackButton;
+        yield return _renderModeBackButton;
+        yield return _renderModeShadedButton;
+        yield return _renderModeWireframeButton;
+        yield return _renderModeShadedEdgesButton;
+        yield return _renderModeClayButton;
+    }
+
+    private void ClearBottomToolbarTransientButtonState()
+    {
+        _bottomToolScroller?.ClearFocus();
+
+        foreach (MaterialButton? button in BottomToolbarButtons())
+        {
+            if (button is null)
+                continue;
+
+            button.Pressed = false;
+            button.Hovered = false;
+            button.ClearFocus();
+            button.JumpDrawablesToCurrentState();
+        }
+    }
+
+    private void ClearNavRailTransientButtonState()
+    {
+        ClearNavRailTouchPress();
+        ClearGenericMousePress();
+        if (_navRail is not null)
+        {
+            _navRail.Pressed = false;
+            _navRail.Hovered = false;
+        }
+
+        _navRail?.ClearFocus();
+        _bottomToolScroller?.ClearFocus();
+
+        foreach (MaterialButton? button in NavRailButtons())
+        {
+            if (button is null)
+                continue;
+
+            button.Pressed = false;
+            button.Hovered = false;
+            button.ClearFocus();
+            button.JumpDrawablesToCurrentState();
+        }
+    }
+
+    private bool HandleNavRailButtonTouch(View? view, MotionEvent? motionEvent)
+    {
+        if (view is null || motionEvent is null || !view.Enabled)
+            return false;
+
+        switch (motionEvent.ActionMasked)
+        {
+            case MotionEventActions.Down:
+                ClearNavRailTouchPress();
+                ClearGenericMousePress();
+                _bottomToolScroller?.ClearFocus();
+                _navRailTouchPressedView = view;
+                _navRailTouchPressedRawX = motionEvent.RawX;
+                _navRailTouchPressedRawY = motionEvent.RawY;
+                view.Pressed = true;
+                view.Hovered = false;
+                return true;
+
+            case MotionEventActions.Move:
+                if (ReferenceEquals(_navRailTouchPressedView, view))
+                    view.Pressed = IsScreenPointInsideView(view, motionEvent.RawX, motionEvent.RawY);
+                return _navRailTouchPressedView is not null;
+
+            case MotionEventActions.Up:
+                bool shouldPerformClick =
+                    ReferenceEquals(_navRailTouchPressedView, view)
+                    && IsScreenPointInsideView(view, motionEvent.RawX, motionEvent.RawY)
+                    && IsWithinNavRailTouchSlop(motionEvent.RawX, motionEvent.RawY);
+                ClearNavRailTouchPress();
+                ClearGenericMousePress();
+                view.Hovered = false;
+                if (shouldPerformClick)
+                    PerformNavRailButtonClick(view, motionEvent.DownTime, "touch");
+                return true;
+
+            case MotionEventActions.Cancel:
+                ClearNavRailTouchPress();
+                ClearGenericMousePress();
+                view.Hovered = false;
+                return true;
+
+            default:
+                return _navRailTouchPressedView is not null;
+        }
+    }
+
+    private bool HandleNavRailButtonGenericMotion(View? view, MotionEvent? motionEvent)
+    {
+        if (view is null || motionEvent is null || !IsMousePointerEvent(motionEvent))
+            return false;
+
+        if (IsPrimaryMouseButtonPress(motionEvent))
+        {
+            ClearGenericMousePress();
+            _genericMousePressedView = view;
+            _genericMousePressedDownTime = motionEvent.DownTime;
+            _genericMousePressedRawX = motionEvent.RawX;
+            _genericMousePressedRawY = motionEvent.RawY;
+            view.Pressed = true;
+            view.Hovered = false;
+            return true;
+        }
+
+        if (motionEvent.ActionMasked == MotionEventActions.ButtonRelease)
+        {
+            bool shouldPerformClick =
+                ReferenceEquals(_genericMousePressedView, view)
+                && IsScreenPointInsideView(view, motionEvent.RawX, motionEvent.RawY)
+                && IsWithinMouseClickSlop(motionEvent.RawX, motionEvent.RawY);
+            ClearGenericMousePress();
+            view.Hovered = false;
+            if (shouldPerformClick)
+                PerformNavRailButtonClick(view, motionEvent.DownTime, "generic");
+            return shouldPerformClick;
+        }
+
+        if (motionEvent.ActionMasked == MotionEventActions.Cancel)
+        {
+            ClearGenericMousePress();
+            view.Hovered = false;
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool IsWithinNavRailTouchSlop(float rawX, float rawY)
+    {
+        int slop = ViewConfiguration.Get(this)?.ScaledTouchSlop ?? Dp(8);
+        float dx = rawX - _navRailTouchPressedRawX;
+        float dy = rawY - _navRailTouchPressedRawY;
+        return dx * dx + dy * dy <= slop * slop;
+    }
+
+    private void ClearNavRailTouchPress()
+    {
+        if (_navRailTouchPressedView is { } pressedView)
+            pressedView.Pressed = false;
+
+        _navRailTouchPressedView = null;
+        _navRailTouchPressedRawX = 0f;
+        _navRailTouchPressedRawY = 0f;
+    }
+
+    private void PerformNavRailButtonClick(View view, long downTime, string source)
+    {
+        long now = SystemClock.UptimeMillis();
+        int viewId = view.Id;
+        bool duplicate =
+            _lastNavRailActivationViewId == viewId
+            && (_lastNavRailActivationDownTime == downTime
+                || (_lastNavRailActivationUptimeMs >= 0
+                    && now - _lastNavRailActivationUptimeMs >= 0
+                    && now - _lastNavRailActivationUptimeMs <= 150));
+
+        if (duplicate)
+            return;
+
+        _lastNavRailActivationViewId = viewId;
+        _lastNavRailActivationDownTime = downTime;
+        _lastNavRailActivationUptimeMs = now;
+        view.PerformClick();
+    }
+
     private void UpdateUndoRedoButtons()
     {
         bool importBusy = IsImportUiBusy();
@@ -4584,6 +5036,7 @@ public sealed class MainActivity : AppCompatActivity
         _measureFaceToPointButton = FindViewById<MaterialButton>(Resource.Id.measureFaceToPoint);
         _measureFaceToFaceButton = FindViewById<MaterialButton>(Resource.Id.measureFaceToFace);
         _measureBoundingBoxButton = FindViewById<MaterialButton>(Resource.Id.measureBoundingBox);
+        _measureBoundingBoxAdditiveSwitch = FindViewById<SwitchMaterial>(Resource.Id.measureBoundingBoxAdditive);
         _measureEndpointSnapSwitch = FindViewById<SwitchMaterial>(Resource.Id.measureEndpointSnap);
         _measureMidpointSnapSwitch = FindViewById<SwitchMaterial>(Resource.Id.measureMidpointSnap);
         _measureClearButton = FindViewById<MaterialButton>(Resource.Id.measureClear);
@@ -4614,6 +5067,7 @@ public sealed class MainActivity : AppCompatActivity
         _renderModeWireframeButton = FindViewById<MaterialButton>(Resource.Id.renderModeWireframe);
         _renderModeShadedEdgesButton = FindViewById<MaterialButton>(Resource.Id.renderModeShadedEdges);
         _renderModeClayButton = FindViewById<MaterialButton>(Resource.Id.renderModeClay);
+        ConfigureBottomToolbarButtons();
         ApplyChromeTooltips();
         ApplyMainTooltips();
         ApplyMeasureTooltips();
@@ -4664,6 +5118,8 @@ public sealed class MainActivity : AppCompatActivity
             _measureFaceToFaceButton.Click += OnMeasureFaceToFaceClicked;
         if (_measureBoundingBoxButton is not null)
             _measureBoundingBoxButton.Click += OnBoundingBoxMeasureClicked;
+        if (_measureBoundingBoxAdditiveSwitch is not null)
+            _measureBoundingBoxAdditiveSwitch.CheckedChange += OnMeasureBoundingBoxAdditiveCheckedChanged;
         if (_measureEndpointSnapSwitch is not null)
             _measureEndpointSnapSwitch.CheckedChange += OnMeasureEndpointSnapCheckedChanged;
         if (_measureMidpointSnapSwitch is not null)
@@ -4770,6 +5226,30 @@ public sealed class MainActivity : AppCompatActivity
 
     private void OnMeasureFaceToFaceClicked(object? sender, EventArgs e) => SetMeasureMode(MeasureToolMode.FaceToFace);
 
+    private void OnMeasureBoundingBoxAdditiveCheckedChanged(object? sender, CompoundButton.CheckedChangeEventArgs e)
+    {
+        if (_measureBoundingBoxAdditiveSwitchUpdating)
+            return;
+
+        AppSettings.MeasureBoundingBoxAdditiveEnabled = e.IsChecked;
+        ResetBoundingBoxAdditiveState("additive toggle changed");
+        global::Android.Util.Log.Info("FA.Measure", $"BBox additive mode changed: enabled={e.IsChecked}.");
+
+        if (e.IsChecked
+            && _activeModalTool == AndroidModalTool.Measure
+            && _bottomToolbarMode == BottomToolbarMode.Measure
+            && !_measureBoundingBoxAwaitingSelection
+            && !_measureBoundingBoxBusy)
+        {
+            BeginBoundingBoxSelectionMode("additive enabled");
+            return;
+        }
+
+        UpdateMeasureButtonStates();
+        if (_measureBoundingBoxAwaitingSelection)
+            ShowBoundingBoxSelectionHint();
+    }
+
     private void OnMeasureEndpointSnapCheckedChanged(object? sender, CompoundButton.CheckedChangeEventArgs e)
     {
         if (_measureSnapSwitchUpdating)
@@ -4800,6 +5280,7 @@ public sealed class MainActivity : AppCompatActivity
 
     private void OnMeasureClearClicked(object? sender, EventArgs e)
     {
+        ResetBoundingBoxAdditiveState("measure clear");
         _measure?.ClearMeasurements();
         RefreshMeasurementOverlays();
     }
@@ -5093,6 +5574,7 @@ public sealed class MainActivity : AppCompatActivity
         SetVisibility(_measureFaceToPointButton, measureVisibility);
         SetVisibility(_measureFaceToFaceButton, measureVisibility);
         SetVisibility(_measureBoundingBoxButton, measureVisibility);
+        SetVisibility(_measureBoundingBoxAdditiveSwitch, measureVisibility);
         SetVisibility(_measureEndpointSnapSwitch, measureVisibility);
         SetVisibility(_measureMidpointSnapSwitch, measureVisibility);
         SetVisibility(_measureClearButton, measureVisibility);
@@ -5134,6 +5616,7 @@ public sealed class MainActivity : AppCompatActivity
         UpdateSectionButtonStates();
         UpdateExplodeButtonState();
         UpdateRenderModeButtonStates();
+        ClearBottomToolbarTransientButtonState();
     }
 
     private void SetMeasureMode(MeasureToolMode mode)
@@ -5148,6 +5631,9 @@ public sealed class MainActivity : AppCompatActivity
 
         if (_measure.ActiveMode == mode)
         {
+            if (ShouldIgnoreDuplicateMeasureModeReselect(mode))
+                return;
+
             global::Android.Util.Log.Info("FA.Measure", $"Toolbar mode reselected: {mode}; measurement tool exited.");
             ActivateSelectTool("measure mode reselected");
             return;
@@ -5159,7 +5645,28 @@ public sealed class MainActivity : AppCompatActivity
         }
     }
 
-    private async void OnBoundingBoxMeasureClicked(object? sender, EventArgs e)
+    private bool IsBoundingBoxSelectionModeActive()
+        => _measureBoundingBoxAwaitingSelection
+           && _activeModalTool == AndroidModalTool.Measure
+           && _bottomToolbarMode == BottomToolbarMode.Measure;
+
+    private bool IsBoundingBoxAdditiveEnabled()
+        => AppSettings.MeasureBoundingBoxAdditiveEnabled;
+
+    private void ResetBoundingBoxAdditiveState(string reason)
+    {
+        if (_measureBoundingBoxAdditiveNodeIds.Count == 0
+            && _measureBoundingBoxPendingAdditiveNodeIds.Count == 0
+            && _measureBoundingBoxAdditiveMeasurementId is null)
+            return;
+
+        _measureBoundingBoxAdditiveNodeIds.Clear();
+        _measureBoundingBoxPendingAdditiveNodeIds.Clear();
+        _measureBoundingBoxAdditiveMeasurementId = null;
+        global::Android.Util.Log.Info("FA.Measure", $"BBox additive state reset: reason={reason}.");
+    }
+
+    private void OnBoundingBoxMeasureClicked(object? sender, EventArgs e)
     {
         if (_measure is null)
             return;
@@ -5173,43 +5680,119 @@ public sealed class MainActivity : AppCompatActivity
             return;
         }
 
-        MeasureToolMode restoreMode = PreferredInteractiveMeasureMode();
-        if (_selectedNodeIds.Count == 0)
-        {
-            global::Android.Util.Log.Info("FA.Measure", "BBox button armed: waiting for node selection.");
-            _measureBoundingBoxRestoreMode = restoreMode;
-            _measureBoundingBoxAwaitingSelection = true;
-            _measure.CancelCurrentDraft();
-            _measure.SetMode(MeasureToolMode.None);
-            Toast.MakeText(this, Resource.String.measure_bounding_box_select_prompt, ToastLength.Short)?.Show();
-            UpdateMeasureButtonStates();
-            RefreshMeasurementOverlays();
-            return;
-        }
-
-        await CommitBoundingBoxFromCurrentSelectionAsync(restoreMode, "bbox button selected nodes");
+        BeginBoundingBoxSelectionMode("bbox button");
     }
 
-    private async Task CommitBoundingBoxFromCurrentSelectionAsync(MeasureToolMode restoreMode, string reason)
+    private void BeginBoundingBoxSelectionMode(string reason)
     {
-        if (_measure is null || _measureBoundingBoxBusy)
+        if (_measure is null)
             return;
 
-        if (_selectedNodeIds.Count == 0)
+        _measureBoundingBoxSelectionVersion++;
+        _measureBoundingBoxRestoreMode = PreferredInteractiveMeasureMode();
+        _measureBoundingBoxAwaitingSelection = true;
+        if (!IsBoundingBoxAdditiveEnabled())
+            ResetBoundingBoxAdditiveState("bbox session started");
+
+        ClearSelectableOverlaySelection("bbox tool armed");
+        ReplaceSelectedNodeIds(
+            _runtimeScene,
+            Array.Empty<int>(),
+            scrollModelExplorerToSelection: false);
+
+        _measure.CancelCurrentDraft();
+        _measure.SetMode(MeasureToolMode.BoundingBox);
+
+        global::Android.Util.Log.Info("FA.Measure", $"BBox selection mode armed: reason={reason}.");
+        ShowBoundingBoxSelectionHint();
+        UpdateMeasureButtonStates();
+        RefreshMeasurementOverlays();
+    }
+
+    private async Task CommitBoundingBoxForNodesAsync(IReadOnlyList<int> nodeIds, int selectionVersion, string reason)
+    {
+        if (_measure is null)
+            return;
+
+        if (_measureBoundingBoxBusy)
         {
-            Toast.MakeText(this, Resource.String.measure_bounding_box_select_prompt, ToastLength.Short)?.Show();
+            TryQueuePendingAdditiveBoundingBoxSelection(nodeIds, selectionVersion, reason);
             return;
         }
 
-        _measureBoundingBoxAwaitingSelection = false;
-        global::Android.Util.Log.Info("FA.Measure", $"BBox commit requested: reason={reason}, selectedNodes=[{string.Join(",", _selectedNodeIds)}].");
+        Scene? scene = _runtimeScene;
+        int[] selectedNodeIds = nodeIds
+            .Distinct()
+            .Where(nodeId => scene?.GetNode(nodeId) is not null)
+            .OrderBy(nodeId => nodeId)
+            .ToArray();
+
+        if (selectedNodeIds.Length == 0)
+        {
+            ShowBoundingBoxSelectionHint();
+            return;
+        }
+
+        bool additive = IsBoundingBoxAdditiveEnabled();
+        MeasurementId? previousAdditiveMeasurementId = null;
+        int[] commitNodeIds = selectedNodeIds;
+        if (additive)
+        {
+            foreach (int nodeId in selectedNodeIds)
+                _measureBoundingBoxAdditiveNodeIds.Add(nodeId);
+
+            commitNodeIds = _measureBoundingBoxAdditiveNodeIds
+                .Where(nodeId => scene?.GetNode(nodeId) is not null)
+                .OrderBy(nodeId => nodeId)
+                .ToArray();
+            _measureBoundingBoxAdditiveNodeIds.Clear();
+            foreach (int nodeId in commitNodeIds)
+                _measureBoundingBoxAdditiveNodeIds.Add(nodeId);
+            previousAdditiveMeasurementId = _measureBoundingBoxAdditiveMeasurementId;
+        }
+
+        if (commitNodeIds.Length == 0)
+        {
+            ShowBoundingBoxSelectionHint();
+            return;
+        }
+
+        int[][] commitGroups = additive
+            ? new[] { commitNodeIds }
+            : selectedNodeIds.Select(nodeId => new[] { nodeId }).ToArray();
+        int[] highlightedNodeIds = additive ? commitNodeIds : selectedNodeIds;
+
+        global::Android.Util.Log.Info(
+            "FA.Measure",
+            $"BBox commit requested: reason={reason}, additive={additive}, selectedNodes=[{string.Join(",", selectedNodeIds)}], commitNodes=[{string.Join(",", commitNodeIds)}], groups={commitGroups.Length}.");
         ApplyMeasurementSettings();
         _measureBoundingBoxBusy = true;
+        ReplaceSelectedNodeIds(
+            scene,
+            highlightedNodeIds,
+            scrollModelExplorerToSelection: false);
         UpdateMeasureButtonStates();
         bool committed = false;
+        bool stillAwaiting = false;
+        int[] queuedAdditiveNodeIds = Array.Empty<int>();
         try
         {
-            committed = await _measure.TryCommitBoundingBoxFromSelectionAsync(_selectedNodeIds.ToArray());
+            var committedIds = new List<MeasurementId>(commitGroups.Length);
+            foreach (int[] group in commitGroups)
+            {
+                MeasurementId? committedId = await _measure.TryCommitBoundingBoxFromSelectionWithIdAsync(group);
+                if (committedId is { } id)
+                    committedIds.Add(id);
+            }
+
+            committed = committedIds.Count > 0;
+            if (committed && additive)
+            {
+                MeasurementId newId = committedIds[^1];
+                if (previousAdditiveMeasurementId is { } previousId && !previousId.Equals(newId))
+                    _measure.RemoveMeasurement(previousId);
+                _measureBoundingBoxAdditiveMeasurementId = newId;
+            }
         }
         catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
@@ -5218,23 +5801,100 @@ public sealed class MainActivity : AppCompatActivity
         finally
         {
             _measureBoundingBoxBusy = false;
-            if (_bottomToolbarMode == BottomToolbarMode.Measure)
-                ActivateInteractiveMeasureMode(restoreMode, "bbox finished");
-            else
+
+            if (_selectedNodeIds.SetEquals(highlightedNodeIds))
+            {
+                ReplaceSelectedNodeIds(
+                    scene,
+                    Array.Empty<int>(),
+                    scrollModelExplorerToSelection: false);
+            }
+
+            stillAwaiting =
+                _measureBoundingBoxSelectionVersion == selectionVersion
+                && _activeModalTool == AndroidModalTool.Measure
+                && _bottomToolbarMode == BottomToolbarMode.Measure;
+            if (stillAwaiting)
+            {
+                _measureBoundingBoxAwaitingSelection = true;
+                _measure?.SetMode(MeasureToolMode.BoundingBox);
+                UpdateMeasureButtonStates();
                 RefreshMeasurementOverlays();
+                queuedAdditiveNodeIds = TakePendingAdditiveBoundingBoxSelection();
+                if (committed && queuedAdditiveNodeIds.Length == 0)
+                    ShowBoundingBoxSelectionHint();
+            }
+            else
+            {
+                RefreshMeasurementOverlays();
+            }
         }
 
-        if (!committed)
-            ShowBoundingBoxSelectionRequiredDialog();
+        if (queuedAdditiveNodeIds.Length > 0)
+        {
+            _ = CommitBoundingBoxForNodesAsync(queuedAdditiveNodeIds, selectionVersion, "queued additive selection");
+            return;
+        }
+
+        if (!committed && stillAwaiting)
+            ShowBoundingBoxSelectionHint();
+    }
+
+    private bool TryQueuePendingAdditiveBoundingBoxSelection(
+        IReadOnlyList<int> nodeIds,
+        int selectionVersion,
+        string reason)
+    {
+        if (!IsBoundingBoxAdditiveEnabled()
+            || selectionVersion != _measureBoundingBoxSelectionVersion
+            || !IsBoundingBoxSelectionModeActive())
+        {
+            return false;
+        }
+
+        Scene? scene = _runtimeScene;
+        int before = _measureBoundingBoxPendingAdditiveNodeIds.Count;
+        foreach (int nodeId in nodeIds.Distinct())
+        {
+            if (scene?.GetNode(nodeId) is not null)
+                _measureBoundingBoxPendingAdditiveNodeIds.Add(nodeId);
+        }
+
+        int added = _measureBoundingBoxPendingAdditiveNodeIds.Count - before;
+        if (added <= 0)
+            return false;
+
+        global::Android.Util.Log.Info(
+            "FA.Measure",
+            $"BBox additive selection queued: reason={reason}, added={added}, pending=[{string.Join(",", _measureBoundingBoxPendingAdditiveNodeIds.OrderBy(id => id))}].");
+        return true;
+    }
+
+    private int[] TakePendingAdditiveBoundingBoxSelection()
+    {
+        if (!IsBoundingBoxAdditiveEnabled() || _measureBoundingBoxPendingAdditiveNodeIds.Count == 0)
+            return Array.Empty<int>();
+
+        int[] nodeIds = _measureBoundingBoxPendingAdditiveNodeIds
+            .OrderBy(id => id)
+            .ToArray();
+        _measureBoundingBoxPendingAdditiveNodeIds.Clear();
+        return nodeIds;
     }
 
     private void CancelBoundingBoxSelectionMode(string reason)
     {
         _measureBoundingBoxBusy = false;
+        _measureBoundingBoxPendingAdditiveNodeIds.Clear();
         if (!_measureBoundingBoxAwaitingSelection)
             return;
 
         _measureBoundingBoxAwaitingSelection = false;
+        _measureBoundingBoxSelectionVersion++;
+        ReplaceSelectedNodeIds(
+            _runtimeScene,
+            Array.Empty<int>(),
+            scrollModelExplorerToSelection: false);
         global::Android.Util.Log.Info("FA.Measure", $"BBox selection cancelled: reason={reason}.");
         UpdateMeasureButtonStates();
     }
@@ -5248,21 +5908,52 @@ public sealed class MainActivity : AppCompatActivity
         if (density <= 0f) density = 1.0f;
         int px = (int)(ev.Position.X * density);
         int py = (int)(ev.Position.Y * density);
+        int selectionVersion = _measureBoundingBoxSelectionVersion;
 
         _viewport.PickAsync(px, py, "bbox-select", hit =>
         {
-            if (!_measureBoundingBoxAwaitingSelection)
+            if (!_measureBoundingBoxAwaitingSelection
+                || _measureBoundingBoxBusy
+                || selectionVersion != _measureBoundingBoxSelectionVersion)
                 return;
 
             if (hit is not > 0)
             {
-                Toast.MakeText(this, Resource.String.measure_bounding_box_select_prompt, ToastLength.Short)?.Show();
+                ShowBoundingBoxSelectionHint();
                 return;
             }
 
-            OnPickResult(hit);
-            _ = CommitBoundingBoxFromCurrentSelectionAsync(_measureBoundingBoxRestoreMode, "bbox selection tap");
+            if (_viewport?.Renderer.Scene?.TryGetSelectableNodeIdForMeshIndex(hit.Value, out int nodeId) != true)
+            {
+                ShowBoundingBoxSelectionHint();
+                return;
+            }
+
+            _ = CommitBoundingBoxForNodesAsync([nodeId], selectionVersion, "bbox selection tap");
         });
+    }
+
+    private void ShowBoundingBoxSelectionHint()
+    {
+        bool additive = IsBoundingBoxAdditiveEnabled();
+        string? hint = GetString(additive
+            ? Resource.String.measure_bounding_box_additive_prompt
+            : Resource.String.measure_bounding_box_select_prompt);
+        if (string.IsNullOrWhiteSpace(hint))
+            return;
+
+        string? accessibilityHint = GetString(additive
+            ? Resource.String.measure_bounding_box_additive_accessibility
+            : Resource.String.measure_bounding_box_select_accessibility);
+        if (_measureBoundingBoxButton is not null
+            && _styledTooltips.TryGet(_measureBoundingBoxButton, out StyledTooltipController? tooltip)
+            && tooltip is not null)
+        {
+            tooltip.ShowNow(hint, accessibilityHint);
+            return;
+        }
+
+        (_measureBoundingBoxButton as View ?? _viewport as View)?.AnnounceForAccessibility(accessibilityHint ?? hint);
     }
 
     private void HandleBodyMoveSelectionTap(TouchGestureEvent ev)
@@ -5373,6 +6064,13 @@ public sealed class MainActivity : AppCompatActivity
         SetSelected(_measureFaceToPointButton, activeMode == MeasureToolMode.FaceToPoint);
         SetSelected(_measureFaceToFaceButton, activeMode == MeasureToolMode.FaceToFace);
         SetSelected(_measureBoundingBoxButton, _measureBoundingBoxAwaitingSelection && !_measureBoundingBoxBusy);
+        if (_measureBoundingBoxAdditiveSwitch is not null)
+        {
+            _measureBoundingBoxAdditiveSwitchUpdating = true;
+            _measureBoundingBoxAdditiveSwitch.Checked = AppSettings.MeasureBoundingBoxAdditiveEnabled;
+            _measureBoundingBoxAdditiveSwitchUpdating = false;
+            _measureBoundingBoxAdditiveSwitch.Enabled = !_measureBoundingBoxBusy;
+        }
         if (_measureEndpointSnapSwitch is not null)
         {
             _measureSnapSwitchUpdating = true;
@@ -6756,12 +7454,17 @@ public sealed class MainActivity : AppCompatActivity
             ViewGroup.LayoutParams.MatchParent,
             ViewGroup.LayoutParams.WrapContent));
 
-        ShowOwnedDialog(
-            new AlertDialog.Builder(this)
-                .SetTitle(Resource.String.cd_tool_scan_qr)!
-                .SetView(container)!
-                .SetNegativeButton(global::Android.Resource.String.Cancel, (_, _) => { })!
-                .SetPositiveButton(global::Android.Resource.String.Ok, (_, _) => ResolveQrPayload(input.Text))!);
+        AlertDialog dialog = new AlertDialog.Builder(this)
+            .SetTitle(Resource.String.cd_tool_scan_qr)!
+            .SetView(container)!
+            .SetNegativeButton(global::Android.Resource.String.Cancel, (_, _) => { })!
+            .SetPositiveButton(global::Android.Resource.String.Ok, (_, _) => ResolveQrPayload(input.Text))!
+            .Create()!;
+
+        ShowOwnedDialog(dialog);
+        DialogKeyboard.ConfirmOnEnter(
+            input,
+            dialog.GetButton((int)global::Android.Content.DialogButtonType.Positive));
     }
 
     private void ResolveQrPayload(string? rawPayload)
@@ -8579,6 +9282,8 @@ public sealed class MainActivity : AppCompatActivity
             popup.Dismiss();
         };
 
+        DialogKeyboard.ConfirmOnEnter(input, ok);
+
         if (tryComputePopupPosition(handle, popupWidth, Dp(94), out int popupX, out int popupY))
             popup.ShowAtLocation(_viewport, GravityFlags.NoGravity, popupX, popupY);
         else
@@ -9598,9 +10303,28 @@ public sealed class MainActivity : AppCompatActivity
         else
             _measure.ClearHover();
 
+        _lastMeasureModeActivationMode = mode;
+        _lastMeasureModeActivationMs = System.Environment.TickCount64;
+
         global::Android.Util.Log.Info("FA.Measure", $"Interactive mode active: reason={reason}, mode={mode}.");
         UpdateMeasureButtonStates();
         RefreshMeasurementOverlays();
+    }
+
+    private bool ShouldIgnoreDuplicateMeasureModeReselect(MeasureToolMode mode)
+    {
+        long elapsedMs = System.Environment.TickCount64 - _lastMeasureModeActivationMs;
+        if (_lastMeasureModeActivationMode != mode
+            || elapsedMs < 0
+            || elapsedMs > ToolbarDuplicateActivationGuardMs)
+        {
+            return false;
+        }
+
+        global::Android.Util.Log.Info(
+            "FA.Measure",
+            $"Toolbar duplicate mode click ignored: mode={mode}, elapsedMs={elapsedMs}.");
+        return true;
     }
 
     private MeasureToolMode PreferredInteractiveMeasureMode()
@@ -9623,6 +10347,7 @@ public sealed class MainActivity : AppCompatActivity
         SetTooltip(_measureFaceToPointButton, Resource.String.cd_measure_face_to_point);
         SetTooltip(_measureFaceToFaceButton, Resource.String.cd_measure_face_to_face);
         SetTooltip(_measureBoundingBoxButton, Resource.String.cd_measure_bounding_box);
+        SetTooltip(_measureBoundingBoxAdditiveSwitch, Resource.String.cd_measure_bounding_box_additive);
         SetTooltip(_measureEndpointSnapSwitch, Resource.String.cd_measure_snap_endpoint);
         SetTooltip(_measureMidpointSnapSwitch, Resource.String.cd_measure_snap_midpoint);
         SetTooltip(_measureClearButton, Resource.String.cd_measure_clear);
@@ -11010,7 +11735,6 @@ public sealed class MainActivity : AppCompatActivity
         bool addToRecent = true,
         string? displayNameOverride = null,
         bool persistForRestore = true,
-        bool copyToImportCache = true,
         int presentationFrameCount = 1,
         bool? localSaveWritable = null)
     {
@@ -11059,7 +11783,7 @@ public sealed class MainActivity : AppCompatActivity
             // The Progress<string> still marshals reports back to the UI thread,
             // and this await resumes on the UI thread for the rest of the load.
             var document = await Task.Run(
-                () => _import.ImportAsync(uri, progress, cts.Token, copyToImportCache),
+                () => _import.ImportAsync(uri, progress, cts.Token),
                 cts.Token);
             cts.Token.ThrowIfCancellationRequested();
             if (!IsCurrentLoad(loadVersion, cts)) return false;
@@ -11802,6 +12526,7 @@ public sealed class MainActivity : AppCompatActivity
         _explodeLayout = null;
         _explodeLayoutScene = null;
         _selectedMeasurementDeleteTarget = null;
+        ResetBoundingBoxAdditiveState("scene attached");
         ClearXrayIsolationState();
         _measure?.OnSceneAttached(scene);
         _sectionRaycaster?.ClearAccelerationCache("scene attached");
@@ -13084,6 +13809,8 @@ public sealed class MainActivity : AppCompatActivity
             return;
 
         _selectedMeasurementDeleteTarget = null;
+        if (_measureBoundingBoxAdditiveMeasurementId?.Equals(key.Id) == true)
+            ResetBoundingBoxAdditiveState("additive measurement deleted");
         _measure.RemoveMeasurement(key.Id);
         RefreshMeasurementOverlays();
     }
@@ -13995,6 +14722,8 @@ public sealed class MainActivity : AppCompatActivity
         SetButtonEnabled(_navSpenPalmButton, enabled);
         SetButtonEnabled(_navSettingsButton, enabled);
         SetButtonEnabled(_cloudAccountButton, enabled);
+        if (enabled)
+            ClearNavRailTransientButtonState();
     }
 
     private static void SetButtonEnabled(MaterialButton? button, bool enabled)
@@ -14060,6 +14789,11 @@ public sealed class MainActivity : AppCompatActivity
 
     protected override void OnStop()
     {
+        // S1-3: the cloud reader lock is released fire-and-forget here. If the process
+        // is killed while backgrounded the release may not complete; the server then
+        // reclaims the lock via its heartbeat timeout. A synchronous release is avoided
+        // deliberately - OnStop is time-boxed by the framework, so a blocking network
+        // call here would risk an ANR.
         if (!IsFinishing)
             ObserveLifecycleTask(SuspendActiveCloudSessionAsync("activity stopped"), "cloud-session-stop");
         base.OnStop();
@@ -14069,11 +14803,19 @@ public sealed class MainActivity : AppCompatActivity
     {
         base.OnResume();
         _viewport?.OnResume();
+        ClearNavRailTransientButtonState();
         if (_fullscreenUiActive)
             ApplySystemBarsForFullscreen(true);
         ApplySettingsToScene();
         ObserveLifecycleTask(EnsureActiveCloudSessionOnResumeAsync(), "cloud-session-resume");
         ObserveLifecycleTask(ReloadRendererSceneAfterContextLossAsync(), "resume-renderer-reload");
+    }
+
+    public override void OnWindowFocusChanged(bool hasFocus)
+    {
+        base.OnWindowFocusChanged(hasFocus);
+        if (hasFocus)
+            _navRail?.Post(ClearNavRailTransientButtonState);
     }
 
     protected override void OnSaveInstanceState(Bundle outState)
@@ -14313,6 +15055,11 @@ public sealed class MainActivity : AppCompatActivity
         DetachClick(_navBomFlatButton, OnBomFlatClicked);
         DetachClick(_navSpenPalmButton, OnSpenPalmClicked);
         DetachClick(_navSettingsButton, OnSettingsClicked);
+        foreach (MaterialButton? button in NavRailButtons())
+        {
+            button?.SetOnTouchListener(null);
+            button?.SetOnGenericMotionListener(null);
+        }
         DetachClick(_toolSelectButton, OnToolSelectClicked);
         DetachClick(_toolMoveButton, OnToolMoveClicked);
         DetachClick(_toolZoomWindowButton, OnToolZoomWindowClicked);
@@ -14334,6 +15081,11 @@ public sealed class MainActivity : AppCompatActivity
         DetachClick(_measureFaceToPointButton, OnMeasureFaceToPointClicked);
         DetachClick(_measureFaceToFaceButton, OnMeasureFaceToFaceClicked);
         DetachClick(_measureBoundingBoxButton, OnBoundingBoxMeasureClicked);
+        if (_measureBoundingBoxAdditiveSwitch is not null)
+        {
+            _measureBoundingBoxAdditiveSwitch.CheckedChange -= OnMeasureBoundingBoxAdditiveCheckedChanged;
+            _measureBoundingBoxAdditiveSwitch.SetOnCheckedChangeListener(null);
+        }
         DetachClick(_measureClearButton, OnMeasureClearClicked);
         if (_measureEndpointSnapSwitch is not null)
         {
@@ -14465,6 +15217,11 @@ public sealed class MainActivity : AppCompatActivity
         CancellationTokenSource? cloudOpenCts = Interlocked.Exchange(ref _cloudOpenCts, null);
         cloudOpenCts?.Cancel();
         cloudOpenCts?.Dispose();
+        // S1-1: cancel an in-flight save so its ConfigureAwait(true) continuation does
+        // not resume against this destroyed Activity. SaveCurrentModelAsync's finally
+        // disposes the CTS (its ReferenceEquals guard tolerates this null swap), so do
+        // not dispose here.
+        Interlocked.Exchange(ref _saveCts, null)?.Cancel();
         ReleaseActiveCloudSessionForDestroy();
         DismissOwnedDialogs();
 
@@ -15020,6 +15777,26 @@ public sealed class MainActivity : AppCompatActivity
         private readonly MainActivity _activity;
         public HoverProxy(MainActivity activity) => _activity = activity;
         public bool OnHover(View? v, MotionEvent? e) => _activity.OnViewportHover(e);
+    }
+
+    private sealed class NavRailButtonGenericMotionListener : Java.Lang.Object, View.IOnGenericMotionListener
+    {
+        private readonly MainActivity _activity;
+
+        public NavRailButtonGenericMotionListener(MainActivity activity) => _activity = activity;
+
+        public bool OnGenericMotion(View? v, MotionEvent? e)
+            => _activity.HandleNavRailButtonGenericMotion(v, e);
+    }
+
+    private sealed class NavRailButtonTouchListener : Java.Lang.Object, View.IOnTouchListener
+    {
+        private readonly MainActivity _activity;
+
+        public NavRailButtonTouchListener(MainActivity activity) => _activity = activity;
+
+        public bool OnTouch(View? v, MotionEvent? e)
+            => _activity.HandleNavRailButtonTouch(v, e);
     }
 
     private sealed class MeasurementLabelLayer : FrameLayout

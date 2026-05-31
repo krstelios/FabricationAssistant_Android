@@ -228,6 +228,195 @@ public sealed class GlesRendererSourceTests
     }
 
     [Fact]
+    public void AndroidRenderTargets_Require32BitDepthWhileBackbufferUsesCompatibleDepth()
+    {
+        string msaa = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.Rendering.Gles\MsaaSceneFramebuffer.cs"));
+        Assert.Contains("PreferredDepthStencilFormat = InternalFormat.Depth32fStencil8", msaa);
+        Assert.DoesNotContain("Depth24Stencil8", msaa);
+        Assert.DoesNotContain("FallbackDepthStencilFormat", msaa);
+        Assert.Contains("SampleFallbackOrder(clamped)", msaa);
+        Assert.Contains("int[] candidates = [clampedSamples, 8, 4, 2, 1];", msaa);
+        Assert.Contains("!result.Contains(candidate)", msaa);
+        Assert.Contains("TryAllocate(width, height, actualSamples, PreferredDepthStencilFormat", msaa);
+        Assert.Contains("Scene framebuffer depth=", msaa);
+        Assert.DoesNotContain("LogDepthFallback", msaa);
+
+        string normalDepth = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.Rendering.Gles\GlesNormalDepthRenderer.cs"));
+        Assert.Contains("PreferredDepthFormat = InternalFormat.DepthComponent32f", normalDepth);
+        Assert.DoesNotContain("DepthComponent24", normalDepth);
+        Assert.DoesNotContain("FallbackDepthFormat", normalDepth);
+        Assert.Contains("PixelType.Float", normalDepth);
+        Assert.DoesNotContain("PixelType.UnsignedInt", normalDepth);
+        Assert.Contains("Normal/depth framebuffer depth=", normalDepth);
+        Assert.DoesNotContain("LogDepthFallback", normalDepth);
+
+        string pick = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.Rendering.Gles\GlesPickRenderer.cs"));
+        Assert.Contains("PreferredDepthFormat = InternalFormat.DepthComponent32f", pick);
+        Assert.DoesNotContain("DepthComponent24", pick);
+        Assert.DoesNotContain("FallbackDepthFormat", pick);
+        Assert.Contains("TryAllocateFramebuffer(width, height, PreferredDepthFormat", pick);
+        Assert.Contains("Pick framebuffer depth=", pick);
+        Assert.DoesNotContain("LogDepthFallback", pick);
+
+        string chooser = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\Views\MultisampleConfigChooser.cs"));
+        Assert.Contains("BackbufferDepthSize = 24", chooser);
+        Assert.Contains("required D32FS8 offscreen FBO", chooser);
+        Assert.Contains("IEGL10.EglDepthSize, BackbufferDepthSize", chooser);
+        Assert.Contains("GetConfigAttrib(egl, display, config, IEGL10.EglDepthSize) >= BackbufferDepthSize", chooser);
+
+        string renderer = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.Rendering.Gles\GlesViewportRenderer.cs"));
+        Assert.DoesNotContain("DepthBits < 32", renderer);
+        Assert.Contains("depth remains D32FS8", renderer);
+    }
+
+    [Fact]
+    public void AdditiveBoundingBox_ArmsSelectionAndKeepsAccumulatorUntilToggle()
+    {
+        string mainActivity = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\MainActivity.cs"));
+
+        string toggle = ExtractMethod(mainActivity, "private void OnMeasureBoundingBoxAdditiveCheckedChanged");
+        Assert.Contains("BeginBoundingBoxSelectionMode(\"additive enabled\")", toggle);
+        Assert.Contains("ResetBoundingBoxAdditiveState(\"additive toggle changed\")", toggle);
+
+        string begin = ExtractMethod(mainActivity, "private void BeginBoundingBoxSelectionMode");
+        Assert.Contains("if (!IsBoundingBoxAdditiveEnabled())", begin);
+        Assert.Contains("ResetBoundingBoxAdditiveState(\"bbox session started\")", begin);
+
+        string commit = ExtractMethod(mainActivity, "private async Task CommitBoundingBoxForNodesAsync");
+        Assert.Contains("TryQueuePendingAdditiveBoundingBoxSelection(nodeIds, selectionVersion, reason)", commit);
+        Assert.Contains("TakePendingAdditiveBoundingBoxSelection()", commit);
+
+        string reset = ExtractMethod(mainActivity, "private void ResetBoundingBoxAdditiveState");
+        Assert.Contains("_measureBoundingBoxPendingAdditiveNodeIds.Clear();", reset);
+    }
+
+    [Fact]
+    public void CloudRememberPassword_UsesEncryptedOptInPasswordStorage()
+    {
+        string secureStore = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\CloudSecureStore.cs"));
+        Assert.Contains("LoadRememberedPassword(string serverUrl, string email)", secureStore);
+        Assert.Contains("SaveRememberedPassword(string serverUrl, string email, string password)", secureStore);
+        Assert.Contains("AES/GCM/NoPadding", secureStore);
+        Assert.Contains("AndroidKeyStore", secureStore);
+        Assert.Contains("server_url", secureStore);
+        Assert.Contains("email", secureStore);
+
+        string settings = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\AppSettings.cs"));
+        Assert.Contains("CloudRememberPassword", settings);
+        Assert.Contains("cloud_remember_password", settings);
+
+        string mainActivity = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\MainActivity.cs"));
+        Assert.Contains("Text = \"Remember my password\"", mainActivity);
+        Assert.Contains("LoadRememberedPassword(serverUrl, initialEmail)", mainActivity);
+        Assert.Contains("UpdateCloudRememberedPassword(outcome.ServerUrl, outcome.Email, password, rememberPassword)", mainActivity);
+        Assert.Contains("UpdateCloudRememberedPassword(challenge.ServerUrl, challenge.Email, passwordToRemember, rememberPassword)", mainActivity);
+
+        string preferences = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\PreferencesBottomSheet.cs"));
+        Assert.Contains("\"Remember password\"", preferences);
+        Assert.Contains("cloudSecureStore.ClearRememberedPassword();", preferences);
+    }
+
+    [Fact]
+    public void DiagnosticsLogRefresh_PreservesSettingsScrollAndAvoidsFocusScroll()
+    {
+        string preferences = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\PreferencesBottomSheet.cs"));
+
+        string update = ExtractMethod(preferences, "private void UpdateLogPanelText");
+        Assert.Contains("FindSettingsScrollForLogPanel()", update);
+        Assert.Contains("settingsScroll.ScrollTo(settingsScrollX, settingsScrollY);", update);
+        Assert.Contains("ScrollLogPanelToBottom", update);
+        Assert.DoesNotContain("FullScroll", update);
+
+        string addPanel = ExtractMethod(preferences, "private void AddLogPanel");
+        Assert.Contains("_logText.Focusable = false;", addPanel);
+        Assert.Contains("_logText.FocusableInTouchMode = false;", addPanel);
+        Assert.Contains("_logHorizontalScroll = new HorizontalScrollView", addPanel);
+        Assert.Contains("_logText.SetHorizontallyScrolling(true);", addPanel);
+        Assert.DoesNotContain("SetTextIsSelectable(true)", addPanel);
+
+        Assert.Contains("DisposeDiagnosticsLogTooltips();", preferences);
+        string disposeLogTooltips = ExtractMethod(preferences, "private void DisposeDiagnosticsLogTooltips");
+        Assert.Contains("_styledTooltips.DisposeTree(_logScroll);", disposeLogTooltips);
+        Assert.Contains("_logText.TooltipText = null;", disposeLogTooltips);
+        Assert.Contains("_logText.ContentDescription = null;", disposeLogTooltips);
+
+        string feed = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\AndroidLogcatFeed.cs"));
+        Assert.Contains("MaxLineCharacters", feed);
+        Assert.Contains("[truncated", feed);
+        Assert.Contains("Showing FA.* and crash/error logs only", feed);
+        Assert.Contains("ShouldIncludeLogcatLine", feed);
+        Assert.Contains("tag.StartsWith(\"FA.\"", feed);
+        Assert.Contains("\"AndroidRuntime\"", feed);
+        Assert.Contains("\"Fatal signal\"", feed);
+        Assert.Contains("synthetic ? timestamp + \" \" + normalizedLine : normalizedLine", feed);
+    }
+
+    [Fact]
+    public void DialogInputs_UseEnterKeyToClickTheirPrimaryAction()
+    {
+        string helper = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\DialogKeyboard.cs"));
+        Assert.Contains("ConfirmOnEnter", helper);
+        Assert.Contains("SetOnEditorActionListener", helper);
+        Assert.Contains("ImeAction.Done", helper);
+        Assert.Contains("Keycode.Enter", helper);
+        Assert.Contains("confirmView.PerformClick();", helper);
+
+        string mainActivity = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\MainActivity.cs"));
+        Assert.Contains("DialogKeyboard.ConfirmOnEnter(emailInput, signIn);", mainActivity);
+        Assert.Contains("DialogKeyboard.ConfirmOnEnter(passwordInput, signIn);", mainActivity);
+        Assert.Contains("DialogKeyboard.ConfirmOnEnter(codeInput, verify);", mainActivity);
+        Assert.Contains("DialogKeyboard.ConfirmOnEnter(confirmPasswordInput, next);", mainActivity);
+        Assert.Contains("DialogKeyboard.ConfirmOnEnter(codeInput, reset);", mainActivity);
+        Assert.Contains("dialog.GetButton((int)global::Android.Content.DialogButtonType.Positive)", mainActivity);
+        Assert.Contains("DialogKeyboard.ConfirmOnEnter(input, ok);", mainActivity);
+
+        string preferences = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\PreferencesBottomSheet.cs"));
+        Assert.Contains("DialogKeyboard.ConfirmOnEnter(hexInput, positive);", preferences);
+
+        string scanner = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\Tools\AndroidQrScannerDialog.cs"));
+        Assert.Contains("DialogKeyboard.ConfirmOnEnter(_manualInput, submit);", scanner);
+    }
+
+    [Fact]
+    public void BottomToolbarButtons_DoNotKeepFocusBetweenTaps()
+    {
+        string mainActivity = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\MainActivity.cs"));
+
+        Assert.Contains("ConfigureBottomToolbarButtons();", mainActivity);
+        string configure = ExtractMethod(mainActivity, "private void ConfigureBottomToolbarButtons");
+        Assert.Contains("button.Focusable = false;", configure);
+        Assert.Contains("button.FocusableInTouchMode = false;", configure);
+        Assert.Contains("button.DefaultFocusHighlightEnabled = false;", configure);
+        Assert.Contains("button.ClearFocus();", configure);
+
+        string buttons = ExtractMethod(mainActivity, "private IEnumerable<MaterialButton?> BottomToolbarButtons");
+        Assert.Contains("yield return _toolMeasureButton;", buttons);
+        Assert.Contains("yield return _toolFullscreenButton;", buttons);
+        Assert.Contains("yield return _sectionCustomButton;", buttons);
+        Assert.Contains("yield return _renderModeClayButton;", buttons);
+
+        string visibility = ExtractMethod(mainActivity, "private void UpdateBottomToolbarVisibility");
+        Assert.Contains("ClearBottomToolbarTransientButtonState();", visibility);
+    }
+
+    [Fact]
     public void GlesSourceAndShaders_AreAsciiOnly()
     {
         string root = ResolveRepoPath(@"..\FabricationAssistant.Rendering.Gles");

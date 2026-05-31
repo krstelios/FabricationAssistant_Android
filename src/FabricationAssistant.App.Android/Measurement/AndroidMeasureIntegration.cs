@@ -13,6 +13,8 @@ internal sealed class AndroidMeasureIntegration : IDisposable
 {
     internal const double AndroidEdgeSnapAngularTolerance = MeshMeasurePicker.DefaultEdgeSnapAngularTolerance * 1.0;
     internal const double AndroidEndpointSnapAngularTolerance = MeshMeasurePicker.DefaultEndpointSnapAngularTolerance * 1.0;
+    private const long SnapWarmupBudgetMs = 2500;
+    private const int SnapWarmupMaxSegmentsPerMesh = 10000;
 
     private readonly Func<Scene?> _sceneAccessor;
     private readonly Action _invalidate;
@@ -38,6 +40,7 @@ internal sealed class AndroidMeasureIntegration : IDisposable
     private bool _showDeltaBreakdown;
     private BoundingBoxMode _boundingBoxMode = BoundingBoxMode.BestFit;
     private CancellationTokenSource? _snapWarmupCts;
+    private Task? _snapWarmupTask;
 
     public AndroidMeasureIntegration(
         Func<Scene?> sceneAccessor,
@@ -139,6 +142,12 @@ internal sealed class AndroidMeasureIntegration : IDisposable
         if (scene is null)
             return;
 
+        if (_snapWarmupTask is { IsCompleted: false } && !string.Equals(reason, "scene attached", StringComparison.Ordinal))
+        {
+            Log.Debug("FA.MeasureSnap", $"Warmup already running; skipped request: reason={reason}.");
+            return;
+        }
+
         var snapshots = new List<SnapWarmupMesh>();
         var seenMeshIds = new HashSet<int>();
         foreach (SceneNode node in scene.GetVisibleNodes())
@@ -159,7 +168,7 @@ internal sealed class AndroidMeasureIntegration : IDisposable
         _snapWarmupCts?.Cancel();
         var cts = new CancellationTokenSource();
         _snapWarmupCts = cts;
-        _ = Task.Run(() => WarmSnapModels(snapshots, reason, cts.Token), cts.Token);
+        _snapWarmupTask = Task.Run(() => WarmSnapModels(snapshots, reason, cts.Token), cts.Token);
     }
 
     private void WarmSnapModels(IReadOnlyList<SnapWarmupMesh> snapshots, string reason, CancellationToken token)
@@ -179,9 +188,26 @@ internal sealed class AndroidMeasureIntegration : IDisposable
                 if (edges.Length < 6)
                     continue;
 
+                int meshSegments = edges.Length / 6;
+                if (meshSegments > SnapWarmupMaxSegmentsPerMesh)
+                {
+                    Log.Debug(
+                        "FA.MeasureSnap",
+                        $"Warmup skipped large mesh: reason={reason}, segments={meshSegments}, maxSegments={SnapWarmupMaxSegmentsPerMesh}.");
+                    continue;
+                }
+
                 _snapWarmup.Prepare(edges);
-                segmentCount += edges.Length / 6;
+                segmentCount += meshSegments;
                 warmedMeshes++;
+
+                if (Environment.TickCount64 - start >= SnapWarmupBudgetMs)
+                {
+                    Log.Debug(
+                        "FA.MeasureSnap",
+                        $"Warmup budget reached: reason={reason}, meshes={warmedMeshes}/{snapshots.Count}, segments={segmentCount}, elapsedMs={Environment.TickCount64 - start}.");
+                    return;
+                }
             }
 
             Log.Debug(
@@ -395,11 +421,17 @@ internal sealed class AndroidMeasureIntegration : IDisposable
 
     public async Task<bool> TryCommitBoundingBoxFromSelectionAsync(IReadOnlyList<int> selectedNodeIds)
     {
+        MeasurementId? id = await TryCommitBoundingBoxFromSelectionWithIdAsync(selectedNodeIds).ConfigureAwait(true);
+        return id is not null;
+    }
+
+    public async Task<MeasurementId?> TryCommitBoundingBoxFromSelectionWithIdAsync(IReadOnlyList<int> selectedNodeIds)
+    {
         Scene? scene = _sceneAccessor();
         if (scene is null || selectedNodeIds.Count == 0)
         {
             Log.Info("FA.Measure", $"BBox skipped: scene={(scene is null ? "null" : "ok")}, selectedNodes={selectedNodeIds.Count}.");
-            return false;
+            return null;
         }
         Scene sceneAtStart = scene;
 
@@ -416,7 +448,7 @@ internal sealed class AndroidMeasureIntegration : IDisposable
         if (meshSnapshots.Count == 0)
         {
             Log.Info("FA.Measure", "BBox skipped: selected nodes contained no mesh snapshots.");
-            return false;
+            return null;
         }
 
         BoundingBoxMode mode = _boundingBoxMode;
@@ -487,32 +519,36 @@ internal sealed class AndroidMeasureIntegration : IDisposable
         if (!ReferenceEquals(_sceneAccessor(), sceneAtStart))
         {
             Log.Warn("FA.Measure", "BBox skipped: scene changed while bounding box points were being sampled.");
-            return false;
+            return null;
         }
 
         if (points.Count == 0)
         {
             Log.Info("FA.Measure", $"BBox skipped: meshSnapshots={meshSnapshots.Count}, sampledPoints=0.");
-            return false;
+            return null;
         }
 
         try
         {
             int beforeCount = _store.Snapshot().Count;
-            _tool.CommitBoundingBox(points, _boundingBoxMode);
+            _tool.CommitBoundingBox(points, mode);
             int afterCount = _store.Snapshot().Count;
             EnforceSingleMeasurementIfNeeded(beforeCount, afterCount, "bbox");
-            afterCount = _store.Snapshot().Count;
+            IReadOnlyList<MeasurementResult> afterSnapshot = _store.Snapshot();
+            afterCount = afterSnapshot.Count;
+            MeasurementId? committedId = afterCount > 0
+                ? afterSnapshot[^1].Id
+                : null;
             Log.Info(
                 "FA.Measure",
-                $"BBox committed: mode={_boundingBoxMode}, meshSnapshots={meshSnapshots.Count}, sampledPoints={points.Count}, measurementsBefore={beforeCount}, measurementsAfter={_store.Snapshot().Count}.");
+                $"BBox committed: mode={mode}, meshSnapshots={meshSnapshots.Count}, sampledPoints={points.Count}, measurementsBefore={beforeCount}, measurementsAfter={afterCount}, id={committedId?.ToString() ?? "<none>"}.");
             LogState("bbox", force: true);
-            return true;
+            return committedId;
         }
         catch (UnitSystemUnavailableException ex)
         {
             Log.Warn("FA.Measure", "Bounding box ignored because scene units are unavailable: " + ex.Message);
-            return false;
+            return null;
         }
     }
 

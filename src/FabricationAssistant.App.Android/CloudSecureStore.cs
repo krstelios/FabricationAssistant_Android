@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Android.Content;
 using Android.Security.Keystore;
 using Java.Security;
@@ -25,11 +26,58 @@ public sealed class CloudSecureStore
             ?? throw new InvalidOperationException("Context.GetSharedPreferences returned null.");
     }
 
-    // S22#5: SaveRememberedPassword / LoadRememberedPassword were never called
-    // (the remembered-password feature is not wired into the sign-in flow), so
-    // they and their PutEncryptedString helper were removed. ClearRememberedPassword
-    // and RememberedPasswordKey are kept (Clear is still called from the
-    // PreferencesBottomSheet sign-out path).
+    public string? LoadRememberedPassword(string serverUrl, string email)
+    {
+        string? payload = LoadEncryptedString(RememberedPasswordKey);
+        if (string.IsNullOrWhiteSpace(payload))
+            return null;
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(payload);
+            JsonElement root = document.RootElement;
+            string storedServerUrl = ReadRequiredJsonString(root, "server_url");
+            string storedEmail = ReadRequiredJsonString(root, "email");
+            string password = ReadRequiredJsonString(root, "password");
+            if (string.IsNullOrEmpty(password))
+                throw new StoredCredentialInvalidException("Stored cloud password is empty.");
+
+            return string.Equals(NormalizeCredentialServerKey(storedServerUrl), NormalizeCredentialServerKey(serverUrl), StringComparison.OrdinalIgnoreCase)
+                   && string.Equals(storedEmail.Trim(), email.Trim(), StringComparison.OrdinalIgnoreCase)
+                ? password
+                : null;
+        }
+        catch (Exception ex) when (ex is JsonException or StoredCredentialInvalidException)
+        {
+            LogDecryptFailure(ex);
+            ClearRememberedPassword();
+            return null;
+        }
+    }
+
+    public void SaveRememberedPassword(string serverUrl, string email, string password)
+    {
+        string normalizedServerUrl = NormalizeCredentialServerKey(serverUrl);
+        string trimmedEmail = email.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedServerUrl)
+            || string.IsNullOrWhiteSpace(trimmedEmail)
+            || string.IsNullOrEmpty(password))
+        {
+            ClearRememberedPassword();
+            return;
+        }
+
+        string payload = JsonSerializer.Serialize(new
+        {
+            server_url = normalizedServerUrl,
+            email = trimmedEmail,
+            password,
+        });
+        _prefs.Edit()!
+            .PutString(RememberedPasswordKey, EncryptString(payload))!
+            .Apply();
+    }
+
     public string? LoadRefreshToken()
         => LoadEncryptedString(RefreshTokenKey);
 
@@ -80,6 +128,20 @@ public sealed class CloudSecureStore
     {
         byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(value));
         return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    private static string NormalizeCredentialServerKey(string serverUrl)
+        => serverUrl.Trim().TrimEnd('/');
+
+    private static string ReadRequiredJsonString(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out JsonElement property)
+            || property.ValueKind != JsonValueKind.String)
+        {
+            throw new StoredCredentialInvalidException("Stored cloud password envelope is missing " + propertyName + ".");
+        }
+
+        return property.GetString() ?? "";
     }
 
     private string? LoadEncryptedString(string key)

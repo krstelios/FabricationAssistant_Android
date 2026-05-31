@@ -46,15 +46,20 @@ public sealed class ImportPipeline
     public async Task<DocumentDto> ImportAsync(
         AndroidUri contentUri,
         IProgress<string>? progress,
-        CancellationToken ct,
-        bool copyToImportCache = true)
+        CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(contentUri);
 
-        string fileName = ResolveFileNameWithMimeFallback(contentUri, ResolveFileName(contentUri));
-        string localPath = !copyToImportCache && TryResolveExistingFilePath(contentUri) is { } existingFilePath
-            ? existingFilePath
-            : await CopyToLocalAsync(contentUri, fileName, progress, ct).ConfigureAwait(false);
+        // S3-L5: resolve display name and declared size in a single ContentResolver
+        // query rather than two separate binder round-trips.
+        (string? displayName, long? declaredSize) = ResolveOpenableMetadata(contentUri);
+        string fileName = ResolveFileNameWithMimeFallback(contentUri, displayName);
+        // S3/4-M1 + S3-M2: always copy into the app-owned import cache. Importing a
+        // file:// path in place skipped CopyToLocalAsync's MaxImportBytes/timeout
+        // enforcement and let the sniff-rename / BOM-strip below mutate the user's
+        // original file (and fail on read-only locations); operating on the cache
+        // copy closes both gaps.
+        string localPath = await CopyToLocalAsync(contentUri, fileName, declaredSize, progress, ct).ConfigureAwait(false);
         string ext = Path.GetExtension(localPath).ToLowerInvariant();
         if (ShouldSniffFileType(ext)
             && await TryResolveExtensionFromSignatureAsync(localPath, ct).ConfigureAwait(false) is { } sniffedExtension)
@@ -145,6 +150,7 @@ public sealed class ImportPipeline
     private async Task<string> CopyToLocalAsync(
         AndroidUri uri,
         string fileName,
+        long? declaredSize,
         IProgress<string>? progress,
         CancellationToken ct)
     {
@@ -154,7 +160,6 @@ public sealed class ImportPipeline
         string tempPath = localPath + ".part";
 
         progress?.Report("Copying file...");
-        long? declaredSize = TryResolveContentSize(uri);
         if (declaredSize is > MaxImportBytes)
             throw new InvalidDataException($"The selected file is too large ({declaredSize.Value:n0} bytes). Maximum supported import size is {MaxImportBytes:n0} bytes.");
 
@@ -220,19 +225,35 @@ public sealed class ImportPipeline
         }
     }
 
-    private string? ResolveFileName(AndroidUri uri)
+    // S3-L5: one query returns both the openable DisplayName and Size, so the import
+    // prelude makes a single ContentResolver binder round-trip instead of two.
+    private (string? DisplayName, long? Size) ResolveOpenableMetadata(AndroidUri uri)
     {
         try
         {
             using var cursor = _context.ContentResolver?.Query(uri, null, null, null, null);
-            if (cursor is null || !cursor.MoveToFirst()) return null;
-            int idx = cursor.GetColumnIndex(IOpenableColumns.DisplayName);
-            if (idx < 0) return null;
-            return cursor.GetString(idx);
+            if (cursor is null || !cursor.MoveToFirst())
+                return (null, null);
+
+            string? displayName = null;
+            int nameIndex = cursor.GetColumnIndex(IOpenableColumns.DisplayName);
+            if (nameIndex >= 0 && !cursor.IsNull(nameIndex))
+                displayName = cursor.GetString(nameIndex);
+
+            long? size = null;
+            int sizeIndex = cursor.GetColumnIndex(IOpenableColumns.Size);
+            if (sizeIndex >= 0 && !cursor.IsNull(sizeIndex))
+            {
+                long value = cursor.GetLong(sizeIndex);
+                if (value >= 0)
+                    size = value;
+            }
+
+            return (displayName, size);
         }
         catch
         {
-            return null;
+            return (null, null);
         }
     }
 
@@ -240,15 +261,6 @@ public sealed class ImportPipeline
         => ImportFileTypeResolver.ResolveFileNameWithMimeFallback(
             string.IsNullOrWhiteSpace(displayName) ? uri.LastPathSegment : displayName,
             _context.ContentResolver?.GetType(uri));
-
-    private static string? TryResolveExistingFilePath(AndroidUri uri)
-    {
-        if (!string.Equals(uri.Scheme, "file", StringComparison.OrdinalIgnoreCase))
-            return null;
-
-        string? path = uri.Path;
-        return string.IsNullOrWhiteSpace(path) || !File.Exists(path) ? null : path;
-    }
 
     private static string SanitizeImportCacheToken(string token)
     {
@@ -260,27 +272,6 @@ public sealed class ImportPipeline
 
     private static bool ShouldSniffFileType(string extension)
         => extension is not (".gltf" or ".glb" or ".fa");
-
-    private long? TryResolveContentSize(AndroidUri uri)
-    {
-        try
-        {
-            using var cursor = _context.ContentResolver?.Query(uri, null, null, null, null);
-            if (cursor is null || !cursor.MoveToFirst())
-                return null;
-
-            int sizeIndex = cursor.GetColumnIndex(IOpenableColumns.Size);
-            if (sizeIndex < 0 || cursor.IsNull(sizeIndex))
-                return null;
-
-            long size = cursor.GetLong(sizeIndex);
-            return size >= 0 ? size : null;
-        }
-        catch
-        {
-            return null;
-        }
-    }
 
     private static async Task CopyToAsyncWithLimit(
         Stream input,

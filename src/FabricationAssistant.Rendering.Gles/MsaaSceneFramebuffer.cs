@@ -5,7 +5,7 @@ namespace FabricationAssistant.Rendering.Gles;
 /// <summary>
 /// Offscreen multisample framebuffer for the Android viewport. Owns a
 /// multisample color renderbuffer (RGB8) + multisample depth-stencil
-/// renderbuffer (D24S8) attached to a single FBO. The renderer draws every
+/// renderbuffer (D32FS8) attached to a single FBO. The renderer draws every
 /// non-post-process pass into this FBO, then blit-resolves the color
 /// attachment to FBO 0 before the selection outline composite.
 ///
@@ -17,6 +17,8 @@ namespace FabricationAssistant.Rendering.Gles;
 /// </summary>
 public sealed partial class MsaaSceneFramebuffer : IDisposable
 {
+    private const InternalFormat PreferredDepthStencilFormat = InternalFormat.Depth32fStencil8;
+
     private readonly GL _gl;
     private uint _fbo;
     private uint _colorRbo;
@@ -24,7 +26,9 @@ public sealed partial class MsaaSceneFramebuffer : IDisposable
     private int _width;
     private int _height;
     private int _samples;
+    private int _requestedSamples;
     private int _maxSamples = -1;
+    private string _lastDepthLogKey = "";
     private bool _disposed;
 
     public MsaaSceneFramebuffer(GL gl)
@@ -37,6 +41,8 @@ public sealed partial class MsaaSceneFramebuffer : IDisposable
     public int Height => _height;
     public int Samples => _samples;
     public int MaxSamples => _maxSamples;
+    public InternalFormat DepthStencilFormat { get; private set; } = PreferredDepthStencilFormat;
+    public int DepthBits => 32;
     public GLEnum LastResolveError { get; private set; } = GLEnum.NoError;
 
     /// <summary>
@@ -64,7 +70,7 @@ public sealed partial class MsaaSceneFramebuffer : IDisposable
         // Fast path: steady-state no-op. Hits every frame after the first
         // allocation, so it must avoid all GL calls (especially glGetIntegerv
         // which can flush the pipeline on some drivers).
-        if (_fbo != 0 && _width == width && _height == height && _samples == clamped)
+        if (_fbo != 0 && _width == width && _height == height && _requestedSamples == clamped)
             return;
 
         // Query the hardware max sample count once and cache it. GL_MAX_SAMPLES
@@ -80,65 +86,46 @@ public sealed partial class MsaaSceneFramebuffer : IDisposable
         // Re-check after hardware clamp. If the request and previous frame
         // both resolve to the same Android-supported sample count, there is
         // no FBO work to do.
-        if (_fbo != 0 && _width == width && _height == height && _samples == clamped)
+        if (_fbo != 0 && _width == width && _height == height && _requestedSamples == clamped)
             return;
-
-        Destroy();
-        _width = width;
-        _height = height;
-        _samples = clamped;
 
         try
         {
-            _fbo = _gl.GenFramebuffer();
-            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _fbo);
+            Destroy();
 
-            _colorRbo = _gl.GenRenderbuffer();
-            _gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, _colorRbo);
-            // RenderbufferStorageMultisample with samples == 1 is legal in
-            // GLES 3.x but implementations may silently treat it differently.
-            // Take the explicit single-sample path when samples <= 1.
-            if (clamped > 1)
+            string? lastFailure = null;
+            Exception? firstException = null;
+            foreach (int actualSamples in SampleFallbackOrder(clamped))
             {
-                _gl.RenderbufferStorageMultisample(RenderbufferTarget.Renderbuffer,
-                    (uint)clamped, InternalFormat.Rgb8, (uint)width, (uint)height);
-            }
-            else
-            {
-                _gl.RenderbufferStorage(RenderbufferTarget.Renderbuffer,
-                    InternalFormat.Rgb8, (uint)width, (uint)height);
-            }
-            _gl.FramebufferRenderbuffer(FramebufferTarget.Framebuffer,
-                FramebufferAttachment.ColorAttachment0, RenderbufferTarget.Renderbuffer, _colorRbo);
+                DrainGlErrors();
+                try
+                {
+                    if (TryAllocate(width, height, actualSamples, PreferredDepthStencilFormat, out lastFailure))
+                    {
+                        _width = width;
+                        _height = height;
+                        _samples = actualSamples;
+                        _requestedSamples = clamped;
+                        DepthStencilFormat = PreferredDepthStencilFormat;
+                        LogDepthSelection(width, height, actualSamples, clamped);
+                        return;
+                    }
+                }
+                catch (Exception ex) when (ex is not OutOfMemoryException)
+                {
+                    firstException ??= ex;
+                    lastFailure = ex.GetBaseException().Message;
+                }
 
-            _depthStencilRbo = _gl.GenRenderbuffer();
-            _gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, _depthStencilRbo);
-            if (clamped > 1)
-            {
-                _gl.RenderbufferStorageMultisample(RenderbufferTarget.Renderbuffer,
-                    (uint)clamped, InternalFormat.Depth24Stencil8, (uint)width, (uint)height);
-            }
-            else
-            {
-                _gl.RenderbufferStorage(RenderbufferTarget.Renderbuffer,
-                    InternalFormat.Depth24Stencil8, (uint)width, (uint)height);
-            }
-            _gl.FramebufferRenderbuffer(FramebufferTarget.Framebuffer,
-                FramebufferAttachment.DepthStencilAttachment, RenderbufferTarget.Renderbuffer, _depthStencilRbo);
-
-            var status = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
-            // Unbind before any further work so a successful path and the throw
-            // path leave the same clean binding state (renderbuffer = 0, FBO = 0).
-            // Otherwise a caller that catches the exception inherits bindings
-            // pointing at the just-deleted handles, which is driver-undefined.
-            _gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, 0);
-            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
-            if (status != GLEnum.FramebufferComplete)
-            {
+                _gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, 0);
+                _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
                 Destroy();
-                throw new InvalidOperationException(
-                    $"MsaaSceneFramebuffer: FBO incomplete after attachment, status = 0x{(int)status:X4}");
             }
+
+            throw new InvalidOperationException(
+                "MsaaSceneFramebuffer: FBO incomplete with required Depth32FStencil8"
+                + (string.IsNullOrWhiteSpace(lastFailure) ? "." : $": {lastFailure}"),
+                firstException);
         }
         catch
         {
@@ -147,6 +134,87 @@ public sealed partial class MsaaSceneFramebuffer : IDisposable
             Destroy();
             throw;
         }
+    }
+
+    private static int[] SampleFallbackOrder(int clampedSamples)
+    {
+        clampedSamples = System.Math.Max(1, clampedSamples);
+        int[] candidates = [clampedSamples, 8, 4, 2, 1];
+        var result = new List<int>(candidates.Length);
+        foreach (int candidate in candidates)
+        {
+            if (candidate <= clampedSamples && !result.Contains(candidate))
+                result.Add(candidate);
+        }
+
+        return result.ToArray();
+    }
+
+    private bool TryAllocate(
+        int width,
+        int height,
+        int actualSamples,
+        InternalFormat depthStencilFormat,
+        out string? failureReason)
+    {
+        failureReason = null;
+        _fbo = _gl.GenFramebuffer();
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _fbo);
+
+        _colorRbo = _gl.GenRenderbuffer();
+        _gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, _colorRbo);
+        // RenderbufferStorageMultisample with samples == 1 is legal in
+        // GLES 3.x but implementations may silently treat it differently.
+        // Take the explicit single-sample path when samples <= 1.
+        AllocateRenderbuffer(InternalFormat.Rgb8, width, height, actualSamples);
+        _gl.FramebufferRenderbuffer(FramebufferTarget.Framebuffer,
+            FramebufferAttachment.ColorAttachment0, RenderbufferTarget.Renderbuffer, _colorRbo);
+
+        _depthStencilRbo = _gl.GenRenderbuffer();
+        _gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, _depthStencilRbo);
+        AllocateRenderbuffer(depthStencilFormat, width, height, actualSamples);
+        _gl.FramebufferRenderbuffer(FramebufferTarget.Framebuffer,
+            FramebufferAttachment.DepthStencilAttachment, RenderbufferTarget.Renderbuffer, _depthStencilRbo);
+
+        var status = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
+        var error = _gl.GetError();
+        // Unbind before any further work so a successful path and the failure
+        // path leave the same clean binding state (renderbuffer = 0, FBO = 0).
+        _gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, 0);
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+        if (status == GLEnum.FramebufferComplete && error == GLEnum.NoError)
+            return true;
+
+        failureReason = $"format={depthStencilFormat}, samples={actualSamples}, status=0x{(int)status:X4}, glError=0x{(int)error:X4}";
+        return false;
+    }
+
+    private void AllocateRenderbuffer(InternalFormat format, int width, int height, int clampedSamples)
+    {
+        if (clampedSamples > 1)
+        {
+            _gl.RenderbufferStorageMultisample(RenderbufferTarget.Renderbuffer,
+                (uint)clampedSamples, format, (uint)width, (uint)height);
+        }
+        else
+        {
+            _gl.RenderbufferStorage(RenderbufferTarget.Renderbuffer,
+                format, (uint)width, (uint)height);
+        }
+    }
+
+    private void LogDepthSelection(int width, int height, int actualSamples, int requestedSamples)
+    {
+        string key = $"{width}x{height}:{PreferredDepthStencilFormat}:{actualSamples}:{requestedSamples}";
+        if (key == _lastDepthLogKey)
+            return;
+
+        _lastDepthLogKey = key;
+        string message = $"Scene framebuffer depth={PreferredDepthStencilFormat}, samples={actualSamples}, requestedSamples={requestedSamples}, viewport={width}x{height}.";
+        if (actualSamples == requestedSamples)
+            Android.Util.Log.Info("FA.Renderer", message);
+        else
+            Android.Util.Log.Warn("FA.Renderer", message + " Sample count was reduced; 32-bit depth is still required.");
     }
 
     /// <summary>
@@ -217,6 +285,7 @@ public sealed partial class MsaaSceneFramebuffer : IDisposable
         _width = 0;
         _height = 0;
         _samples = 0;
+        _requestedSamples = 0;
     }
 
     public void Dispose()

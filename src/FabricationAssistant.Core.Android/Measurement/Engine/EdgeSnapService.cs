@@ -28,7 +28,6 @@ public sealed class EdgeSnapService
     private const double MaximumArcSweepRadians = 2.0 * System.Math.PI - 1.0e-4;
     private const int MinimumClosedLoopMidpointTargetCount = 8;
     private const int MaximumClosedLoopMidpointTargetCount = 32;
-    private const int MaxVisibilityProbeCandidates = 4;
     private const int SegmentedRunMinSegments = 3;
 
     private static readonly ConditionalWeakTable<float[], SnapModelSlot> ModelCache = new();
@@ -68,6 +67,32 @@ public sealed class EdgeSnapService
         SnapModel model = ModelCache
             .GetValue(edgePositions, static _ => new SnapModelSlot())
             .GetOrBuild(edgePositions, ResolveWeldToleranceScale(WeldToleranceScale));
+
+        return TrySnapTargets(
+            model.Targets,
+            $"edgeBuffer={RuntimeHelpers.GetHashCode(edgePositions)}",
+            localToWorld,
+            rayOrigin,
+            rayDirection,
+            angularTolerance,
+            endpointAngularTolerance);
+    }
+
+    public EdgeSnapResult? TrySnapPrepared(
+        float[] edgePositions,
+        Matrix4d localToWorld,
+        Vector3d rayOrigin,
+        Vector3d rayDirection,
+        double angularTolerance,
+        double endpointAngularTolerance = 0.0085)
+    {
+        if (edgePositions is null || edgePositions.Length < 6)
+            return null;
+
+        SnapModelSlot slot = ModelCache.GetValue(edgePositions, static _ => new SnapModelSlot());
+        if (!slot.TryGetReady(ResolveWeldToleranceScale(WeldToleranceScale), out SnapModel? model)
+            || model is null)
+            return null;
 
         return TrySnapTargets(
             model.Targets,
@@ -134,12 +159,12 @@ public sealed class EdgeSnapService
         if (endpointTanTolerance <= 0.0 && midpointTanTolerance <= 0.0)
             return null;
 
-        Span<SnapCandidate> visibilityCandidates = stackalloc SnapCandidate[MaxVisibilityProbeCandidates];
-        int visibilityCandidateCount = 0;
         SnapScanDiagnostics diagnostics = new(
             targets.Length,
             ResolveAngularTolerance(endpointAngularTolerance, EndpointSnapToleranceFactor),
             ResolveAngularTolerance(angularTolerance, EdgeSnapToleranceFactor));
+        SnapCandidate best = default;
+        bool found = false;
 
         for (int i = 0; i < targets.Length; i++)
         {
@@ -179,15 +204,10 @@ public sealed class EdgeSnapService
             double angularScore = perpSquared / (depth * depth);
             double perp = System.Math.Sqrt(perpSquared);
             var candidate = new SnapCandidate(worldPoint, depth, perp, angularScore, target);
-            AddVisibilityCandidate(visibilityCandidates, ref visibilityCandidateCount, candidate);
-        }
+            if (found && !candidate.IsBetterThan(best))
+                continue;
 
-        SnapCandidate best = default;
-        bool found = false;
-        diagnostics.VisibilityCandidates = visibilityCandidateCount;
-        for (int i = 0; i < visibilityCandidateCount; i++)
-        {
-            SnapCandidate candidate = visibilityCandidates[i];
+            diagnostics.VisibilityCandidates++;
             if (!IsTargetVisible(rayOrigin, rayDir, localToWorld, candidate))
             {
                 diagnostics.VisibilityRejected++;
@@ -196,34 +216,12 @@ public sealed class EdgeSnapService
 
             best = candidate;
             found = true;
-            break;
         }
 
         LogSnapScanDiagnostics(found ? "hit" : "miss", diagnosticsSource, diagnostics, found ? best : null);
         return found
             ? new EdgeSnapResult(best.WorldPoint, best.RayDepth, best.PerpendicularDistance)
             : null;
-    }
-
-    private static void AddVisibilityCandidate(
-        Span<SnapCandidate> candidates,
-        ref int count,
-        SnapCandidate candidate)
-    {
-        int insert = 0;
-        while (insert < count && !candidate.IsBetterThan(candidates[insert]))
-            insert++;
-
-        if (insert >= candidates.Length)
-            return;
-
-        if (count < candidates.Length)
-            count++;
-
-        for (int i = count - 1; i > insert; i--)
-            candidates[i] = candidates[i - 1];
-
-        candidates[insert] = candidate;
     }
 
     private static double ResolveAngularTolerance(double angularTolerance, double factor)
@@ -360,6 +358,26 @@ public sealed class EdgeSnapService
                 _model = model;
                 _weldToleranceScale = weldToleranceScale;
                 return model;
+            }
+        }
+
+        public bool TryGetReady(double weldToleranceScale, out SnapModel? model)
+        {
+            model = null;
+            if (!Monitor.TryEnter(this))
+                return false;
+
+            try
+            {
+                if (_model is null || _weldToleranceScale != weldToleranceScale)
+                    return false;
+
+                model = _model;
+                return true;
+            }
+            finally
+            {
+                Monitor.Exit(this);
             }
         }
     }

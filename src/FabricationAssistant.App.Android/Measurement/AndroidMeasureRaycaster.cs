@@ -8,7 +8,8 @@ namespace FabricationAssistant.App.Android.Measurement;
 
 internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster, IMeasureSupplementalPointSnapProvider
 {
-    private const int MaxSupplementalEdgeMeshes = 8;
+    private const int PreparedSupplementalCandidateLimit = 24;
+    private const long PreparedSupplementalBudgetMs = 48;
 
     private readonly Func<Scene?> _sceneAccessor;
     private readonly Func<IReadOnlyList<SectionPlane>>? _sectionPlanesAccessor;
@@ -16,7 +17,6 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster, IMeasureSuppl
     private readonly EdgeSnapService _sectionEdgeSnap = new();
     private readonly EdgeSnapService _sceneEdgeSnap = new();
     private readonly FeatureEdgeExtractor _sceneFeatureEdges = new();
-    private readonly SupplementalMeshCandidate[] _supplementalMeshCandidates = new SupplementalMeshCandidate[MaxSupplementalEdgeMeshes];
     private readonly Dictionary<int, AccelerationEntry> _accelerations = new();
     private Scene? _cachedScene;
     private long _cachedVisibilityVersion = -1;
@@ -220,7 +220,8 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster, IMeasureSuppl
         Vector3d rayDirection,
         double edgeAngularTolerance,
         double endpointAngularTolerance,
-        out Vector3d worldPoint)
+        out Vector3d worldPoint,
+        bool allowBuild = true)
     {
         worldPoint = default;
 
@@ -230,12 +231,14 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster, IMeasureSuppl
             rayDirection,
             edgeAngularTolerance,
             endpointAngularTolerance,
+            allowBuild,
             out SupplementalSnapStats sceneStats);
         EdgeSnapResult? sectionSnap = TrySnapSectionCurves(
             rayOrigin,
             rayDirection,
             edgeAngularTolerance,
             endpointAngularTolerance,
+            allowBuild,
             out bool sectionAvailable);
 
         EdgeSnapResult? best = null;
@@ -257,16 +260,16 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster, IMeasureSuppl
         {
             LogSupplementalSnap(
                 "miss",
-                $"source=none, nodes={sceneStats.VisibleNodes}, boundsCandidates={sceneStats.BoundsCandidates}, edgeMeshes={sceneStats.EdgeMeshes}, meshHits={sceneStats.MeshHits}, section={(sectionAvailable ? "available" : "none")}, elapsedMs={Environment.TickCount64 - start}",
-                $"miss|bounds={sceneStats.BoundsCandidates}|edgeMeshes={sceneStats.EdgeMeshes}|section={sectionAvailable}");
+                $"source=none, nodes={sceneStats.VisibleNodes}, boundsCandidates={sceneStats.BoundsCandidates}, edgeMeshes={sceneStats.EdgeMeshes}, meshHits={sceneStats.MeshHits}, capped={sceneStats.Capped}, budgeted={sceneStats.Budgeted}, section={(sectionAvailable ? "available" : "none")}, elapsedMs={Environment.TickCount64 - start}",
+                $"miss|bounds={sceneStats.BoundsCandidates}|edgeMeshes={sceneStats.EdgeMeshes}|capped={sceneStats.Capped}|budgeted={sceneStats.Budgeted}|section={sectionAvailable}");
             return false;
         }
 
         worldPoint = snap.WorldPoint;
         LogSupplementalSnap(
             "hit",
-            $"source={source}, nodes={sceneStats.VisibleNodes}, boundsCandidates={sceneStats.BoundsCandidates}, edgeMeshes={sceneStats.EdgeMeshes}, meshHits={sceneStats.MeshHits}, depth={snap.RayDepth:0.###}, perp={snap.PerpendicularDistance:0.######}, elapsedMs={Environment.TickCount64 - start}",
-            $"hit|source={source}|bounds={sceneStats.BoundsCandidates}|edgeMeshes={sceneStats.EdgeMeshes}|meshHits={sceneStats.MeshHits}");
+            $"source={source}, nodes={sceneStats.VisibleNodes}, boundsCandidates={sceneStats.BoundsCandidates}, edgeMeshes={sceneStats.EdgeMeshes}, meshHits={sceneStats.MeshHits}, capped={sceneStats.Capped}, budgeted={sceneStats.Budgeted}, depth={snap.RayDepth:0.###}, perp={snap.PerpendicularDistance:0.######}, elapsedMs={Environment.TickCount64 - start}",
+            $"hit|source={source}|bounds={sceneStats.BoundsCandidates}|edgeMeshes={sceneStats.EdgeMeshes}|meshHits={sceneStats.MeshHits}|capped={sceneStats.Capped}|budgeted={sceneStats.Budgeted}");
         return true;
     }
 
@@ -275,6 +278,7 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster, IMeasureSuppl
         Vector3d rayDirection,
         double edgeAngularTolerance,
         double endpointAngularTolerance,
+        bool allowBuild,
         out bool sectionAvailable)
     {
         sectionAvailable = false;
@@ -291,6 +295,8 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster, IMeasureSuppl
             return null;
 
         sectionAvailable = true;
+        if (!allowBuild)
+            return null;
 
         return _sectionEdgeSnap.TrySnap(
             mesh.EdgePositions,
@@ -306,6 +312,7 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster, IMeasureSuppl
         Vector3d rayDirection,
         double edgeAngularTolerance,
         double endpointAngularTolerance,
+        bool allowBuild,
         out SupplementalSnapStats stats)
     {
         stats = default;
@@ -319,10 +326,10 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster, IMeasureSuppl
         if (!BoundsMayContainSnapCandidate(scene.Bounds, rayOrigin, rayDir, maxTanTolerance))
             return null;
 
-        Span<SupplementalMeshCandidate> meshCandidates = _supplementalMeshCandidates;
-        int meshCandidateCount = 0;
+        EdgeSnapResult? best = null;
         IReadOnlyList<SceneNode> visibleNodes = scene.GetVisibleNodes();
         stats.VisibleNodes = visibleNodes.Count;
+        var candidates = new List<SupplementalEdgeCandidate>(visibleNodes.Count);
         foreach (SceneNode node in visibleNodes)
         {
             if (node.MeshId is not int meshId)
@@ -334,35 +341,59 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster, IMeasureSuppl
 
             Matrix4d world = node.EffectiveWorldTransform;
             BoundingBox worldBounds = SceneBoundsUtilities.TransformBounds(mesh.Bounds, world);
-            if (!TryComputeBoundsSnapScore(worldBounds, rayOrigin, rayDir, maxTanTolerance, out double boundsScore))
+            if (!TryComputeBoundsSnapScore(worldBounds, rayOrigin, rayDir, maxTanTolerance, out double score))
                 continue;
 
             stats.BoundsCandidates++;
-            AddSupplementalMeshCandidate(
-                meshCandidates,
-                ref meshCandidateCount,
-                new SupplementalMeshCandidate(node, mesh, world, boundsScore));
+            candidates.Add(new SupplementalEdgeCandidate(node, mesh, world, score));
         }
 
-        EdgeSnapResult? best = null;
-        for (int i = 0; i < meshCandidateCount; i++)
+        candidates.Sort(static (a, b) => a.Score.CompareTo(b.Score));
+        long start = Environment.TickCount64;
+        foreach (SupplementalEdgeCandidate candidate in candidates)
         {
-            SupplementalMeshCandidate candidate = meshCandidates[i];
+            if (!allowBuild)
+            {
+                if (stats.EdgeMeshes >= PreparedSupplementalCandidateLimit)
+                {
+                    stats.Capped = true;
+                    break;
+                }
+
+                if (Environment.TickCount64 - start >= PreparedSupplementalBudgetMs)
+                {
+                    stats.Budgeted = true;
+                    break;
+                }
+            }
+
             MeshDto mesh = candidate.Mesh;
             float[] edges = mesh.EdgePositions.Length >= 6
                 ? mesh.EdgePositions
-                : _sceneFeatureEdges.Extract(mesh.Positions, mesh.Indices);
+                : allowBuild
+                    ? _sceneFeatureEdges.Extract(mesh.Positions, mesh.Indices)
+                    : _sceneFeatureEdges.TryGetCached(mesh.Positions, mesh.Indices, out float[] cachedEdges)
+                        ? cachedEdges
+                        : Array.Empty<float>();
             if (edges.Length < 6)
                 continue;
 
             stats.EdgeMeshes++;
-            EdgeSnapResult? snap = _sceneEdgeSnap.TrySnap(
-                edges,
-                candidate.WorldTransform,
-                rayOrigin,
-                rayDir,
-                edgeAngularTolerance,
-                endpointAngularTolerance);
+            EdgeSnapResult? snap = allowBuild
+                ? _sceneEdgeSnap.TrySnap(
+                    edges,
+                    candidate.WorldTransform,
+                    rayOrigin,
+                    rayDir,
+                    edgeAngularTolerance,
+                    endpointAngularTolerance)
+                : _sceneEdgeSnap.TrySnapPrepared(
+                    edges,
+                    candidate.WorldTransform,
+                    rayOrigin,
+                    rayDir,
+                    edgeAngularTolerance,
+                    endpointAngularTolerance);
             if (snap is null)
                 continue;
 
@@ -372,27 +403,6 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster, IMeasureSuppl
         }
 
         return best;
-    }
-
-    private static void AddSupplementalMeshCandidate(
-        Span<SupplementalMeshCandidate> candidates,
-        ref int count,
-        SupplementalMeshCandidate candidate)
-    {
-        int insert = 0;
-        while (insert < count && candidate.Score >= candidates[insert].Score)
-            insert++;
-
-        if (insert >= candidates.Length)
-            return;
-
-        if (count < candidates.Length)
-            count++;
-
-        for (int i = count - 1; i > insert; i--)
-            candidates[i] = candidates[i - 1];
-
-        candidates[insert] = candidate;
     }
 
     private static bool IsBetterSupplementalSnap(EdgeSnapResult candidate, EdgeSnapResult current)
@@ -748,7 +758,7 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster, IMeasureSuppl
         Matrix4d WorldTransform,
         double EntryDistance);
 
-    private readonly record struct SupplementalMeshCandidate(
+    private readonly record struct SupplementalEdgeCandidate(
         SceneNode Node,
         MeshDto Mesh,
         Matrix4d WorldTransform,
@@ -767,5 +777,7 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster, IMeasureSuppl
         public int BoundsCandidates;
         public int EdgeMeshes;
         public int MeshHits;
+        public bool Capped;
+        public bool Budgeted;
     }
 }

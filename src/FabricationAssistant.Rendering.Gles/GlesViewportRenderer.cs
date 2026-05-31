@@ -600,10 +600,14 @@ public sealed class GlesViewportRenderer : IDisposable
         {
             Android.Util.Log.Info(
                 "FA.Renderer",
-                $"MSAA bypassed during lightweight navigation: requested={a.MsaaSamples}x, viewport={_width}x{_height}.");
+                $"MSAA samples reduced during lightweight navigation: requested={a.MsaaSamples}x, depth remains D32FS8, viewport={_width}x{_height}.");
         }
 
-        bool useMsaaFbo = !msaaBypassedForNavigation && TryPrepareMsaaFramebuffer(a);
+        SceneAppearance renderTargetAppearance = a;
+        if (msaaBypassedForNavigation)
+            renderTargetAppearance.MsaaSamples = 0;
+
+        bool useMsaaFbo = TryPrepareMsaaFramebuffer(renderTargetAppearance);
         bool drawEdgesThisFrame = false;
         long sceneStart = afterSsao;
         long beforeEdges = afterSsao;
@@ -614,8 +618,8 @@ public sealed class GlesViewportRenderer : IDisposable
         {
         _gl.Viewport(0, 0, (uint)_width, (uint)_height);
         // Bind the appropriate render target. With useMsaaFbo we render
-        // into the multisample FBO. Otherwise we render directly into the
-        // default backbuffer (FBO 0).
+        // into the offscreen scene FBO, which uses D32FS8 even when the
+        // requested sample count is reduced to single-sample.
         if (useMsaaFbo && _msaaFbo!.FboHandle != 0)
             _msaaFbo.Bind();
         else
@@ -628,8 +632,8 @@ public sealed class GlesViewportRenderer : IDisposable
         _gl.ClearColor(bg[0], bg[1], bg[2], 1.0f);
         if (useMsaaFbo)
         {
-            // The MSAA FBO has a D24S8 attachment. Clear stencil here so
-            // section caps start each frame from a clean mask.
+            // The MSAA FBO has a depth-stencil attachment. Clear stencil here
+            // so section caps start each frame from a clean mask.
             _gl.ClearStencil(0);
             _gl.Clear((uint)(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit | ClearBufferMask.StencilBufferBit));
         }
@@ -2504,14 +2508,12 @@ public sealed class GlesViewportRenderer : IDisposable
 
     private bool TryPrepareMsaaFramebuffer(SceneAppearance appearance)
     {
-        // Plan 3B: offscreen MSAA FBO is only used when the user requested
-        // multisampling. With MSAA = Off the renderer reverts to drawing
-        // directly into the default backbuffer (the pre-Plan-3B path) to
-        // avoid an unnecessary blit-resolve on every frame.
-        if (appearance.MsaaSamples <= 1 || _msaaFbo is null)
+        // The scene always renders into the offscreen FBO so depth precision
+        // stays at D32FS8 independently of the EGL backbuffer. Sample count
+        // follows the appearance setting, with 0/1 selecting single-sample
+        // storage in MsaaSceneFramebuffer.
+        if (_msaaFbo is null)
         {
-            _msaaFbo?.Destroy();
-            LogMsaaState(appearance.MsaaSamples, 1, _msaaFbo?.MaxSamples ?? -1);
             return false;
         }
 
@@ -2525,18 +2527,6 @@ public sealed class GlesViewportRenderer : IDisposable
         try
         {
             _msaaFbo.Ensure(_width, _height, appearance.MsaaSamples);
-            if (_msaaFbo.Samples <= 1)
-            {
-                Android.Util.Log.Warn(
-                    "FA.Renderer",
-                    $"MSAA requested {appearance.MsaaSamples}x but hardware reports max {_msaaFbo.MaxSamples}; rendering without MSAA.");
-                _msaaFbo.Destroy();
-                _failedMsaaWidth = _width;
-                _failedMsaaHeight = _height;
-                _failedMsaaSamples = appearance.MsaaSamples;
-                return false;
-            }
-
             _failedMsaaWidth = 0;
             _failedMsaaHeight = 0;
             _failedMsaaSamples = 0;

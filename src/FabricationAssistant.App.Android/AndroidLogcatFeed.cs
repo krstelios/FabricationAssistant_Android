@@ -5,6 +5,25 @@ namespace FabricationAssistant.App.Android;
 internal sealed class AndroidLogcatFeed : IDisposable
 {
     private const int MaxLines = 700;
+    private const int MaxLineCharacters = 1000;
+    private static readonly string[] ImportantCrashTags =
+    [
+        "AndroidRuntime",
+        "DEBUG",
+        "DOTNET",
+        "libc",
+        "mono",
+        "monodroid",
+    ];
+    private static readonly string[] ImportantCrashFragments =
+    [
+        "FATAL EXCEPTION",
+        "Fatal signal",
+        "SIGABRT",
+        "SIGSEGV",
+        "OutOfMemoryError",
+        "ANR in ",
+    ];
 
     private readonly object _gate = new();
     private readonly Queue<string> _lines = new();
@@ -27,7 +46,7 @@ internal sealed class AndroidLogcatFeed : IDisposable
         LastError = null;
         var cts = new CancellationTokenSource();
         _cts = cts;
-        AppendInternal("Diagnostics log feed started.");
+        AppendInternal("Diagnostics log feed started. Showing FA.* and crash/error logs only.", synthetic: true);
         _readerTask = Task.Run(() => ReadLogcatAsync(cts));
     }
 
@@ -38,7 +57,7 @@ internal sealed class AndroidLogcatFeed : IDisposable
 
         try { _cts?.Cancel(); } catch { }
         try { _process?.Destroy(); } catch { }
-        AppendInternal("Diagnostics log feed paused.");
+        AppendInternal("Diagnostics log feed paused.", synthetic: true);
     }
 
     public void Clear()
@@ -111,7 +130,7 @@ internal sealed class AndroidLogcatFeed : IDisposable
         catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
             LastError = ex.GetBaseException().Message;
-            AppendInternal("Diagnostics log feed stopped: " + LastError);
+            AppendInternal("Diagnostics log feed stopped: " + LastError, synthetic: true);
         }
         finally
         {
@@ -125,10 +144,14 @@ internal sealed class AndroidLogcatFeed : IDisposable
         }
     }
 
-    private void AppendInternal(string line)
+    private void AppendInternal(string line, bool synthetic = false)
     {
+        if (!synthetic && !ShouldIncludeLogcatLine(line))
+            return;
+
         string timestamp = DateTimeOffset.Now.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture);
-        string entry = timestamp + " " + line;
+        string normalizedLine = NormalizeLine(line);
+        string entry = synthetic ? timestamp + " " + normalizedLine : normalizedLine;
 
         lock (_gate)
         {
@@ -139,5 +162,61 @@ internal sealed class AndroidLogcatFeed : IDisposable
                 _droppedLines++;
             }
         }
+    }
+
+    private static string NormalizeLine(string line)
+    {
+        if (line.Length <= MaxLineCharacters)
+            return line;
+
+        return line[..MaxLineCharacters] + $" ... [truncated {line.Length - MaxLineCharacters} chars]";
+    }
+
+    private static bool ShouldIncludeLogcatLine(string line)
+    {
+        string tag = ExtractLogcatTag(line);
+        if (tag.Length > 0
+            && (tag.Equals("FA", StringComparison.OrdinalIgnoreCase)
+                || tag.StartsWith("FA.", StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        foreach (string importantTag in ImportantCrashTags)
+        {
+            if (tag.Equals(importantTag, StringComparison.OrdinalIgnoreCase)
+                || tag.StartsWith(importantTag + ".", StringComparison.OrdinalIgnoreCase)
+                || tag.StartsWith(importantTag + "-", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        foreach (string fragment in ImportantCrashFragments)
+        {
+            if (line.Contains(fragment, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static string ExtractLogcatTag(string line)
+    {
+        int slash = line.IndexOf('/');
+        if (slash < 0 || slash + 1 >= line.Length)
+            return string.Empty;
+
+        int start = slash + 1;
+        int paren = line.IndexOf('(', start);
+        int colon = line.IndexOf(':', start);
+        int end = paren >= 0 && colon >= 0
+            ? Math.Min(paren, colon)
+            : paren >= 0
+                ? paren
+                : colon >= 0
+                    ? colon
+                    : line.Length;
+        return end > start ? line[start..end].Trim() : string.Empty;
     }
 }

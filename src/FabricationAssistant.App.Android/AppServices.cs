@@ -12,6 +12,10 @@ namespace FabricationAssistant.App.Android;
 
 public static class AppServices
 {
+    // S1-4: gate the fire-and-forget import-cache prune so two rapid create/destroy
+    // cycles cannot overlap prunes. 0 = idle, 1 = a prune is running.
+    private static int _importCachePruneInProgress;
+
     public static IServiceProvider Build(Context applicationContext)
     {
         ArgumentNullException.ThrowIfNull(applicationContext);
@@ -33,10 +37,28 @@ public static class AppServices
             cacheDirectory: Path.Combine(platformPaths.CacheDir, "fa-package-cache"),
             tempDirectory: platformPaths.TempDir,
             logsDirectory: platformPaths.LogsDir);
-        _ = Task.Run(() => ImportPipeline.PruneImportCache(platformPaths.AppDataRoot))
-            .ContinueWith(
-                task => global::Android.Util.Log.Warn("FA.Cache", task.Exception?.ToString() ?? "Import cache prune failed."),
-                TaskContinuationOptions.OnlyOnFaulted);
+        // S1-4: only start a prune when one is not already running. The prune touches
+        // only the filesystem (no Activity references), so a fire-and-forget Task stays
+        // safe; the gate just stops overlapping launches from pruning concurrently.
+        if (Interlocked.CompareExchange(ref _importCachePruneInProgress, 1, 0) == 0)
+        {
+            string appDataRoot = platformPaths.AppDataRoot;
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    ImportPipeline.PruneImportCache(appDataRoot);
+                }
+                catch (Exception ex)
+                {
+                    global::Android.Util.Log.Warn("FA.Cache", ex.ToString());
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _importCachePruneInProgress, 0);
+                }
+            });
+        }
 
         var services = new ServiceCollection();
 

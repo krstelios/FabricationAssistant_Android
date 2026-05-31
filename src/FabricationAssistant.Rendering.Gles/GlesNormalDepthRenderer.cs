@@ -8,10 +8,13 @@ namespace FabricationAssistant.Rendering.Gles;
 /// Renders the scene's view-space normals plus linear view depth into a single
 /// RGBA8 color attachment. RG stores octahedral view normals; BA stores packed
 /// depth for the orthographic SSAO path. Perspective SSAO samples the real
-/// depth attachment.
+/// depth attachment. Android uses a required 32-bit float depth texture here
+/// so thin, close faces share the same precision policy as the scene FBO.
 /// </summary>
 public sealed class GlesNormalDepthRenderer : IDisposable
 {
+    private const InternalFormat PreferredDepthFormat = InternalFormat.DepthComponent32f;
+
     private readonly GL _gl;
     private readonly ShaderProgram _program;
     private uint _fbo;
@@ -21,6 +24,7 @@ public sealed class GlesNormalDepthRenderer : IDisposable
     private int _height;
     private string? _lastFramebufferError;
     private bool _loggedFramebufferUnavailable;
+    private string _lastDepthLogKey = "";
     private float _linearDepthMin;
     private float _linearDepthMax = 1f;
     private readonly float[] _viewScratch = new float[16];
@@ -32,6 +36,8 @@ public sealed class GlesNormalDepthRenderer : IDisposable
 
     /// <summary>Depth attachment as a sampleable texture.</summary>
     public uint DepthTexture => _depthTex;
+    public InternalFormat DepthFormat { get; private set; } = PreferredDepthFormat;
+    public int DepthBits => 32;
 
     public GlesNormalDepthRenderInfo LastRenderInfo { get; private set; }
     public float LinearDepthMin => _linearDepthMin;
@@ -49,56 +55,37 @@ public sealed class GlesNormalDepthRenderer : IDisposable
         if (width <= 0 || height <= 0) return;
         if (width == _width && height == _height && _fbo != 0) return;
         DestroyResources();
-        _width = width;
-        _height = height;
 
         try
         {
-            _normalTex = _gl.GenTexture();
-            _gl.BindTexture(TextureTarget.Texture2D, _normalTex);
-            unsafe
+            string? lastFailure = null;
+            try
             {
-                _gl.TexImage2D(TextureTarget.Texture2D, 0,
-                    InternalFormat.Rgba8, (uint)width, (uint)height, 0,
-                    PixelFormat.Rgba, PixelType.UnsignedByte, (void*)0);
+                DrainGlErrors();
+                if (TryAllocateFramebuffer(width, height, PreferredDepthFormat, out lastFailure))
+                {
+                    _width = width;
+                    _height = height;
+                    DepthFormat = PreferredDepthFormat;
+                    _lastFramebufferError = null;
+                    _loggedFramebufferUnavailable = false;
+                    LogDepthSelection(width, height);
+                    return;
+                }
             }
-            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Nearest);
-            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Nearest);
-            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.ClampToEdge);
-            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.ClampToEdge);
-            _gl.BindTexture(TextureTarget.Texture2D, 0);
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                lastFailure = ex.GetBaseException().Message;
+            }
 
-            _depthTex = _gl.GenTexture();
-            _gl.BindTexture(TextureTarget.Texture2D, _depthTex);
-            unsafe
-            {
-                _gl.TexImage2D(TextureTarget.Texture2D, 0,
-                    InternalFormat.DepthComponent24, (uint)width, (uint)height, 0,
-                    PixelFormat.DepthComponent, PixelType.UnsignedInt, (void*)0);
-            }
-            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Nearest);
-            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Nearest);
-            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.ClampToEdge);
-            _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.ClampToEdge);
             _gl.BindTexture(TextureTarget.Texture2D, 0);
-
-            _fbo = _gl.GenFramebuffer();
-            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _fbo);
-            _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.ColorAttachment0, TextureTarget.Texture2D, _normalTex, 0);
-            _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.DepthAttachment, TextureTarget.Texture2D, _depthTex, 0);
-            var st = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
-            if (st != GLEnum.FramebufferComplete)
-            {
-                _lastFramebufferError = $"Normal/depth FBO incomplete: 0x{(int)st:X4} ({width}x{height})";
-                _loggedFramebufferUnavailable = false;
-                Android.Util.Log.Error("FA.NormalDepth", _lastFramebufferError);
-                _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
-                DestroyResources();
-                return;
-            }
-            _lastFramebufferError = null;
-            _loggedFramebufferUnavailable = false;
             _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+            DestroyResources();
+            _lastFramebufferError =
+                "Normal/depth FBO incomplete with required DepthComponent32F"
+                + (string.IsNullOrWhiteSpace(lastFailure) ? "." : $": {lastFailure}");
+            _loggedFramebufferUnavailable = false;
+            Android.Util.Log.Error("FA.NormalDepth", _lastFramebufferError);
         }
         catch
         {
@@ -107,6 +94,65 @@ public sealed class GlesNormalDepthRenderer : IDisposable
             DestroyResources();
             throw;
         }
+    }
+
+    private bool TryAllocateFramebuffer(
+        int width,
+        int height,
+        InternalFormat depthFormat,
+        out string? failureReason)
+    {
+        failureReason = null;
+        _normalTex = _gl.GenTexture();
+        _gl.BindTexture(TextureTarget.Texture2D, _normalTex);
+        unsafe
+        {
+            _gl.TexImage2D(TextureTarget.Texture2D, 0,
+                InternalFormat.Rgba8, (uint)width, (uint)height, 0,
+                PixelFormat.Rgba, PixelType.UnsignedByte, (void*)0);
+        }
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Nearest);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Nearest);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.ClampToEdge);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.ClampToEdge);
+        _gl.BindTexture(TextureTarget.Texture2D, 0);
+
+        _depthTex = _gl.GenTexture();
+        _gl.BindTexture(TextureTarget.Texture2D, _depthTex);
+        unsafe
+        {
+            _gl.TexImage2D(TextureTarget.Texture2D, 0,
+                depthFormat, (uint)width, (uint)height, 0,
+                PixelFormat.DepthComponent, PixelType.Float, (void*)0);
+        }
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Nearest);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Nearest);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.ClampToEdge);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.ClampToEdge);
+        _gl.BindTexture(TextureTarget.Texture2D, 0);
+
+        _fbo = _gl.GenFramebuffer();
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _fbo);
+        _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.ColorAttachment0, TextureTarget.Texture2D, _normalTex, 0);
+        _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.DepthAttachment, TextureTarget.Texture2D, _depthTex, 0);
+        var status = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
+        var error = _gl.GetError();
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+        if (status == GLEnum.FramebufferComplete && error == GLEnum.NoError)
+            return true;
+
+        failureReason = $"format={depthFormat}, status=0x{(int)status:X4}, glError=0x{(int)error:X4}";
+        return false;
+    }
+
+    private void LogDepthSelection(int width, int height)
+    {
+        string key = $"{width}x{height}:{PreferredDepthFormat}";
+        if (key == _lastDepthLogKey)
+            return;
+
+        _lastDepthLogKey = key;
+        Android.Util.Log.Info("FA.NormalDepth", $"Normal/depth framebuffer depth={PreferredDepthFormat}, viewport={width}x{height}.");
     }
 
     public void TrimFramebuffers()
@@ -386,6 +432,15 @@ public sealed class GlesNormalDepthRenderer : IDisposable
         LastRenderInfo = default;
         _width = 0;
         _height = 0;
+    }
+
+    private void DrainGlErrors()
+    {
+        for (int i = 0; i < 32; i++)
+        {
+            if (_gl.GetError() == GLEnum.NoError)
+                return;
+        }
     }
 
     public void Dispose()
