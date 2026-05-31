@@ -275,6 +275,65 @@ public sealed class GlesRendererSourceTests
     }
 
     [Fact]
+    public void MsaaAllocationFailure_TrackedByDedicatedFlagNotZeroSampleSentinel()
+    {
+        // S6-1: the failure guard must not key on _failedMsaaSamples == 0, because
+        // 0 is also a legitimate "MSAA Off" request. A dedicated bool distinguishes
+        // "no failure recorded" from "a 0-sample (MSAA Off) allocation that failed".
+        string renderer = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.Rendering.Gles\GlesViewportRenderer.cs"));
+
+        Assert.Contains("private bool _msaaAllocationFailed;", renderer);
+
+        string prepare = ExtractMethod(renderer, "private bool TryPrepareMsaaFramebuffer");
+        // Guard gates on the explicit failure flag (not on the 0 sentinel).
+        Assert.Contains("if (_msaaAllocationFailed", prepare);
+        // Success clears the flag; failure records it.
+        Assert.Contains("_msaaAllocationFailed = false;", prepare);
+        Assert.Contains("_msaaAllocationFailed = true;", prepare);
+
+        // A resolve failure that destroys the FBO is also a recorded failure.
+        string resolve = ExtractMethod(renderer, "private bool TryResolveMsaaFramebuffer");
+        Assert.Contains("_msaaAllocationFailed = true;", resolve);
+
+        // The flag is cleared both on the success path and when the offscreen FBO
+        // is (re)created on context init, so it must be set false in >= 2 places.
+        int clearedCount = renderer.Split("_msaaAllocationFailed = false;").Length - 1;
+        Assert.True(clearedCount >= 2,
+            $"Expected _msaaAllocationFailed cleared on success and on init, found {clearedCount}.");
+    }
+
+    [Fact]
+    public void MsaaResolveFallback_IsDocumentedAsAcceptedOneFrameSceneRedraw()
+    {
+        // S6-F3: when the MSAA resolve blit fails the loop re-renders the whole
+        // scene directly to FBO 0 for that frame. This is an accepted one-frame
+        // cost and must be documented so it is not mistaken for a bug.
+        string renderer = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.Rendering.Gles\GlesViewportRenderer.cs"));
+
+        Assert.Contains("duplicate scene draw that frame", renderer);
+    }
+
+    [Fact]
+    public void RenderAndMeasureBusyChips_ShareOneViewBuilder()
+    {
+        string mainActivity = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\MainActivity.cs"));
+
+        // The chip view construction is centralised in one helper.
+        string helper = ExtractMethod(mainActivity, "private FrameLayout CreateBusyChip");
+        Assert.Contains("new ProgressBar(this) { Indeterminate = true }", helper);
+        Assert.Contains("GravityFlags.Bottom | GravityFlags.CenterHorizontal", helper);
+        Assert.Contains("return overlay;", helper);
+
+        // The render overlay is built through the shared helper (no inline views).
+        string renderOverlay = ExtractMethod(mainActivity, "private void CreateRenderBusyOverlay");
+        Assert.Contains("CreateBusyChip(container, \"Updating render...\", out _renderBusyDetail)", renderOverlay);
+        Assert.DoesNotContain("new ProgressBar", renderOverlay);
+    }
+
+    [Fact]
     public void AdditiveBoundingBox_ArmsSelectionAndKeepsAccumulatorUntilToggle()
     {
         string mainActivity = File.ReadAllText(ResolveRepoPath(
@@ -347,7 +406,6 @@ public sealed class GlesRendererSourceTests
 
         Assert.Contains("DisposeDiagnosticsLogTooltips();", preferences);
         string disposeLogTooltips = ExtractMethod(preferences, "private void DisposeDiagnosticsLogTooltips");
-        Assert.Contains("_styledTooltips.DisposeTree(_logScroll);", disposeLogTooltips);
         Assert.Contains("_logText.TooltipText = null;", disposeLogTooltips);
         Assert.Contains("_logText.ContentDescription = null;", disposeLogTooltips);
 

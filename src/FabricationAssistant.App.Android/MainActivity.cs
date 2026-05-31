@@ -597,7 +597,6 @@ public sealed class MainActivity : AppCompatActivity
         BindPropertiesPanel();
 
         BindBottomToolbar();
-        ApplyMissingTooltipsToAppTree();
 
         // All supported window sizes use the persistent side toolbar.
 #if DEBUG
@@ -1472,7 +1471,6 @@ public sealed class MainActivity : AppCompatActivity
 
         dialog.SetContentView(root);
         ShowOwnedDialog(dialog);
-        _styledTooltips.AttachTree(this, dialog.Window?.DecorView, includeStaticText: true);
         int screenWidth = Resources?.DisplayMetrics?.WidthPixels ?? Dp(460);
         int width = Math.Min(Dp(520), Math.Max(Dp(340), screenWidth - Dp(56)));
         dialog.Window?.SetBackgroundDrawable(new ColorDrawable(Color.Transparent));
@@ -2271,7 +2269,6 @@ public sealed class MainActivity : AppCompatActivity
     private void ShowCloudDialog(global::Android.App.Dialog dialog)
     {
         ShowOwnedDialog(dialog);
-        _styledTooltips.AttachTree(this, dialog.Window?.DecorView, includeStaticText: true);
         int screenWidth = Resources?.DisplayMetrics?.WidthPixels ?? Dp(460);
         int width = Math.Min(Dp(520), Math.Max(Dp(340), screenWidth - Dp(56)));
         dialog.Window?.SetBackgroundDrawable(new ColorDrawable(Color.Transparent));
@@ -9243,8 +9240,6 @@ public sealed class MainActivity : AppCompatActivity
         if (Build.VERSION.SdkInt >= BuildVersionCodes.Lollipop)
             popup.Elevation = Dp(10);
 
-        _styledTooltips.AttachTree(this, root, includeStaticText: true);
-
         bool resolved = false;
         popup.DismissEvent += (_, _) =>
         {
@@ -10574,12 +10569,6 @@ public sealed class MainActivity : AppCompatActivity
         ApplyRenderModeTooltips();
         ApplySpenPalmRejectionState(showToast: false);
         UpdateFullscreenButtonState();
-        ApplyMissingTooltipsToAppTree();
-    }
-
-    private void ApplyMissingTooltipsToAppTree()
-    {
-        _styledTooltips.AttachTree(this, FindViewById<View>(Resource.Id.root));
     }
 
     private void SetTooltip(View? view, int stringId)
@@ -10890,7 +10879,6 @@ public sealed class MainActivity : AppCompatActivity
         row.SetMinHeight(Dp(ContextMenuRowHeightDp));
         row.ContentDescription = title;
         row.ImportantForAccessibility = ImportantForAccessibility.Yes;
-        SetTooltip(row, title);
         row.SetTextColor(GetColorCompat(Resource.Color.fa_text_primary));
         row.SetPadding(Dp(9), 0, Dp(9), 0);
         row.Background = CreateContextMenuRowBackground();
@@ -14316,16 +14304,20 @@ public sealed class MainActivity : AppCompatActivity
                 .SetPositiveButton("OK", (_, _) => { })!);
     }
 
-    private void CreateRenderBusyOverlay(FrameLayout container)
+    // Shared construction for the bottom-center busy chips (render + measure):
+    // a Gone/alpha-0 overlay holding a card with an indeterminate spinner and a
+    // single-line detail label. Returns the overlay; outputs the detail view so
+    // callers can update its text.
+    private FrameLayout CreateBusyChip(FrameLayout container, string initialDetail, out TextView detail)
     {
-        _renderBusyOverlay = new FrameLayout(this)
+        var overlay = new FrameLayout(this)
         {
             Visibility = ViewStates.Gone,
             Clickable = false,
             Focusable = false,
             Alpha = 0f,
         };
-        container.AddView(_renderBusyOverlay, new FrameLayout.LayoutParams(
+        container.AddView(overlay, new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MatchParent,
             ViewGroup.LayoutParams.MatchParent));
 
@@ -14341,7 +14333,7 @@ public sealed class MainActivity : AppCompatActivity
             Dp(48),
             GravityFlags.Bottom | GravityFlags.CenterHorizontal);
         cardParams.BottomMargin = Dp(18);
-        _renderBusyOverlay.AddView(card, cardParams);
+        overlay.AddView(card, cardParams);
 
         var row = new LinearLayout(this) { Orientation = Orientation.Horizontal };
         row.SetGravity(GravityFlags.CenterVertical);
@@ -14356,17 +14348,24 @@ public sealed class MainActivity : AppCompatActivity
         spinnerParams.RightMargin = Dp(10);
         row.AddView(spinner, spinnerParams);
 
-        _renderBusyDetail = new TextView(this)
+        detail = new TextView(this)
         {
-            Text = "Updating render...",
+            Text = initialDetail,
             Ellipsize = TextUtils.TruncateAt.End,
         };
-        _renderBusyDetail.SetSingleLine(true);
-        _renderBusyDetail.SetTextColor(GetColorCompat(Resource.Color.fa_text_primary));
-        _renderBusyDetail.SetTextSize(ComplexUnitType.Px, Dp(13));
-        row.AddView(_renderBusyDetail, new LinearLayout.LayoutParams(
+        detail.SetSingleLine(true);
+        detail.SetTextColor(GetColorCompat(Resource.Color.fa_text_primary));
+        detail.SetTextSize(ComplexUnitType.Px, Dp(13));
+        row.AddView(detail, new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.WrapContent,
             ViewGroup.LayoutParams.WrapContent));
+
+        return overlay;
+    }
+
+    private void CreateRenderBusyOverlay(FrameLayout container)
+    {
+        _renderBusyOverlay = CreateBusyChip(container, "Updating render...", out _renderBusyDetail);
     }
 
     private void ShowRenderBusy(string detail)
