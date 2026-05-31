@@ -58,6 +58,14 @@ public sealed class GlesViewportRenderer : IDisposable
     private string _sectionCapDiagnosticReason = "";
     private long _lastMsaaBypassLogTicks;
     private MsaaSceneFramebuffer? _msaaFbo;
+    // FXAA post-process: the resolved scene+overlays are composited into this
+    // color FBO, then an FXAA pass writes to the default backbuffer. Allocated
+    // lazily only when the FXAA toggle is on (default off).
+    private ShaderProgram? _fxaaProgram;
+    private uint _compositeFbo;
+    private uint _compositeTex;
+    private int _compositeWidth;
+    private int _compositeHeight;
     private uint _whiteAoTexture;
     private bool _initialized;
     private int _width;
@@ -69,6 +77,10 @@ public sealed class GlesViewportRenderer : IDisposable
     private int _failedMsaaWidth;
     private int _failedMsaaHeight;
     private int _failedMsaaSamples;
+    // S6-1: an explicit "an allocation failed" flag, kept separate from
+    // _failedMsaaSamples so a recorded failure at 0 samples (MSAA Off) is not
+    // confused with the success/reset state (which also leaves samples at 0).
+    private bool _msaaAllocationFailed;
     private int _lastLoggedMsaaRequested = int.MinValue;
     private int _lastLoggedMsaaEffective = int.MinValue;
     private int _lastLoggedMsaaMaxSamples = int.MinValue;
@@ -400,6 +412,10 @@ public sealed class GlesViewportRenderer : IDisposable
         _silhouetteOverlayProgram = new ShaderProgram(_gl, "silhouette_overlay", fsVs, silhouetteFs);
         (_silhouetteOverlayVao, _silhouetteOverlayVbo) = GlesFullscreenTriangle.Create(_gl);
 
+        // FXAA post-process (reuses the fullscreen vertex shader + triangle VAO).
+        var fxaaFs = LoadEmbeddedShader("fxaa.gles.frag");
+        _fxaaProgram = new ShaderProgram(_gl, "fxaa", fsVs, fxaaFs);
+
         // 1x1 white AO texture - bound when SSAO is off so the mesh shader's
         // AO multiply is identity.
         _whiteAoTexture = CreateWhiteTexture(_gl);
@@ -429,6 +445,7 @@ public sealed class GlesViewportRenderer : IDisposable
         _failedMsaaWidth = 0;
         _failedMsaaHeight = 0;
         _failedMsaaSamples = 0;
+        _msaaAllocationFailed = false;
         _lastLoggedMsaaRequested = int.MinValue;
         _lastLoggedMsaaEffective = int.MinValue;
         _lastLoggedMsaaMaxSamples = int.MinValue;
@@ -534,6 +551,24 @@ public sealed class GlesViewportRenderer : IDisposable
             return;
         }
 
+        // Supersampling (SSAA): on the settled (non-interactive) frame, render the
+        // scene, AO and silhouette into an offscreen buffer at RenderScale x the
+        // screen size, then linear-downsample to the backbuffer. This is done by
+        // temporarily swapping _width/_height to the larger render size for the
+        // offscreen passes; the final UI overlays (selection outline, axis triad)
+        // and any picking run at the true screen size, restored before they draw.
+        int screenWidth = _width;
+        int screenHeight = _height;
+        bool wantSsaa = a.RenderScale > 1.01f
+            && !lightweightNavigationActive
+            && Scene is not null
+            && camera is not null;
+        if (wantSsaa)
+        {
+            _width = System.Math.Max(1, (int)System.Math.Round(screenWidth * a.RenderScale));
+            _height = System.Math.Max(1, (int)System.Math.Round(screenHeight * a.RenderScale));
+        }
+
         // SSAO pre-pass: render scene normals+depth, then compute occlusion.
         // Bound back to the default FBO before the main mesh pass, which
         // samples the resulting AO texture.
@@ -610,8 +645,35 @@ public sealed class GlesViewportRenderer : IDisposable
         SceneAppearance renderTargetAppearance = a;
         if (msaaBypassedForNavigation)
             renderTargetAppearance.MsaaSamples = 0;
+        // Under SSAA the downsample already removes most aliasing, so cap hardware
+        // MSAA at 2x to keep the (now 2.25x larger) offscreen renderbuffers within
+        // a sane memory budget. The MsaaSceneFramebuffer sample fallback handles
+        // the rest if even that does not fit.
+        if (wantSsaa && renderTargetAppearance.MsaaSamples > 2)
+            renderTargetAppearance.MsaaSamples = 2;
 
         bool useMsaaFbo = TryPrepareMsaaFramebuffer(renderTargetAppearance);
+        // SSAA needs the offscreen path so it can resolve into the composite and
+        // downsample to the screen. If the (render-size) MSAA FBO could not be
+        // prepared, abandon SSAA and restore the true screen size so the frame
+        // falls back to the normal direct path.
+        bool useSsaa = wantSsaa && useMsaaFbo && EnsureCompositeFramebuffer();
+        if (wantSsaa && !useSsaa)
+        {
+            _width = screenWidth;
+            _height = screenHeight;
+        }
+        // FXAA engages only on the normal MSAA path, outside lightweight
+        // navigation, and not together with SSAA (which already supersamples
+        // every edge). The composite FBO is shared with SSAA.
+        bool useFxaa = a.FxaaEnabled
+            && useMsaaFbo
+            && !useSsaa
+            && _fxaaProgram is not null
+            && !lightweightNavigationActive
+            && EnsureCompositeFramebuffer();
+        // Both post-resolve modes route the scene through the offscreen composite.
+        bool useComposite = useSsaa || useFxaa;
         bool drawEdgesThisFrame = false;
         long sceneStart = afterSsao;
         long beforeEdges = afterSsao;
@@ -650,7 +712,7 @@ public sealed class GlesViewportRenderer : IDisposable
         if (Scene is null || camera is null)
         {
             if (useMsaaFbo && _msaaFbo!.FboHandle != 0)
-                TryResolveMsaaFramebuffer(a);
+                TryResolveMsaaFramebuffer(a, 0u);
             else
                 _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
             return;
@@ -972,13 +1034,35 @@ public sealed class GlesViewportRenderer : IDisposable
         // when we rendered directly to the default FB.
         if (useMsaaFbo && _msaaFbo!.FboHandle != 0)
         {
-            if (!TryResolveMsaaFramebuffer(a))
+            // FXAA/SSAA on: resolve into the offscreen composite FBO so the
+            // overlays below draw into it and the post pass (FXAA filter or SSAA
+            // downsample) can process the whole final image.
+            if (!TryResolveMsaaFramebuffer(a, useComposite ? _compositeFbo : 0u))
             {
                 if (retriedWithoutMsaa)
                     break;
 
+                // S6-F3: the MSAA resolve blit failed, so re-run the loop with the
+                // offscreen FBO disabled and render the scene straight to FBO 0.
+                // That costs one extra full scene pass (a duplicate scene draw that frame).
+                // This is an accepted one-frame fallback: the retriedWithoutMsaa flag
+                // caps it at a single retry so a persistent resolve failure cannot spin
+                // this loop, and the frame still shows the scene. TryResolveMsaaFramebuffer
+                // has already destroyed the FBO, so the next frame re-prepares it and the
+                // single redraw self-corrects once resolves succeed again.
                 retriedWithoutMsaa = true;
                 useMsaaFbo = false;
+                // The composite path depends on the offscreen FBO; with MSAA off
+                // the scene goes straight to the backbuffer, so drop SSAA/FXAA and
+                // restore the true screen size before re-rendering.
+                if (wantSsaa)
+                {
+                    _width = screenWidth;
+                    _height = screenHeight;
+                }
+                useSsaa = false;
+                useFxaa = false;
+                useComposite = false;
                 continue;
             }
         }
@@ -1006,6 +1090,23 @@ public sealed class GlesViewportRenderer : IDisposable
             && !lightweightNavigationActive;
         if (silhouetteOverlayActive)
             RenderSilhouetteOverlay(a);
+
+        // Bring the composited scene+silhouette (in the offscreen composite FBO)
+        // to the screen backbuffer before the UI overlays draw. SSAA linear-
+        // downsamples the super-sampled buffer to screen size and restores the
+        // true screen dimensions; FXAA filters at native size. The selection
+        // outline and axis triad then composite directly onto FBO 0 at screen
+        // size (they re-bind FBO 0 themselves, so they must run after this).
+        if (useSsaa && useMsaaFbo)
+        {
+            DownscaleCompositeToScreen(screenWidth, screenHeight);
+            _width = screenWidth;
+            _height = screenHeight;
+        }
+        else if (useFxaa && useMsaaFbo)
+        {
+            ApplyFxaa();
+        }
 
         // Selection / hover outline post-process. Hover draws first so the
         // selected body's red outline wins when both targets overlap.
@@ -1040,6 +1141,7 @@ public sealed class GlesViewportRenderer : IDisposable
             _axisTriadOverlay?.Render(camera, _width, _height);
             ResetMainFramebufferState();
         }
+
 
         long afterOutline = Stopwatch.GetTimestamp();
 
@@ -2521,7 +2623,11 @@ public sealed class GlesViewportRenderer : IDisposable
             return false;
         }
 
-        if (_failedMsaaWidth == _width
+        // S6-1: only short-circuit when an allocation actually failed for this
+        // exact size + sample count. Keying on _msaaAllocationFailed (not on a 0
+        // sample sentinel) lets a legitimate "MSAA Off = 0" request be retried.
+        if (_msaaAllocationFailed
+            && _failedMsaaWidth == _width
             && _failedMsaaHeight == _height
             && _failedMsaaSamples == appearance.MsaaSamples)
         {
@@ -2531,6 +2637,7 @@ public sealed class GlesViewportRenderer : IDisposable
         try
         {
             _msaaFbo.Ensure(_width, _height, appearance.MsaaSamples);
+            _msaaAllocationFailed = false;
             _failedMsaaWidth = 0;
             _failedMsaaHeight = 0;
             _failedMsaaSamples = 0;
@@ -2544,6 +2651,7 @@ public sealed class GlesViewportRenderer : IDisposable
                 Java.Lang.Throwable.FromException(ex),
                 $"MSAA disabled for {_width}x{_height} at {appearance.MsaaSamples}x.");
             _msaaFbo.Destroy();
+            _msaaAllocationFailed = true;
             _failedMsaaWidth = _width;
             _failedMsaaHeight = _height;
             _failedMsaaSamples = appearance.MsaaSamples;
@@ -2551,23 +2659,129 @@ public sealed class GlesViewportRenderer : IDisposable
         }
     }
 
-    private bool TryResolveMsaaFramebuffer(SceneAppearance appearance)
+    private bool TryResolveMsaaFramebuffer(SceneAppearance appearance, uint targetFbo)
     {
         if (_msaaFbo is null || _msaaFbo.FboHandle == 0)
             return true;
 
-        if (_msaaFbo.TryResolveToDefault())
+        if (_msaaFbo.TryResolveTo(targetFbo))
             return true;
 
         Android.Util.Log.Warn(
             "FA.Renderer",
             $"MSAA resolve failed for {_width}x{_height} at {appearance.MsaaSamples}x, GL error=0x{(int)_msaaFbo.LastResolveError:X4}; falling back to direct rendering.");
         _msaaFbo.Destroy();
+        _msaaAllocationFailed = true;
         _failedMsaaWidth = _width;
         _failedMsaaHeight = _height;
         _failedMsaaSamples = appearance.MsaaSamples;
         LogMsaaState(appearance.MsaaSamples, 1, _msaaFbo.MaxSamples);
         return false;
+    }
+
+    // Allocates (or re-allocates on size change) the full-resolution color target
+    // the resolved scene + overlays are composited into before the FXAA pass.
+    private unsafe bool EnsureCompositeFramebuffer()
+    {
+        if (_gl is null || _width <= 0 || _height <= 0)
+            return false;
+        if (_compositeFbo != 0 && _compositeWidth == _width && _compositeHeight == _height)
+            return true;
+
+        DestroyCompositeFramebuffer();
+
+        uint tex = _gl.GenTexture();
+        _gl.BindTexture(TextureTarget.Texture2D, tex);
+        // RGB8 to MATCH the MSAA scene color renderbuffer (also RGB8). A
+        // multisample->single-sample resolve blit requires identical internal
+        // formats (GLES 3.0 sec 4.3.2); an RGBA8 composite would make the resolve
+        // fail with GL_INVALID_OPERATION and silently fall back to direct
+        // rendering - which is why FXAA appeared to do nothing.
+        _gl.TexImage2D(TextureTarget.Texture2D, 0, InternalFormat.Rgb8,
+            (uint)_width, (uint)_height, 0, PixelFormat.Rgb, PixelType.UnsignedByte, (void*)0);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Linear);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.ClampToEdge);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.ClampToEdge);
+        _gl.BindTexture(TextureTarget.Texture2D, 0);
+
+        uint fbo = _gl.GenFramebuffer();
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, fbo);
+        _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.ColorAttachment0,
+            TextureTarget.Texture2D, tex, 0);
+        GLEnum status = _gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+
+        if (status != GLEnum.FramebufferComplete)
+        {
+            _gl.DeleteFramebuffer(fbo);
+            _gl.DeleteTexture(tex);
+            Android.Util.Log.Warn("FA.Renderer", $"FXAA composite FBO incomplete: 0x{(int)status:X4}");
+            return false;
+        }
+
+        _compositeFbo = fbo;
+        _compositeTex = tex;
+        _compositeWidth = _width;
+        _compositeHeight = _height;
+        return true;
+    }
+
+    private void DestroyCompositeFramebuffer()
+    {
+        if (_gl is null)
+            return;
+        if (_compositeFbo != 0) { _gl.DeleteFramebuffer(_compositeFbo); _compositeFbo = 0; }
+        if (_compositeTex != 0) { _gl.DeleteTexture(_compositeTex); _compositeTex = 0; }
+        _compositeWidth = 0;
+        _compositeHeight = 0;
+    }
+
+    // Linear-downsample the super-sampled composite (_compositeWidth x
+    // _compositeHeight) into the screen backbuffer. The composite is a single-
+    // sample texture FBO, so a scaling blit is legal; the linear filter performs
+    // the box resolve that turns the larger render into anti-aliased screen
+    // pixels. Leaves FBO 0 bound at the screen viewport for the UI overlays.
+    private void DownscaleCompositeToScreen(int screenW, int screenH)
+    {
+        if (_gl is null || _compositeFbo == 0 || screenW <= 0 || screenH <= 0)
+            return;
+
+        _gl.BindFramebuffer(FramebufferTarget.ReadFramebuffer, _compositeFbo);
+        _gl.BindFramebuffer(FramebufferTarget.DrawFramebuffer, 0);
+        _gl.ReadBuffer(GLEnum.ColorAttachment0);
+        _gl.BlitFramebuffer(
+            0, 0, _compositeWidth, _compositeHeight,
+            0, 0, screenW, screenH,
+            ClearBufferMask.ColorBufferBit, BlitFramebufferFilter.Linear);
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+        _gl.Viewport(0, 0, (uint)screenW, (uint)screenH);
+    }
+
+    // FXAA the composited image (in _compositeTex) to the default backbuffer.
+    private void ApplyFxaa()
+    {
+        if (_gl is null || _fxaaProgram is null || _compositeTex == 0)
+            return;
+
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+        _gl.Viewport(0, 0, (uint)_width, (uint)_height);
+        _gl.Disable(EnableCap.DepthTest);
+        _gl.Disable(EnableCap.CullFace);
+        _gl.Disable(EnableCap.Blend);
+        _gl.DepthMask(false);
+
+        _fxaaProgram.Use();
+        _gl.ActiveTexture(TextureUnit.Texture0);
+        _gl.BindTexture(TextureTarget.Texture2D, _compositeTex);
+        SetInt(_fxaaProgram, "uScene", 0);
+        SetVec2(_fxaaProgram, "uInvResolution", 1f / _width, 1f / _height);
+
+        GlesFullscreenTriangle.Draw(_gl, _silhouetteOverlayVao);
+
+        _gl.DepthMask(true);
+        _gl.Enable(EnableCap.DepthTest);
+        _gl.BindTexture(TextureTarget.Texture2D, 0);
     }
 
     private void LogMsaaState(int requestedSamples, int effectiveSamples, int maxSamples)
@@ -2898,6 +3112,7 @@ public sealed class GlesViewportRenderer : IDisposable
         TryDispose(_normalDepthRenderer);
         TryDispose(_ssaoRenderer);
         TryDispose(_silhouetteOverlayProgram);
+        TryDispose(_fxaaProgram);
         if (_silhouetteOverlayVbo != 0 && _gl is not null)
         {
             try { _gl.DeleteBuffer(_silhouetteOverlayVbo); }
@@ -2916,6 +3131,7 @@ public sealed class GlesViewportRenderer : IDisposable
         TryDispose(_sectionOverlay);
         TryDispose(_axisTriadOverlay);
         TryDispose(_msaaFbo);
+        DestroyCompositeFramebuffer();
 
         _meshProgram = null;
         _edgeProgram = null;
@@ -2924,6 +3140,7 @@ public sealed class GlesViewportRenderer : IDisposable
         _normalDepthRenderer = null;
         _ssaoRenderer = null;
         _silhouetteOverlayProgram = null;
+        _fxaaProgram = null;
         _outlineRenderer = null;
         _measurementOverlay = null;
         _faceHighlightOverlay = null;

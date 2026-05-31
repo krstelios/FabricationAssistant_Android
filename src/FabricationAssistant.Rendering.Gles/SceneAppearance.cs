@@ -95,6 +95,14 @@ public static class SceneAppearanceDefaults
     // half-res grid that shows through as low-res "triangles" in the shadow at
     // depth edges, at the cost of a larger AO pass.
     public const bool AoFullResolution = true;
+    // Post-process FXAA on the final composited image. Off by default - the
+    // composite render target + extra pass only engage when enabled.
+    public const bool FxaaEnabled = false;
+    // Supersampling factor for the settled (non-interactive) frame. 1.0 = native;
+    // >1 renders the scene/AO/silhouette into a larger offscreen buffer and
+    // linear-downsamples to the screen, which is the only knob that visibly
+    // sharpens edges once hardware MSAA is maxed out. 1.0 by default.
+    public const float RenderScale = 1.0f;
     public const float ContourStrength = 0.20040001f;
     public const float ContourPower = 4.4105f;
     public const int MsaaSamples = 4;
@@ -172,6 +180,8 @@ public static class SceneAppearanceDefaults
         AoBlurSharpness = AoBlurSharpness,
         AoBlurPasses = AoBlurPasses,
         AoFullResolution = AoFullResolution,
+        FxaaEnabled = FxaaEnabled,
+        RenderScale = RenderScale,
         ContourStrength = ContourStrength,
         ContourPower = ContourPower,
         MsaaSamples = MsaaSamples,
@@ -269,6 +279,8 @@ public struct SceneAppearance
     public float AoBlurSharpness;
     public int AoBlurPasses;
     public bool AoFullResolution;
+    public bool FxaaEnabled;
+    public float RenderScale;
     public float ContourStrength;
     public float ContourPower;
     public int MsaaSamples;             // 0 / 2 / 4 / 8

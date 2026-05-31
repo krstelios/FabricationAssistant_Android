@@ -32,7 +32,6 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
     private int _sheetWidthOverridePx;
     private FrameLayout? _resizeHandle;
     private readonly List<AlertDialog> _colorPickerDialogs = new();
-    private readonly StyledTooltipRegistry _styledTooltips = new();
     private readonly Handler _logRefreshHandler = new(Looper.MainLooper!);
     private AndroidLogcatFeed? _logFeed;
     private ScrollView? _logScroll;
@@ -100,7 +99,6 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         _disposed = true;
         DismissColorPickerDialogs();
         DisposeLogFeed();
-        DisposeStyledTooltips();
         OnSettingsChanged = null;
     }
 
@@ -219,6 +217,10 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         AddSubtle(ctx, aa, "MSAA applies immediately.");
         AddSwitch(ctx, aa, "High-res ambient occlusion", AppSettings.AoFullResolution, v => AppSettings.AoFullResolution = v);
         AddSubtle(ctx, aa, "Renders SSAO at full resolution - sharper shadows, more GPU.");
+        AddSwitch(ctx, aa, "Post-process AA (FXAA)", AppSettings.FxaaEnabled, v => AppSettings.FxaaEnabled = v);
+        AddSubtle(ctx, aa, "Smooths all edges in the final image, including outlines.");
+        AddSwitch(ctx, aa, "Supersampling (1.5x)", AppSettings.RenderScalePercent >= 150, v => AppSettings.RenderScalePercent = v ? 150 : 100);
+        AddSubtle(ctx, aa, "Renders the still view at 1.5x and downsamples - sharpest edges, highest GPU. Native res while you move the camera.");
         AddFloatSlider(ctx, aa, "Contour strength", 0f, 1.2f, AppSettings.ContourStrength, v => AppSettings.ContourStrength = v);
         AddFloatSlider(ctx, aa, "Contour falloff", 0.5f, 6f, AppSettings.ContourPower, v => AppSettings.ContourPower = v);
         AddSwitch(ctx, aa, "Contact shadows (SSAO)", AppSettings.AmbientOcclusionEnabled, v => AppSettings.AmbientOcclusionEnabled = v);
@@ -346,7 +348,6 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         AddSubtle(ctx, root, "Rendering controls apply live.");
 
         scroll.AddView(root);
-        _styledTooltips.AttachTree(ctx, scroll, includeStaticText: true);
         DisposeDiagnosticsLogTooltips();
         return scroll;
     }
@@ -365,7 +366,6 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
 
         ViewGroup.LayoutParams? layoutParams = currentView.LayoutParameters;
         DisposeLogFeed();
-        DisposeStyledTooltips();
         parent.RemoveViewAt(index);
         View replacement = CreateEmbeddedView(ctx);
         parent.AddView(replacement, index, layoutParams);
@@ -1196,11 +1196,9 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         TrackColorPickerDialog(dialog, windowBackground, root, preview, hexInput);
 
         Button? positive = dialog.GetButton((int)global::Android.Content.DialogButtonType.Positive);
-        _styledTooltips.AttachTree(ctx, root, includeStaticText: true);
         if (positive is not null)
         {
             positive.SetTextColor(GetColor(ctx, Resource.Color.fa_accent_500));
-            _styledTooltips.Attach(ctx, positive, "Apply color");
             positive.Click += (_, _) =>
             {
                 if (!TryParseHexColor(hexInput.Text, out int parsedR, out int parsedG, out int parsedB))
@@ -1220,7 +1218,6 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         if (negative is not null)
         {
             negative.SetTextColor(GetColor(ctx, Resource.Color.fa_accent_500));
-            _styledTooltips.Attach(ctx, negative, "Cancel color edit");
         }
     }
 
@@ -2085,21 +2082,17 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
 
     private void SetTooltip(Context ctx, View? view, string? text, bool useLongClick = true)
     {
+        // Tooltips were removed everywhere except the top/left/bottom toolbars.
+        // Keep the accessibility label so screen readers still describe the control.
         if (view is null || string.IsNullOrWhiteSpace(text))
             return;
 
-        _styledTooltips.Attach(ctx, view, text, useLongClick);
-    }
-
-    private void DisposeStyledTooltips()
-    {
-        _styledTooltips.Dispose();
+        if (view.ContentDescription is null)
+            view.ContentDescription = text;
     }
 
     private void DisposeDiagnosticsLogTooltips()
     {
-        _styledTooltips.DisposeTree(_logScroll);
-
         if (_logScroll is not null)
         {
             _logScroll.TooltipText = null;

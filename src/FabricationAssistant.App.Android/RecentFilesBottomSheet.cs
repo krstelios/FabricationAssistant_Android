@@ -21,7 +21,6 @@ public sealed class RecentFilesBottomSheet : BottomSheetDialogFragment, IDisposa
     private FrameLayout? _resizeHandle;
     private LinearLayout? _contentRoot;
     private readonly List<MaterialCardView> _recentCards = [];
-    private readonly StyledTooltipRegistry _tooltips = new();
     private bool _disposed;
     private int _refreshGeneration;
 
@@ -91,7 +90,6 @@ public sealed class RecentFilesBottomSheet : BottomSheetDialogFragment, IDisposa
         RefreshContent(ctx);
 
         scroll.AddView(root);
-        _tooltips.AttachTree(ctx, scroll, includeStaticText: true);
         return scroll;
     }
 
@@ -104,7 +102,6 @@ public sealed class RecentFilesBottomSheet : BottomSheetDialogFragment, IDisposa
         foreach (MaterialCardView card in _recentCards)
             card.SetOnClickListener(null);
         _recentCards.Clear();
-        _tooltips.Dispose();
         root.RemoveAllViews();
         AddHeader(ctx, root);
 
@@ -147,13 +144,11 @@ public sealed class RecentFilesBottomSheet : BottomSheetDialogFragment, IDisposa
         if (entries.Length == 0)
         {
             AddEmptyState(ctx, root);
-            _tooltips.AttachTree(ctx, root, includeStaticText: true);
             return;
         }
 
         foreach (RecentFileEntry entry in entries)
             AddRecentRow(ctx, root, entry);
-        _tooltips.AttachTree(ctx, root, includeStaticText: true);
     }
 
     private void DisposeManagedContent()
@@ -166,7 +161,6 @@ public sealed class RecentFilesBottomSheet : BottomSheetDialogFragment, IDisposa
         foreach (MaterialCardView card in _recentCards)
             card.SetOnClickListener(null);
         _recentCards.Clear();
-        _tooltips.Dispose();
         _resizeHandle?.SetOnTouchListener(null);
         _resizeHandle = null;
         _contentRoot = null;

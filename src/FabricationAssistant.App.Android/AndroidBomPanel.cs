@@ -43,7 +43,6 @@ internal sealed class AndroidBomPanel : IDisposable
     private readonly List<BomPanelRow> _roots = new();
     private readonly List<BomPanelRow> _allRows = new();
     private readonly List<BomPanelRow> _visibleRows = new();
-    private readonly StyledTooltipRegistry _tooltips = new();
 
     private HorizontalScrollView? _tableScroll;
     private LinearLayout? _tableRoot;
@@ -150,8 +149,7 @@ internal sealed class AndroidBomPanel : IDisposable
             () => _selectedRow,
             ToggleRow,
             () => _columnWidthsPx,
-            () => _tableWidthPx,
-            _tooltips);
+            () => _tableWidthPx);
         _list = new ListView(ctx)
         {
             Adapter = _adapter,
@@ -191,7 +189,6 @@ internal sealed class AndroidBomPanel : IDisposable
 
         tableScroll.Post(() => RefreshColumnWidths(ctx));
         tableScroll.PostDelayed(() => RefreshColumnWidths(ctx), 120);
-        _tooltips.AttachTree(ctx, root, includeStaticText: true);
         return root;
     }
 
@@ -227,7 +224,6 @@ internal sealed class AndroidBomPanel : IDisposable
         _listScrollTouchListener?.Dispose();
         _headerScrollTouchListener = null;
         _listScrollTouchListener = null;
-        _tooltips.Dispose();
     }
 
     private void AddHeader(Context ctx, LinearLayout root)
@@ -1084,7 +1080,6 @@ internal sealed class AndroidBomPanel : IDisposable
         private readonly Action<BomPanelRow> _toggle;
         private readonly Func<int[]> _columnWidthsAccessor;
         private readonly Func<int> _tableWidthAccessor;
-        private readonly StyledTooltipRegistry _tooltips;
 
         public BomPanelAdapter(
             Context ctx,
@@ -1093,8 +1088,7 @@ internal sealed class AndroidBomPanel : IDisposable
             Func<BomPanelRow?> selectedAccessor,
             Action<BomPanelRow> toggle,
             Func<int[]> columnWidthsAccessor,
-            Func<int> tableWidthAccessor,
-            StyledTooltipRegistry tooltips)
+            Func<int> tableWidthAccessor)
         {
             _ctx = ctx;
             _rows = rows;
@@ -1103,7 +1097,6 @@ internal sealed class AndroidBomPanel : IDisposable
             _toggle = toggle;
             _columnWidthsAccessor = columnWidthsAccessor;
             _tableWidthAccessor = tableWidthAccessor;
-            _tooltips = tooltips;
         }
 
         public override int Count => _rows.Count;
@@ -1133,7 +1126,6 @@ internal sealed class AndroidBomPanel : IDisposable
             else
                 AddConsolidatedCells(root, row);
 
-            _tooltips.AttachTree(_ctx, root, includeStaticText: true);
             return root;
         }
 

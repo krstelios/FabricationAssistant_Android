@@ -126,6 +126,11 @@ public static class AppSettings
         ("bg_r", 0.10f),
         ("bg_g", 0.11f),
         ("bg_b", 0.12f),
+        // surface tint: only r and g had a legacy default (0.78/0.80) that
+        // changed to the current 0.82; surface_b has always defaulted to 0.82,
+        // so there is no stale value to strip and it is intentionally omitted
+        // here (same as outline_r below, whose default also never changed). A
+        // channel belongs in this list only when its default actually changed.
         ("surface_r", 0.78f),
         ("surface_g", 0.80f),
         ("edge_r", 0.05f),
@@ -329,7 +334,7 @@ public static class AppSettings
             if (enabled && EdgeWidth < MinimumVisibleEdgeWidth)
                 editor.PutFloat("edge_width", DefaultEdgeWidth);
             int renderMode = RenderMode;
-            if (IsShadedRenderMode(renderMode))
+            if (AppSettingsValueGuards.IsShadedRenderMode(renderMode))
                 editor.PutInt("render_mode", enabled ? ModeShadedWithEdges : ModeShaded);
         });
     }
@@ -383,6 +388,10 @@ public static class AppSettings
     public static float AoBias { get => GetFloatInRange("ao_bias", DefaultAoBias, MinAoBias, MaxAoBias); set => Put("ao_bias", System.Math.Clamp(value, MinAoBias, MaxAoBias)); }
     public static float AoIntensity { get => GetFloatInRange("ao_intensity", DefaultAoIntensity, MinAoIntensity, MaxAoIntensity); set => Put("ao_intensity", System.Math.Clamp(value, MinAoIntensity, MaxAoIntensity)); }
     public static bool AoFullResolution { get => Get("ao_full_resolution", SceneAppearanceDefaults.AoFullResolution); set => Put("ao_full_resolution", value); }
+    public static bool FxaaEnabled { get => Get("fxaa_enabled", SceneAppearanceDefaults.FxaaEnabled); set => Put("fxaa_enabled", value); }
+    // Supersampling factor as an integer percent (100 = native, 150 = 1.5x). Stored
+    // as percent so it round-trips through SharedPreferences as a plain int.
+    public static int RenderScalePercent { get => Get("render_scale_pct", 100); set => Put("render_scale_pct", System.Math.Clamp(value, 100, 200)); }
     public static float AoPower { get => GetFloatInRange("ao_power", DefaultAoPower, MinAoPower, MaxAoPower); set => Put("ao_power", System.Math.Clamp(value, MinAoPower, MaxAoPower)); }
     public static float AoContrast { get => GetFloatInRange("ao_contrast", DefaultAoContrast, MinAoContrast, MaxAoContrast); set => Put("ao_contrast", System.Math.Clamp(value, MinAoContrast, MaxAoContrast)); }
     public static float AoMaxDistance { get => GetFloatInRange("ao_max_distance", DefaultAoMaxDistance, MinAoMaxDistance, MaxAoMaxDistance); set => Put("ao_max_distance", System.Math.Clamp(value, MinAoMaxDistance, MaxAoMaxDistance)); }
@@ -467,11 +476,12 @@ public static class AppSettings
     }
 
     // FA Cloud
-    public static string CloudServerUrl
-    {
-        get => CloudServerConfig.ServerUrl;
-        set => Edit(editor => editor.Remove("cloud_server_url"));
-    }
+    // S9-1: get-only. The active server URL lives in CloudServerConfig (INI),
+    // not SharedPreferences. The old setter ignored its value and merely removed
+    // the legacy "cloud_server_url" pref key, so any assignment silently vanished;
+    // that legacy key is already purged by MigrateDefaultsIfNeeded (schema < 21),
+    // so no clear path is needed here.
+    public static string CloudServerUrl => CloudServerConfig.ServerUrl;
     public static string CloudServerConfigPath => CloudServerConfig.ConfigPath;
     public static int CloudServerProfileSelectionIndex => CloudServerConfig.ProfileSelectionIndex;
     public static string CloudServerProfileDisplayName => CloudServerConfig.ProfileDisplayName;
@@ -495,7 +505,7 @@ public static class AppSettings
     /// </summary>
     public static void Apply(ref SceneAppearance appearance)
     {
-        int renderMode = EffectiveRenderMode(RenderMode, EdgesEnabled);
+        int renderMode = AppSettingsValueGuards.EffectiveRenderMode(RenderMode, EdgesEnabled);
         var requestedMode = (FabricationAssistant.Rendering.Gles.RenderMode)renderMode;
         appearance.Mode = AndroidRenderModeShim.Effective(requestedMode);
 
@@ -557,6 +567,8 @@ public static class AppSettings
         appearance.AoBlurSharpness = AoBlurSharpness;
         appearance.AoBlurPasses = AoBlurPasses;
         appearance.AoFullResolution = AoFullResolution;
+        appearance.FxaaEnabled = FxaaEnabled;
+        appearance.RenderScale = RenderScalePercent / 100f;
         appearance.ContourStrength = ContourStrength;
         appearance.ContourPower = ContourPower;
         appearance.MsaaSamples = MsaaSamples;
@@ -611,14 +623,6 @@ public static class AppSettings
             editor.PutFloat(bKey, Clamp01(b));
         });
     }
-
-    private static int EffectiveRenderMode(int renderMode, bool edgesEnabled)
-        => IsShadedRenderMode(renderMode)
-            ? edgesEnabled ? ModeShadedWithEdges : ModeShaded
-            : renderMode;
-
-    private static bool IsShadedRenderMode(int renderMode)
-        => renderMode == ModeShadedWithEdges || renderMode == ModeShaded;
 
     private static void MigrateDefaultsIfNeeded()
     {

@@ -229,26 +229,31 @@ public sealed partial class MsaaSceneFramebuffer : IDisposable
     }
 
     /// <summary>
-    /// Blit-resolves the multisample color attachment into FBO 0 (the
-    /// default backbuffer) at the same dimensions. Depth and stencil are
-    /// not resolved - the selection outline post-process only reads color.
+    /// Blit-resolves the multisample color attachment into FBO 0 (the default
+    /// backbuffer). See <see cref="TryResolveTo"/>.
     /// </summary>
-    public bool TryResolveToDefault()
+    public bool TryResolveToDefault() => TryResolveTo(0);
+
+    /// <summary>
+    /// Blit-resolves the multisample color attachment into <paramref name="targetFbo"/>
+    /// (0 = default backbuffer) at the same dimensions, and leaves that FBO bound so
+    /// the post-process passes (silhouette/outline, then optional FXAA) draw into it.
+    /// Depth and stencil are not resolved - those passes only read color.
+    /// </summary>
+    public bool TryResolveTo(uint targetFbo)
     {
         LastResolveError = GLEnum.NoError;
         if (_fbo == 0 || _width <= 0 || _height <= 0) return true;
         DrainGlErrors();
         _gl.BindFramebuffer(FramebufferTarget.ReadFramebuffer, _fbo);
-        _gl.BindFramebuffer(FramebufferTarget.DrawFramebuffer, 0);
+        _gl.BindFramebuffer(FramebufferTarget.DrawFramebuffer, targetFbo);
         _gl.ReadBuffer(GLEnum.ColorAttachment0);
         _gl.BlitFramebuffer(
             0, 0, _width, _height,
             0, 0, _width, _height,
             ClearBufferMask.ColorBufferBit, BlitFramebufferFilter.Nearest);
         LastResolveError = _gl.GetError();
-        // Restore the standard binding so subsequent draws hit the default
-        // framebuffer (the selection outline runs after Resolve).
-        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, targetFbo);
         return LastResolveError == GLEnum.NoError;
     }
 

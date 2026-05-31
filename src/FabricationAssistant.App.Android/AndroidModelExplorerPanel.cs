@@ -18,7 +18,6 @@ internal sealed class AndroidModelExplorerPanel : IDisposable
     private readonly HashSet<int> _highlightedPresentedIds = new();
     private readonly HashSet<int> _pathPresentedIds = new();
     private readonly List<MaterialButton> _actionButtons = new();
-    private readonly StyledTooltipRegistry _tooltips = new();
 
     private Scene? _scene;
     private AndroidModelExplorerTree? _tree;
@@ -85,8 +84,7 @@ internal sealed class AndroidModelExplorerPanel : IDisposable
             () => _highlightedPresentedIds,
             () => _pathPresentedIds,
             ToggleNodeExpansion,
-            ToggleNodeVisibility,
-            _tooltips);
+            ToggleNodeVisibility);
 
         _list = new ListView(ctx)
         {
@@ -103,7 +101,6 @@ internal sealed class AndroidModelExplorerPanel : IDisposable
             1f));
 
         SetScene(_sceneAccessor());
-        _tooltips.AttachTree(ctx, root, includeStaticText: true);
         return root;
     }
 
@@ -143,7 +140,6 @@ internal sealed class AndroidModelExplorerPanel : IDisposable
 
         _adapter?.Dispose();
         _adapter = null;
-        _tooltips.Dispose();
         _list = null;
         _status = null;
         _summary = null;
@@ -447,7 +443,6 @@ internal sealed class AndroidModelExplorerPanel : IDisposable
         private readonly Func<IReadOnlySet<int>> _pathAccessor;
         private readonly Action<AndroidModelExplorerNode> _toggleExpansion;
         private readonly Action<AndroidModelExplorerNode> _toggleVisibility;
-        private readonly StyledTooltipRegistry _tooltips;
 
         public ModelExplorerAdapter(
             Context ctx,
@@ -456,8 +451,7 @@ internal sealed class AndroidModelExplorerPanel : IDisposable
             Func<IReadOnlySet<int>> highlightedAccessor,
             Func<IReadOnlySet<int>> pathAccessor,
             Action<AndroidModelExplorerNode> toggleExpansion,
-            Action<AndroidModelExplorerNode> toggleVisibility,
-            StyledTooltipRegistry tooltips)
+            Action<AndroidModelExplorerNode> toggleVisibility)
         {
             _ctx = ctx;
             _rows = rows;
@@ -466,7 +460,6 @@ internal sealed class AndroidModelExplorerPanel : IDisposable
             _pathAccessor = pathAccessor;
             _toggleExpansion = toggleExpansion;
             _toggleVisibility = toggleVisibility;
-            _tooltips = tooltips;
         }
 
         public override AndroidModelExplorerRow this[int position] => _rows[position];
@@ -564,7 +557,6 @@ internal sealed class AndroidModelExplorerPanel : IDisposable
             visibility.SetOnClickListener(new NodeActionClickListener(_toggleVisibility, node));
             root.AddView(visibility, new LinearLayout.LayoutParams(Dp(_ctx, 40), Dp(_ctx, 36)));
 
-            _tooltips.AttachTree(_ctx, root, includeStaticText: true);
             return root;
         }
 

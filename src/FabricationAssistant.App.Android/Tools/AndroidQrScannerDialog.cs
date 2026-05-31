@@ -27,7 +27,6 @@ internal sealed class AndroidQrScannerDialog : Dialog, ISurfaceHolderCallback, g
     private readonly Action<int> _isolateMatch;
     private readonly Action<int> _isolateXrayMatch;
     private readonly BarcodeReaderGeneric _reader;
-    private readonly StyledTooltipRegistry _tooltips = new();
     private readonly bool _isWideLayout;
 
     private SurfaceView? _preview;
@@ -114,7 +113,6 @@ internal sealed class AndroidQrScannerDialog : Dialog, ISurfaceHolderCallback, g
 
         SetContentView(scroll);
         RenderResult();
-        _tooltips.AttachTree(Context, scroll, includeStaticText: true);
     }
 
     protected override void OnStart()
@@ -135,12 +133,6 @@ internal sealed class AndroidQrScannerDialog : Dialog, ISurfaceHolderCallback, g
     {
         StopCamera();
         base.OnStop();
-    }
-
-    public override void Dismiss()
-    {
-        _tooltips.Dispose();
-        base.Dismiss();
     }
 
     public void SurfaceCreated(ISurfaceHolder holder)
@@ -592,7 +584,6 @@ internal sealed class AndroidQrScannerDialog : Dialog, ISurfaceHolderCallback, g
         if (_matchesContainer is null)
             return;
 
-        _tooltips.DisposeTree(_matchesContainer);
         _matchesContainer.RemoveAllViews();
         if (_currentResult.Matches.Count == 0)
         {
@@ -607,7 +598,6 @@ internal sealed class AndroidQrScannerDialog : Dialog, ISurfaceHolderCallback, g
             _matchesContainer.AddView(empty, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MatchParent,
                 ViewGroup.LayoutParams.WrapContent));
-            _tooltips.Attach(Context, empty, empty.Text);
             return;
         }
 
@@ -687,7 +677,6 @@ internal sealed class AndroidQrScannerDialog : Dialog, ISurfaceHolderCallback, g
         {
             BottomMargin = Dp(2),
         });
-        _tooltips.AttachTree(Context, row, includeStaticText: true);
     }
 
     private void UpdateActionButtons()

@@ -1,9 +1,38 @@
+using FabricationAssistant.Rendering.Gles;
 using Xunit;
 
 namespace FabricationAssistant.App.Android.Tests;
 
 public sealed class AppSettingsValueGuardsTests
 {
+    // S9-F10: EffectiveRenderMode had no direct test. Only the two shaded
+    // variants react to the edges toggle; every other mode passes through.
+    [Theory]
+    [InlineData((int)RenderMode.ShadedWithEdges, true, (int)RenderMode.ShadedWithEdges)]
+    [InlineData((int)RenderMode.ShadedWithEdges, false, (int)RenderMode.Shaded)]
+    [InlineData((int)RenderMode.Shaded, true, (int)RenderMode.ShadedWithEdges)]
+    [InlineData((int)RenderMode.Shaded, false, (int)RenderMode.Shaded)]
+    [InlineData((int)RenderMode.Wireframe, true, (int)RenderMode.Wireframe)]
+    [InlineData((int)RenderMode.Wireframe, false, (int)RenderMode.Wireframe)]
+    [InlineData((int)RenderMode.Clay, true, (int)RenderMode.Clay)]
+    [InlineData((int)RenderMode.Clay, false, (int)RenderMode.Clay)]
+    [InlineData((int)RenderMode.Realistic, true, (int)RenderMode.Realistic)]
+    [InlineData((int)RenderMode.Realistic, false, (int)RenderMode.Realistic)]
+    public void EffectiveRenderMode_only_shaded_modes_follow_edges_toggle(
+        int renderMode,
+        bool edgesEnabled,
+        int expected)
+        => Assert.Equal(expected, AppSettingsValueGuards.EffectiveRenderMode(renderMode, edgesEnabled));
+
+    [Theory]
+    [InlineData((int)RenderMode.ShadedWithEdges, true)]
+    [InlineData((int)RenderMode.Shaded, true)]
+    [InlineData((int)RenderMode.Wireframe, false)]
+    [InlineData((int)RenderMode.Clay, false)]
+    [InlineData((int)RenderMode.Realistic, false)]
+    public void IsShadedRenderMode_recognises_both_shaded_variants(int renderMode, bool expected)
+        => Assert.Equal(expected, AppSettingsValueGuards.IsShadedRenderMode(renderMode));
+
     [Theory]
     [InlineData(float.NaN, 0.0f)]
     [InlineData(float.NegativeInfinity, 0.0f)]

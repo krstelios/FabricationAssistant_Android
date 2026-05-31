@@ -15,7 +15,6 @@ internal sealed class PropertiesPanelBinder : IDisposable
     private readonly TextView _emptyState;
     private readonly ScrollView _scroll;
     private readonly LinearLayout _content;
-    private readonly StyledTooltipRegistry _tooltips = new();
     private readonly global::Android.Graphics.Color _primaryColor;
     private readonly global::Android.Graphics.Color _secondaryColor;
     private readonly global::Android.Graphics.Color _borderColor;
@@ -41,12 +40,10 @@ internal sealed class PropertiesPanelBinder : IDisposable
         _titleSizePx = context.Resources!.GetDimension(Resource.Dimension.fa_text_size_subtitle);
         _bodySizePx = context.Resources!.GetDimension(Resource.Dimension.fa_text_size_body);
         _captionSizePx = context.Resources!.GetDimension(Resource.Dimension.fa_text_size_caption);
-        _tooltips.AttachTree(context, panelRoot, includeStaticText: true);
     }
 
     public void ShowSelection(SceneNode? node, Scene? scene, int selectionCount = 1)
     {
-        _tooltips.DisposeTree(_content);
         _content.RemoveAllViews();
 
         if (node is null)
@@ -54,7 +51,6 @@ internal sealed class PropertiesPanelBinder : IDisposable
             _emptyState.Visibility = ViewStates.Visible;
             _scroll.Visibility = ViewStates.Gone;
             _emptyState.Text = _context.GetString(Resource.String.properties_empty);
-            _tooltips.Attach(_context, _emptyState, _emptyState.Text);
             return;
         }
 
@@ -105,12 +101,10 @@ internal sealed class PropertiesPanelBinder : IDisposable
         }
 
         _scroll.ScrollTo(0, 0);
-        _tooltips.AttachTree(_context, _content, includeStaticText: true);
     }
 
     public void Dispose()
     {
-        _tooltips.Dispose();
     }
 
     private IReadOnlyList<PropertyRow> BuildComponentRows(SceneNode node)

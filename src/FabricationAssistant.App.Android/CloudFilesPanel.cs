@@ -19,7 +19,6 @@ public sealed class CloudFilesPanel : IDisposable
 
     private readonly CloudApiClient _client;
     private readonly List<MaterialCardView> _cards = [];
-    private readonly StyledTooltipRegistry _tooltips = new();
     private readonly CancellationTokenSource _disposeCts = new();
     private LinearLayout? _root;
     private LinearLayout? _list;
@@ -85,7 +84,6 @@ public sealed class CloudFilesPanel : IDisposable
         scroll.AddView(_root);
 
         _ = RefreshAsync(ctx, silent: false);
-        _tooltips.AttachTree(ctx, scroll, includeStaticText: true);
         return scroll;
     }
 
@@ -100,7 +98,6 @@ public sealed class CloudFilesPanel : IDisposable
         foreach (MaterialCardView card in _cards)
             card.SetOnClickListener(null);
         _cards.Clear();
-        _tooltips.Dispose();
         if (_refreshButton is not null)
             _refreshButton.Click -= OnRefreshClicked;
         if (_search is not null)
@@ -361,7 +358,6 @@ public sealed class CloudFilesPanel : IDisposable
         inner.AddView(button, lp);
 
         _list?.AddView(card);
-        _tooltips.AttachTree(ctx, card, includeStaticText: true);
     }
 
     private void RebuildList(Context ctx)
@@ -372,7 +368,6 @@ public sealed class CloudFilesPanel : IDisposable
         foreach (MaterialCardView card in _cards)
             card.SetOnClickListener(null);
         _cards.Clear();
-        _tooltips.DisposeTree(_list);
         _list.RemoveAllViews();
 
         IEnumerable<CloudPackageSummary> packages = _snapshot.Packages;
@@ -475,7 +470,6 @@ public sealed class CloudFilesPanel : IDisposable
             AddCountersButton(ctx, textGroup, package);
 
         _list?.AddView(card);
-        _tooltips.AttachTree(ctx, card, includeStaticText: true);
         _ = LoadPreviewIntoAsync(ctx, package, preview);
     }
 
@@ -542,7 +536,7 @@ public sealed class CloudFilesPanel : IDisposable
                 : $"C{version.Counter} - read-only")
             .ToArray();
 
-        AlertDialog dialog = new AlertDialog.Builder(ctx)
+        _ = new AlertDialog.Builder(ctx)
             .SetTitle(package.DisplayName + " counters")!
             .SetItems(labels, (_, e) =>
             {
@@ -551,9 +545,6 @@ public sealed class CloudFilesPanel : IDisposable
             })!
             .SetNegativeButton("Cancel", (_, _) => { })!
             .Show()!;
-
-        Button? cancel = dialog.GetButton((int)global::Android.Content.DialogButtonType.Negative);
-        _tooltips.Attach(ctx, cancel, "Cancel counter selection");
     }
 
     private async Task LoadPreviewIntoAsync(Context ctx, CloudPackageSummary package, ImageView preview)
