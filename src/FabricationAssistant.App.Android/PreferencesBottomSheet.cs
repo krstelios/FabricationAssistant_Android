@@ -211,12 +211,14 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
 
         // AA and occlusion
         var aa = AddSection(ctx, root, "Anti-aliasing & Occlusion", "MSAA, contour, SSAO");
-        // S8#4/S9#1: expose 8x (the renderer + AppSettings clamp already support
-        // it; devices that cap lower clamp down at GL_MAX_SAMPLES).
-        int msaaIdx = AppSettings.MsaaSamples switch { 0 => 0, 2 => 1, 4 => 2, _ => 3 };
-        AddToggleRow(ctx, aa, new[] { "Off", "2x", "4x", "8x" }, msaaIdx,
-            idx => AppSettings.MsaaSamples = idx switch { 0 => 0, 1 => 2, 2 => 4, _ => 8 });
+        // 8x dropped: current target GPUs cap at GL_MAX_SAMPLES=4, so the 8x option
+        // only ever clamped back down to 4x and was misleading.
+        int msaaIdx = AppSettings.MsaaSamples switch { 0 => 0, 2 => 1, _ => 2 };
+        AddToggleRow(ctx, aa, new[] { "Off", "2x", "4x" }, msaaIdx,
+            idx => AppSettings.MsaaSamples = idx switch { 0 => 0, 1 => 2, _ => 4 });
         AddSubtle(ctx, aa, "MSAA applies immediately.");
+        AddSwitch(ctx, aa, "High-res ambient occlusion", AppSettings.AoFullResolution, v => AppSettings.AoFullResolution = v);
+        AddSubtle(ctx, aa, "Renders SSAO at full resolution - sharper shadows, more GPU.");
         AddFloatSlider(ctx, aa, "Contour strength", 0f, 1.2f, AppSettings.ContourStrength, v => AppSettings.ContourStrength = v);
         AddFloatSlider(ctx, aa, "Contour falloff", 0.5f, 6f, AppSettings.ContourPower, v => AppSettings.ContourPower = v);
         AddSwitch(ctx, aa, "Contact shadows (SSAO)", AppSettings.AmbientOcclusionEnabled, v => AppSettings.AmbientOcclusionEnabled = v);

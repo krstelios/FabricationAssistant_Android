@@ -5,17 +5,17 @@ namespace FabricationAssistant.Rendering.Gles;
 
 public static class CadEdgeBuilder
 {
-    public const int EdgeVertexFloatCount = 10;
+    // S7-F6: edge endpoints carry only position. The silhouette test moved to a
+    // screen-space pass, so the former per-vertex normalA/normalB/flags payload
+    // (7 floats) was dead - UploadEdges only ever read xyz. The topology
+    // classification below still gates which edges are emitted.
+    public const int EdgeVertexFloatCount = 3;
 
     private const double FeatureEdgeToleranceScale = 1e-5;
     private const double FeatureEdgeMinimumTolerance = 1e-6;
     private const double FeatureEdgeMinimumLengthScale = 0.25;
     private const double FeatureEdgeCreaseAngleDegrees = 28.0;
     private const double DegenerateFaceNormalEpsilon = 1e-20;
-
-    private const float EdgeFlagBoundary = 1.0f;
-    private const float EdgeFlagFeature = 2.0f;
-    private const float EdgeFlagImported = 8.0f;
 
     public static float[] BuildImportedEdgeVertices(float[] edgePositions)
     {
@@ -29,13 +29,6 @@ public static class CadEdgeBuilder
             vertices[output++] = edgePositions[i];
             vertices[output++] = edgePositions[i + 1];
             vertices[output++] = edgePositions[i + 2];
-            vertices[output++] = 0.0f;
-            vertices[output++] = 0.0f;
-            vertices[output++] = 0.0f;
-            vertices[output++] = 0.0f;
-            vertices[output++] = 0.0f;
-            vertices[output++] = 0.0f;
-            vertices[output++] = EdgeFlagFeature + EdgeFlagImported;
         }
 
         return vertices;
@@ -126,16 +119,8 @@ public static class CadEdgeBuilder
             if (!emittedEdges.Add(dedupeKey))
                 continue;
 
-            float flags = 0.0f;
-            if (isBoundaryEdge)
-                flags += EdgeFlagBoundary;
-            if (isNonManifold || isSharpCrease)
-                flags += EdgeFlagFeature;
-            if (includeAllTriangleEdges && flags == 0.0f)
-                flags = EdgeFlagFeature;
-
-            AddEdgeVertex(edgeVertices, edge.Start, edge.NormalA, edge.NormalB, flags);
-            AddEdgeVertex(edgeVertices, edge.End, edge.NormalA, edge.NormalB, flags);
+            AddEdgeVertex(edgeVertices, edge.Start);
+            AddEdgeVertex(edgeVertices, edge.End);
         }
 
         return edgeVertices.Count == 0
@@ -155,23 +140,11 @@ public static class CadEdgeBuilder
             : fallback;
     }
 
-    private static void AddEdgeVertex(
-        List<float> edgeVertices,
-        Vector3d position,
-        Vector3d normalA,
-        Vector3d normalB,
-        float flags)
+    private static void AddEdgeVertex(List<float> edgeVertices, Vector3d position)
     {
         edgeVertices.Add((float)position.X);
         edgeVertices.Add((float)position.Y);
         edgeVertices.Add((float)position.Z);
-        edgeVertices.Add((float)normalA.X);
-        edgeVertices.Add((float)normalA.Y);
-        edgeVertices.Add((float)normalA.Z);
-        edgeVertices.Add((float)normalB.X);
-        edgeVertices.Add((float)normalB.Y);
-        edgeVertices.Add((float)normalB.Z);
-        edgeVertices.Add(flags);
     }
 
     private static void AccumulateTopologyEdge(

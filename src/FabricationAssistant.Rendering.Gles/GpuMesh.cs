@@ -214,7 +214,7 @@ public sealed class GpuMesh : IDisposable
 
         int endpointPairFloatCount = EdgeEndpointFloatCount * 2;
         if (edgeVertices.Length % endpointPairFloatCount != 0)
-            throw new ArgumentException("Edge endpoint buffer must contain pairs of 10-float vertices.", nameof(edgeVertices));
+            throw new ArgumentException("Edge endpoint buffer must contain pairs of 3-float vertices.", nameof(edgeVertices));
 
         int segmentCount = edgeVertices.Length / endpointPairFloatCount;
         int instanceLength = checked(segmentCount * EdgeInstanceFloatCount);

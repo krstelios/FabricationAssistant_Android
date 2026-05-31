@@ -73,19 +73,20 @@ public sealed class GlesSsaoRenderer : IDisposable
     }
 
     /// <summary>
-    /// Allocates the SSAO + blur framebuffers at half the requested viewport
-    /// dimensions. The consumer (mesh shader) reconstructs full-resolution AO
-    /// via a depth-aware bilateral upsample.
+    /// Allocates the SSAO + blur framebuffers. At half resolution the mesh shader
+    /// reconstructs full-res AO via a depth-aware bilateral upsample; at full
+    /// resolution the AO grid matches the screen so no half-res blockiness shows
+    /// through at depth edges (the "low-res shadow" artifact) - at a larger cost.
     /// </summary>
-    public void Resize(int width, int height)
+    public void Resize(int width, int height, bool fullResolution)
     {
         if (width <= 0 || height <= 0) return;
-        int halfWidth = System.Math.Max(1, width / 2);
-        int halfHeight = System.Math.Max(1, height / 2);
-        if (halfWidth == _width && halfHeight == _height && _ssaoFbo != 0) return;
+        int targetWidth = fullResolution ? width : System.Math.Max(1, width / 2);
+        int targetHeight = fullResolution ? height : System.Math.Max(1, height / 2);
+        if (targetWidth == _width && targetHeight == _height && _ssaoFbo != 0) return;
         DestroyResources();
-        _width = halfWidth;
-        _height = halfHeight;
+        _width = targetWidth;
+        _height = targetHeight;
         try
         {
             _ssaoTex = MakeAoTexture(_width, _height);

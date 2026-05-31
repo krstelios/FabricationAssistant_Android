@@ -476,7 +476,7 @@ public sealed class GlesViewportRenderer : IDisposable
         _gl.Viewport(0, 0, (uint)_width, (uint)_height);
         _pickRenderer?.Resize(_width, _height);
         _normalDepthRenderer?.Resize(_width, _height);
-        _ssaoRenderer?.Resize(_width, _height);
+        _ssaoRenderer?.Resize(_width, _height, _appearance.AoFullResolution);
         _outlineRenderer?.Resize(_width, _height);
         // Only allocate the MSAA FBO when MSAA is on. Mirrors the conditional
         // in OnDrawFrame so a resize while MSAA is Off does not eagerly
@@ -573,7 +573,7 @@ public sealed class GlesViewportRenderer : IDisposable
             // only for silhouettes leaves AO off (aoTextureToBind stays white).
             if (ssaoEligible && _ssaoRenderer is { } ssao)
             {
-                ssao.Resize(_width, _height);
+                ssao.Resize(_width, _height, a.AoFullResolution);
                 ssao.Render(
                     normalDepth.NormalTexture,
                     normalDepth.DepthTexture,
@@ -2753,6 +2753,10 @@ public sealed class GlesViewportRenderer : IDisposable
         _gl.DepthMask(true);
         _gl.ColorMask(true, true, true, true);
         _gl.Disable(EnableCap.Blend);
+        // S7-F12: reset the blend func to the standard alpha-over default so a later
+        // pass that enables blend without setting its own func gets a known state
+        // (overlays set BlendFunc then only disable Blend, leaving the func dangling).
+        _gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
         _gl.Disable(EnableCap.ScissorTest);
         _gl.Disable(EnableCap.StencilTest);
         _gl.StencilMask(0xFF);

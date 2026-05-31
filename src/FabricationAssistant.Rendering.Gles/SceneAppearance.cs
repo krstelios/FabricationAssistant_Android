@@ -91,6 +91,10 @@ public static class SceneAppearanceDefaults
     public const int AoBlurRadius = 24;
     public const float AoBlurSharpness = 8.96f;
     public const int AoBlurPasses = 1;
+    // Render SSAO at full viewport resolution instead of half. Removes the blocky
+    // half-res grid that shows through as low-res "triangles" in the shadow at
+    // depth edges, at the cost of a larger AO pass.
+    public const bool AoFullResolution = true;
     public const float ContourStrength = 0.20040001f;
     public const float ContourPower = 4.4105f;
     public const int MsaaSamples = 4;
@@ -167,6 +171,7 @@ public static class SceneAppearanceDefaults
         AoBlurRadius = AoBlurRadius,
         AoBlurSharpness = AoBlurSharpness,
         AoBlurPasses = AoBlurPasses,
+        AoFullResolution = AoFullResolution,
         ContourStrength = ContourStrength,
         ContourPower = ContourPower,
         MsaaSamples = MsaaSamples,
@@ -263,6 +268,7 @@ public struct SceneAppearance
     public int AoBlurRadius;
     public float AoBlurSharpness;
     public int AoBlurPasses;
+    public bool AoFullResolution;
     public float ContourStrength;
     public float ContourPower;
     public int MsaaSamples;             // 0 / 2 / 4 / 8

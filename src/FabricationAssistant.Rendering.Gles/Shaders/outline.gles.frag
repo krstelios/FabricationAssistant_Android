@@ -21,16 +21,17 @@ void main()
     // probes outside / inside the selection mask; |gradient| > 0 means we
     // are on the silhouette.
     float t = max(uThicknessPx, 1.0);
-    vec2 step = uTexelSize * t;
+    // S7-F3: named stepUv so it does not shadow the GLSL built-in step().
+    vec2 stepUv = uTexelSize * t;
 
     float c = sampleMask(vTexCoord);
 
     // 4-tap cardinal Sobel keeps it cheap on tablet GPUs - corners pull
     // in the diagonals via the gradient magnitude.
-    float l = sampleMask(vTexCoord + vec2(-step.x, 0.0));
-    float r = sampleMask(vTexCoord + vec2( step.x, 0.0));
-    float u = sampleMask(vTexCoord + vec2(0.0,  step.y));
-    float d = sampleMask(vTexCoord + vec2(0.0, -step.y));
+    float l = sampleMask(vTexCoord + vec2(-stepUv.x, 0.0));
+    float r = sampleMask(vTexCoord + vec2( stepUv.x, 0.0));
+    float u = sampleMask(vTexCoord + vec2(0.0,  stepUv.y));
+    float d = sampleMask(vTexCoord + vec2(0.0, -stepUv.y));
 
     float gx = r - l;
     float gy = u - d;

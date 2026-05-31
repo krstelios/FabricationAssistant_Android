@@ -382,6 +382,7 @@ public static class AppSettings
     public static float AoRadius { get => GetFloatInRange("ao_radius", DefaultAoRadius, MinAoRadius, MaxAoRadius); set => Put("ao_radius", System.Math.Clamp(value, MinAoRadius, MaxAoRadius)); }
     public static float AoBias { get => GetFloatInRange("ao_bias", DefaultAoBias, MinAoBias, MaxAoBias); set => Put("ao_bias", System.Math.Clamp(value, MinAoBias, MaxAoBias)); }
     public static float AoIntensity { get => GetFloatInRange("ao_intensity", DefaultAoIntensity, MinAoIntensity, MaxAoIntensity); set => Put("ao_intensity", System.Math.Clamp(value, MinAoIntensity, MaxAoIntensity)); }
+    public static bool AoFullResolution { get => Get("ao_full_resolution", SceneAppearanceDefaults.AoFullResolution); set => Put("ao_full_resolution", value); }
     public static float AoPower { get => GetFloatInRange("ao_power", DefaultAoPower, MinAoPower, MaxAoPower); set => Put("ao_power", System.Math.Clamp(value, MinAoPower, MaxAoPower)); }
     public static float AoContrast { get => GetFloatInRange("ao_contrast", DefaultAoContrast, MinAoContrast, MaxAoContrast); set => Put("ao_contrast", System.Math.Clamp(value, MinAoContrast, MaxAoContrast)); }
     public static float AoMaxDistance { get => GetFloatInRange("ao_max_distance", DefaultAoMaxDistance, MinAoMaxDistance, MaxAoMaxDistance); set => Put("ao_max_distance", System.Math.Clamp(value, MinAoMaxDistance, MaxAoMaxDistance)); }
@@ -394,7 +395,7 @@ public static class AppSettings
     public static float ContourStrength { get => GetFloatInRange("contour_strength", 0.20040001f, 0.0f, 1.2f); set => Put("contour_strength", System.Math.Clamp(value, 0.0f, 1.2f)); }
     public static float ContourPower { get => GetFloatInRange("contour_power", 4.4105f, 0.5f, 6.0f); set => Put("contour_power", System.Math.Clamp(value, 0.5f, 6.0f)); }
     // Read-side clamp remains defence-in-depth; schema migration removes invalid persisted values.
-    public static int MsaaSamples { get => ClampAndroidMsaaSamples(Get("msaa_samples", SceneAppearanceDefaults.MsaaSamples)); set => Put("msaa_samples", ClampAndroidMsaaSamples(value)); }
+    public static int MsaaSamples { get => ClampAndroidMsaaSamples(Get("msaa_samples", 4)); set => Put("msaa_samples", ClampAndroidMsaaSamples(value)); }
 
     // Selection
     public static bool ShowSelectionHighlight { get => Get("show_selection", true); set => Put("show_selection", value); }
@@ -555,6 +556,7 @@ public static class AppSettings
         appearance.AoBlurRadius = AoBlurRadius;
         appearance.AoBlurSharpness = AoBlurSharpness;
         appearance.AoBlurPasses = AoBlurPasses;
+        appearance.AoFullResolution = AoFullResolution;
         appearance.ContourStrength = ContourStrength;
         appearance.ContourPower = ContourPower;
         appearance.MsaaSamples = MsaaSamples;
