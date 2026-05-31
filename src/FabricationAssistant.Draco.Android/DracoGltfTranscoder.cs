@@ -25,7 +25,7 @@ public static class DracoGltfTranscoder
     // catchable InvalidDataException EnsureDecodedBudget raises.
     private const long MaxDecodedBytes = int.MaxValue;
 
-    public static void Transcode(string sourceGlbPath, string destinationGlbPath)
+    public static void Transcode(string sourceGlbPath, string destinationGlbPath, Action<string>? onWarning = null)
     {
         ArgumentNullException.ThrowIfNull(sourceGlbPath);
         ArgumentNullException.ThrowIfNull(destinationGlbPath);
@@ -84,6 +84,20 @@ public static class DracoGltfTranscoder
                     if (viewIndex < 0 || viewIndex >= bufferViews.Count || bufferViews[viewIndex] is not JsonObject view)
                         throw new InvalidDataException("Draco bufferView index is invalid.");
 
+                    // S5-2: the encoded Draco bytes are read from the GLB BIN chunk
+                    // (buffer 0), so a bufferView pointing at any other buffer - or an
+                    // external (uri) buffer - would feed the decoder the wrong bytes.
+                    int bufferIndex = view["buffer"]?.GetValue<int>() ?? 0;
+                    if (bufferIndex != 0)
+                        throw new InvalidDataException("Draco bufferView must reference the embedded GLB buffer (buffer 0).");
+                    if (root["buffers"] is JsonArray bufferList
+                        && bufferIndex < bufferList.Count
+                        && bufferList[bufferIndex] is JsonObject bufferObj
+                        && bufferObj["uri"] is not null)
+                    {
+                        throw new InvalidDataException("Draco bufferView references an external buffer, which is not supported.");
+                    }
+
                     int offset = view["byteOffset"]?.GetValue<int>() ?? 0;
                     int length = view["byteLength"]!.GetValue<int>();
                     byte[] encoded = ReadBinaryChunkRange(
@@ -117,11 +131,19 @@ public static class DracoGltfTranscoder
                             AppendFloatBufferView(bufferViews, newBin, texCoords, byteStride: 8),
                             dm.NumPoints);
 
-                    var attribs = prim!["attributes"] as JsonObject ?? new JsonObject();
-                    attribs["POSITION"] = posAccessor;
-                    if (nrmAccessor.HasValue) attribs["NORMAL"] = nrmAccessor.Value;
-                    if (uvAccessor.HasValue) attribs["TEXCOORD_0"] = uvAccessor.Value;
-                    prim["attributes"] = attribs;
+                    // S5-1: the in-process decoder only exposes POSITION/NORMAL/TEXCOORD_0.
+                    // Rebuild the attribute set from just those - mutating the original
+                    // instead would leave TANGENT/COLOR_0/TEXCOORD_1+/JOINTS_0/WEIGHTS_0
+                    // pointing at accessors that no longer have a bufferView (so they read
+                    // as zeros). Warn so the dropped data is surfaced rather than lost
+                    // silently; geometry stays intact. (A full fix would add a generic
+                    // attribute copy in the native wrapper.)
+                    var rebuiltAttribs = new JsonObject();
+                    rebuiltAttribs["POSITION"] = posAccessor;
+                    if (nrmAccessor.HasValue) rebuiltAttribs["NORMAL"] = nrmAccessor.Value;
+                    if (uvAccessor.HasValue) rebuiltAttribs["TEXCOORD_0"] = uvAccessor.Value;
+                    WarnOnDroppedDracoAttributes(prim!["attributes"] as JsonObject, rebuiltAttribs, onWarning);
+                    prim["attributes"] = rebuiltAttribs;
                     prim["indices"] = idxAccessor;
 
                     ((JsonObject)prim["extensions"]!).Remove("KHR_draco_mesh_compression");
@@ -156,6 +178,29 @@ public static class DracoGltfTranscoder
         finally
         {
             TryDeleteFile(tempBinPath);
+        }
+    }
+
+    // S5-1: report (rather than silently drop) vertex attributes the in-process decoder
+    // cannot read. Kept Android-API-free via the onWarning callback so this transcoder
+    // still link-compiles into the net8.0 host test project; the Android decorator routes
+    // the message to Android.Util.Log.
+    private static void WarnOnDroppedDracoAttributes(JsonObject? original, JsonObject preserved, Action<string>? onWarning)
+    {
+        if (original is null || onWarning is null)
+            return;
+
+        List<string>? dropped = null;
+        foreach (KeyValuePair<string, JsonNode?> attribute in original)
+        {
+            if (!preserved.ContainsKey(attribute.Key))
+                (dropped ??= new List<string>()).Add(attribute.Key);
+        }
+
+        if (dropped is not null)
+        {
+            onWarning(
+                $"Draco primitive carried vertex attribute(s) [{string.Join(", ", dropped)}] the in-process decoder cannot read; they were dropped. Geometry is intact, but vertex colors, tangents, extra UV sets, or skinning may be missing.");
         }
     }
 

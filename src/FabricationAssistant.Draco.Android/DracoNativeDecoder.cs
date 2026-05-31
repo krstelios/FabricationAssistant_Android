@@ -88,14 +88,19 @@ public sealed class DracoMesh : IDisposable
 
     private unsafe float[]? CopyFloatAttribute(DracoNativeDecoder.AttributeType type, int components)
     {
-        int total = NumPoints * components;
+        // S5-L1: NumPoints * components can overflow int32 for very large meshes,
+        // wrapping negative -> a misleading "missing attributes" null. Compute in long
+        // and reject anything that cannot be expressed as an int-sized array.
+        long total = (long)NumPoints * components;
         if (total <= 0) return null;
-        var buffer = new float[total];
+        if (total > int.MaxValue)
+            throw new InvalidDataException($"Draco mesh attribute is too large to decode ({total:n0} elements).");
+        var buffer = new float[(int)total];
         fixed (float* p = buffer)
         {
             lock (DracoNativeDecoder.NativeGate)
             {
-                if (DracoNativeDecoder.CopyAttributeFloat(_handle, type, components, (nint)p, total) == 0)
+                if (DracoNativeDecoder.CopyAttributeFloat(_handle, type, components, (nint)p, (int)total) == 0)
                     return null;
             }
         }
@@ -104,14 +109,17 @@ public sealed class DracoMesh : IDisposable
 
     public unsafe uint[]? GetIndices()
     {
-        int total = NumFaces * 3;
+        // S5-L1: NumFaces * 3 can overflow int32; compute in long and bound it.
+        long total = (long)NumFaces * 3;
         if (total <= 0) return null;
-        var buffer = new uint[total];
+        if (total > int.MaxValue)
+            throw new InvalidDataException($"Draco mesh has too many indices to decode ({total:n0}).");
+        var buffer = new uint[(int)total];
         fixed (uint* p = buffer)
         {
             lock (DracoNativeDecoder.NativeGate)
             {
-                if (DracoNativeDecoder.CopyIndicesUint32(_handle, (nint)p, total) == 0)
+                if (DracoNativeDecoder.CopyIndicesUint32(_handle, (nint)p, (int)total) == 0)
                     return null;
             }
         }
@@ -134,5 +142,9 @@ public sealed class DracoMesh : IDisposable
         GC.SuppressFinalize(this);
     }
 
+    // S5-M5: safety net only - every call site disposes deterministically (using), so
+    // the finalizer should not normally run. If it does, DestroyMesh still goes through
+    // NativeGate (Dispose acquires it), serializing it against any in-flight decode, so
+    // freeing on the finalizer thread is safe.
     ~DracoMesh() => Dispose();
 }

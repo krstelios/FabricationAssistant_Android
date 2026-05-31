@@ -35,13 +35,25 @@ public sealed class DracoDecodingGltfImportService : ISceneImportService
         if (!hasDraco)
             return await _inner.ImportAsync(filePath, settings, progress, ct).ConfigureAwait(false);
 
+        // S5-3: the transcoder only handles binary GLB. A Draco-compressed text .gltf
+        // (now detected above) cannot be transcoded in-process, so fail with a clear
+        // message instead of letting the plain importer choke on the Draco accessors.
+        if (!DracoExtensionDetector.IsBinaryGlb(filePath))
+            throw new NotSupportedException(
+                "Draco-compressed text .gltf is not supported. Re-export the model as a binary .glb.");
+
         progress?.Report("Decoding Draco compression...");
         string decoded = Path.Combine(_tempDir, $"{Path.GetFileNameWithoutExtension(filePath)}-{Guid.NewGuid():N}.glb");
         try
         {
             try
             {
-                await Task.Run(() => DracoGltfTranscoder.Transcode(filePath, decoded), ct).ConfigureAwait(false);
+                await Task.Run(
+                    () => DracoGltfTranscoder.Transcode(
+                        filePath,
+                        decoded,
+                        warning => global::Android.Util.Log.Warn("FA.Draco", warning)),
+                    ct).ConfigureAwait(false);
             }
             catch (DllNotFoundException ex)
             {
@@ -76,7 +88,11 @@ public sealed class DracoDecodingGltfImportService : ISceneImportService
                 return;
 
             DateTime cutoffUtc = DateTime.UtcNow - StaleDecodedFileAge;
-            foreach (FileInfo file in root.EnumerateFiles("*.glb"))
+            // S5-L4: prune every stale entry, not just *.glb. DracoGltfTranscoder writes
+            // a <dest>.<guid>.bin intermediate here and a hard kill skips its finally, so
+            // those .bin files orphan otherwise. The directory is dedicated to Draco
+            // decode temps, so removing all stale files is safe.
+            foreach (FileInfo file in root.EnumerateFiles())
             {
                 if (file.LastWriteTimeUtc < cutoffUtc)
                     file.Delete();

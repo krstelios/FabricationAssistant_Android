@@ -27,7 +27,13 @@ public static class DracoExtensionDetector
 
         Span<byte> header = stackalloc byte[4];
         fs.ReadExactly(header);
-        if (BinaryPrimitives.ReadUInt32LittleEndian(header) != GlbMagic)
+        // S5-3: scan binary GLB *and* text glTF. A text .gltf starts with '{' (the
+        // import pipeline strips any UTF-8 BOM first). Without this a Draco-compressed
+        // .gltf was reported as non-Draco and handed to the plain importer, which fails
+        // opaquely on the Draco-only accessors.
+        bool isGlb = BinaryPrimitives.ReadUInt32LittleEndian(header) == GlbMagic;
+        bool isJsonText = header[0] == (byte)'{';
+        if (!isGlb && !isJsonText)
             return false;
 
         fs.Position = 0;
@@ -65,5 +71,24 @@ public static class DracoExtensionDetector
         {
             ArrayPool<byte>.Shared.Return(buffer);
         }
+    }
+
+    /// <summary>
+    /// True if the file begins with the binary GLB magic. Used to tell a transcodable
+    /// binary GLB apart from a text .gltf (which the in-process transcoder can't handle).
+    /// </summary>
+    public static bool IsBinaryGlb(string filePath)
+    {
+        ArgumentNullException.ThrowIfNull(filePath);
+        if (!File.Exists(filePath))
+            return false;
+
+        using var fs = File.OpenRead(filePath);
+        if (fs.Length < 4)
+            return false;
+
+        Span<byte> header = stackalloc byte[4];
+        fs.ReadExactly(header);
+        return BinaryPrimitives.ReadUInt32LittleEndian(header) == GlbMagic;
     }
 }
