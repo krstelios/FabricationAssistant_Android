@@ -19,6 +19,8 @@ public sealed class GpuScene : IDisposable
     private Scene? _lastTransformSyncScene;
     private long _lastTransientTransformVersion = -1;
     private long _lastMoveTransformVersion = -1;
+    private Scene? _lastVisibilitySyncScene;
+    private long _lastVisibilityVersion = -1;
     private long _sectionCapGeometryVersion;
 
     public GpuScene(GL gl)
@@ -197,6 +199,17 @@ public sealed class GpuScene : IDisposable
     {
         ArgumentNullException.ThrowIfNull(scene);
 
+        // S6-F5: short-circuit when nothing changed since the last sync, mirroring
+        // SyncNodeTransforms' version gate. Rebuilding the visible-node HashSet and
+        // full-scanning every mesh on each call (e.g. per frame) is wasteful when the
+        // scene's visibility state is unchanged.
+        long visibilityVersion = scene.VisibilityVersion;
+        if (ReferenceEquals(_lastVisibilitySyncScene, scene)
+            && _lastVisibilityVersion == visibilityVersion)
+        {
+            return;
+        }
+
         HashSet<int> visibleNodeIds = scene.GetVisibleNodes()
             .Select(node => node.Id)
             .ToHashSet();
@@ -211,6 +224,9 @@ public sealed class GpuScene : IDisposable
                 IncrementSectionCapGeometryVersion();
             }
         }
+
+        _lastVisibilitySyncScene = scene;
+        _lastVisibilityVersion = visibilityVersion;
     }
 
     private static BoundingBox ComputeBoundsFromMeshes(DocumentDto document)
@@ -351,6 +367,9 @@ public sealed class GpuScene : IDisposable
         _lastTransformSyncScene = null;
         _lastTransientTransformVersion = -1;
         _lastMoveTransformVersion = -1;
+        // S6-F5: keep the visibility-sync gate consistent with the transform gate.
+        _lastVisibilitySyncScene = null;
+        _lastVisibilityVersion = -1;
     }
 
     private void IncrementSectionCapGeometryVersion()

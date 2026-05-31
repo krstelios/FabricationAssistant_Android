@@ -55,6 +55,14 @@ public sealed class MultisampleConfigChooser : Java.Lang.Object, GLSurfaceView.I
             EGLConfig? config = TryFindConfig(egl, display, samples);
             if (config is not null) return config;
         }
+
+        // S6-F4: no EGL config matched. Returning null makes GLSurfaceView throw an
+        // opaque IllegalArgumentException with no context, so log what was requested
+        // (RGB8 + Depth24 + Stencil8 + ES3, MSAA <= cap) to aid diagnosis on a
+        // constrained driver.
+        global::Android.Util.Log.Warn(
+            "FA.Renderer",
+            $"No EGL config matched (RGB888, Depth{BackbufferDepthSize}, Stencil8, ES3, MSAA<={_maxSamples}); GLSurfaceView config selection will fail.");
         return null;
     }
 

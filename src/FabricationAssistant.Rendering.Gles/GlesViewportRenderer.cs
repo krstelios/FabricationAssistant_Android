@@ -337,15 +337,10 @@ public sealed class GlesViewportRenderer : IDisposable
 
     public GlesTransformGizmoHandle BodyMoveGizmoActive { get; set; }
 
-    // Backwards-compatible aliases (read by callers that haven't migrated to
-    // Appearance yet). Removed once nothing references them.
-    public bool ShowGrid { get => Appearance.ShowGrid; set { var a = Appearance; a.ShowGrid = value; Appearance = a; } }
+    // S6-F9: removed the dead ShowGrid/ClearColor Appearance aliases (no references;
+    // the renderer reads Appearance directly). HighlightSelection is a live property
+    // used across the mesh/outline passes and set from the host, so it stays.
     public bool HighlightSelection { get; set; } = true;
-    public float[] ClearColor
-    {
-        get => Appearance.BackgroundColor;
-        set { var a = Appearance; a.BackgroundColor = value; Appearance = a; }
-    }
 
     public void OnSurfaceCreated()
     {
@@ -463,7 +458,16 @@ public sealed class GlesViewportRenderer : IDisposable
     public void OnSurfaceChanged(int width, int height)
     {
         _guard.EnsureOnRenderThread();
-        if (_gl is null) return;
+        if (_gl is null)
+        {
+            // S6-F6: unexpected callback ordering (surface-changed before the GL
+            // context exists). Silently skipping leaves a stale viewport/FBO size with
+            // no diagnostic, so log it.
+            Android.Util.Log.Warn(
+                "FA.Renderer",
+                $"OnSurfaceChanged({width}x{height}) skipped: GL context not created yet.");
+            return;
+        }
         _width = System.Math.Max(0, width);
         _height = System.Math.Max(0, height);
         if (_width <= 0 || _height <= 0)
