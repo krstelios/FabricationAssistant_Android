@@ -4,6 +4,7 @@ using Xunit;
 
 namespace FabricationAssistant.App.Android.Tests;
 
+[Collection("EdgeSnapState")]
 public sealed class EdgeSnapAllocationTests
 {
     [Fact]

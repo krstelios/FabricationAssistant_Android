@@ -4,6 +4,7 @@ using Xunit;
 
 namespace FabricationAssistant.App.Android.Tests;
 
+[Collection("EdgeSnapState")]
 public sealed class SnapValidationMatrixTests
 {
     private const double EdgeTol = 0.1;

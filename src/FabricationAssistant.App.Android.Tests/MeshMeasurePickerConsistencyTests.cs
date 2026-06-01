@@ -6,6 +6,7 @@ using Xunit;
 
 namespace FabricationAssistant.App.Android.Tests;
 
+[Collection("EdgeSnapState")]
 public sealed class MeshMeasurePickerConsistencyTests
 {
     private const double EdgeTol = 0.022;
