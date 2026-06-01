@@ -62,7 +62,10 @@ internal sealed class AndroidMeasureIntegration : IDisposable
             _raycaster,
             MeasurementTolerances.Default,
             AndroidEdgeSnapAngularTolerance,
-            AndroidEndpointSnapAngularTolerance);
+            AndroidEndpointSnapAngularTolerance)
+        {
+            PreparedOnlySelection = true,
+        };
         _tool = new MeasureTool(_session, picker);
         _presenter = new MeasurementPresenter(_units);
 
