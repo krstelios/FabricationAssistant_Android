@@ -52,6 +52,12 @@ internal sealed class GlesMeasurementOverlay : IDisposable
 
     public Vector3 DimensionHighlightColor { get; set; } = new(1.0f, 0.5019608f, 0.2509804f);
 
+    // S17-1: measurement annotations are intentionally NOT section-clipped and
+    // render with depth test off, so a measurement stays fully visible even when it
+    // spans a body that a section plane cuts away. This matches annotation UX
+    // (dimensions should not be occluded/hidden by the cut); the measure shaders
+    // therefore have no uSectionPlanes uniform by design. Add section clipping here
+    // only if hiding annotations in sectioned-away regions becomes a requirement.
     public void Render(
         float[] view,
         float[] projection,

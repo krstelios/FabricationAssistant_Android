@@ -172,6 +172,18 @@ public sealed class GlesOutlineRenderer : IDisposable
         try
         {
             // Mask pass.
+            // S7/19-F4 (decide-intent): the mask FBO is colour-only and the mask
+            // draw runs with depth test OFF, so the outline traces the full
+            // silhouette of the selected bodies even where another body occludes
+            // them. This is intentional - the selection outline stays visible
+            // through occluders so the user can see what is selected. It is
+            // knowingly inconsistent with the depth-tested inline fill highlight.
+            // Making the outline depth-consistent is NOT a simple "attach a depth
+            // renderbuffer" change: depth-testing only the selected meshes here
+            // would merely self-occlude them, not clip by other bodies. A correct
+            // fix would have to share the full scene depth into this FBO (or run a
+            // depth pre-pass of all visible meshes) and be verified visually on
+            // device; deferred unless occluded-hidden outlines become a requirement.
             _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _maskFbo);
             _gl.Viewport(0, 0, (uint)_width, (uint)_height);
             _gl.ClearColor(0f, 0f, 0f, 0f);

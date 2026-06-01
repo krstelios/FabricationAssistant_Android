@@ -57,6 +57,7 @@ public sealed class GlesViewportRenderer : IDisposable
     private int _sectionCapDiagnosticFramesRemaining;
     private string _sectionCapDiagnosticReason = "";
     private long _lastMsaaBypassLogTicks;
+    private long _lastStaleSectionCapLogTicks;
     private MsaaSceneFramebuffer? _msaaFbo;
     // FXAA post-process: the resolved scene+overlays are composited into this
     // color FBO, then an FXAA pass writes to the default backbuffer. Allocated
@@ -587,9 +588,12 @@ public sealed class GlesViewportRenderer : IDisposable
         // normal-depth pre-pass, so the pre-pass must be able to run even when
         // AO is off. These are the same guards the overlay itself applies
         // below, so the pre-pass runs exactly when either consumer needs it.
+        // S20-F10: the silhouette overlay only runs in ShadedWithEdges, matching
+        // desktop (where the silhouette is part of the CAD edge pass that itself is
+        // gated on mode == ShadedWithEdges). Plain Shaded therefore shows no edge
+        // overlays at all, instead of silhouette-lines-without-feature-edges.
         bool silhouettePrepassWanted = a.CadEdgeSilhouetteEnabled
-            && a.Mode != RenderMode.Clay
-            && a.Mode != RenderMode.Wireframe
+            && a.Mode == RenderMode.ShadedWithEdges
             && SectionPlanes.Count == 0
             && !lightweightNavigationActive;
 
@@ -1077,15 +1081,14 @@ public sealed class GlesViewportRenderer : IDisposable
         // THIS frame - which now happens for silhouettes independently of SSAO
         // (S19#1), so it no longer requires AO to be on. Gating on
         // normalDepthRanThisFrame (not NormalTexture != 0, which stays non-zero
-        // once allocated) ensures the texture is fresh. Skipped in
-        // Clay/Wireframe modes (no CAD-edge concept there). Also skip it in
-        // section mode: the normal-depth pre-pass does not include cap
-        // geometry, so this post-process can repaint background/cut edge pixels
-        // over the section cap.
+        // once allocated) ensures the texture is fresh. S20-F10: restricted to
+        // ShadedWithEdges (desktop parity - the silhouette belongs to the edge
+        // pass, so plain Shaded/Clay/Wireframe show no silhouette). Also skip it in
+        // section mode: the normal-depth pre-pass does not include cap geometry, so
+        // this post-process can repaint background/cut edge pixels over the cap.
         bool silhouetteOverlayActive = normalDepthRanThisFrame
             && a.CadEdgeSilhouetteEnabled
-            && a.Mode != RenderMode.Clay
-            && a.Mode != RenderMode.Wireframe
+            && a.Mode == RenderMode.ShadedWithEdges
             && SectionPlanes.Count == 0
             && !lightweightNavigationActive;
         if (silhouetteOverlayActive)
@@ -1544,6 +1547,23 @@ public sealed class GlesViewportRenderer : IDisposable
             }
             LogSectionCapRenderTiming(capStartTicks, afterGeometryTicks, afterGeometryTicks, capGeometries);
             return;
+        }
+
+        // S16-5: the async cap build can be one generation behind the visual planes
+        // (fewer geometries than planes), so trailing planes would silently render
+        // no cap. Surface it, and if a build is in flight, re-request a render so the
+        // missing caps appear as soon as it completes instead of waiting for the
+        // next unrelated invalidation.
+        if (capGeometries.Length < SectionVisualPlanes.Count)
+        {
+            if (_sectionCapGeometryBuildInFlight is not null)
+                RequestDelayedSectionCapRender(SectionCapGeometryDebounceMilliseconds);
+            if (ShouldLogThrottled(ref _lastStaleSectionCapLogTicks, 1000.0))
+            {
+                Android.Util.Log.Warn(
+                    "FA.Renderer",
+                    $"Section caps stale: geometries={capGeometries.Length} < visualPlanes={SectionVisualPlanes.Count}, buildInFlight={_sectionCapGeometryBuildInFlight is not null}.");
+            }
         }
 
         _gl.Enable(EnableCap.StencilTest);

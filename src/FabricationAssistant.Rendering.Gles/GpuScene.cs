@@ -15,6 +15,11 @@ public sealed class GpuScene : IDisposable
 {
     private readonly GL _gl;
     private IReadOnlyList<GpuMesh> _meshes = Array.Empty<GpuMesh>();
+    // S13-1: selection lookups built once per Load instead of linear _meshes scans
+    // on the UI thread. Keyed for O(1) resolution; first-match semantics preserved.
+    private Dictionary<int, int> _meshIndexBySourceNodeId = new();
+    private Dictionary<int, int> _sourceNodeIdByMeshIndex = new();
+    private Dictionary<int, int> _selectableNodeIdByMeshIndex = new();
     private DocumentDto? _document;
     private Scene? _lastTransformSyncScene;
     private long _lastTransientTransformVersion = -1;
@@ -40,15 +45,8 @@ public sealed class GpuScene : IDisposable
 
     public bool TryGetSourceNodeIdForMeshIndex(int meshIndex, out int nodeId)
     {
-        IReadOnlyList<GpuMesh> meshes = _meshes;
-        foreach (GpuMesh mesh in meshes)
-        {
-            if (mesh.MeshIndex == meshIndex && mesh.SourceNodeId >= 0)
-            {
-                nodeId = mesh.SourceNodeId;
-                return true;
-            }
-        }
+        if (_sourceNodeIdByMeshIndex.TryGetValue(meshIndex, out nodeId))
+            return true;
 
         nodeId = -1;
         return false;
@@ -56,21 +54,8 @@ public sealed class GpuScene : IDisposable
 
     public bool TryGetSelectableNodeIdForMeshIndex(int meshIndex, out int nodeId)
     {
-        IReadOnlyList<GpuMesh> meshes = _meshes;
-        foreach (GpuMesh mesh in meshes)
-        {
-            if (mesh.MeshIndex != meshIndex)
-                continue;
-
-            int selectableNodeId = mesh.SelectableNodeId >= 0
-                ? mesh.SelectableNodeId
-                : mesh.SourceNodeId;
-            if (selectableNodeId >= 0)
-            {
-                nodeId = selectableNodeId;
-                return true;
-            }
-        }
+        if (_selectableNodeIdByMeshIndex.TryGetValue(meshIndex, out nodeId))
+            return true;
 
         nodeId = -1;
         return false;
@@ -78,18 +63,41 @@ public sealed class GpuScene : IDisposable
 
     public bool TryGetMeshIndexForSourceNodeId(int nodeId, out int meshIndex)
     {
-        IReadOnlyList<GpuMesh> meshes = _meshes;
-        foreach (GpuMesh mesh in meshes)
-        {
-            if (mesh.SourceNodeId == nodeId)
-            {
-                meshIndex = mesh.MeshIndex;
-                return true;
-            }
-        }
+        if (_meshIndexBySourceNodeId.TryGetValue(nodeId, out meshIndex))
+            return true;
 
         meshIndex = 0;
         return false;
+    }
+
+    // S13-1: build the selection lookup maps once per Load. Previously each Try*
+    // method scanned _meshes linearly, so resolving a large multi-body selection
+    // was O(selected x meshes) on the UI thread. First-match semantics are kept via
+    // TryAdd (the first qualifying mesh per key wins), matching the old foreach.
+    private void RebuildNodeMeshLookups(IReadOnlyList<GpuMesh> meshes)
+    {
+        var meshIndexBySourceNode = new Dictionary<int, int>(meshes.Count);
+        var sourceNodeByMeshIndex = new Dictionary<int, int>(meshes.Count);
+        var selectableNodeByMeshIndex = new Dictionary<int, int>(meshes.Count);
+
+        foreach (GpuMesh mesh in meshes)
+        {
+            if (mesh.SourceNodeId >= 0)
+            {
+                meshIndexBySourceNode.TryAdd(mesh.SourceNodeId, mesh.MeshIndex);
+                sourceNodeByMeshIndex.TryAdd(mesh.MeshIndex, mesh.SourceNodeId);
+            }
+
+            int selectableNodeId = mesh.SelectableNodeId >= 0
+                ? mesh.SelectableNodeId
+                : mesh.SourceNodeId;
+            if (selectableNodeId >= 0)
+                selectableNodeByMeshIndex.TryAdd(mesh.MeshIndex, selectableNodeId);
+        }
+
+        _meshIndexBySourceNodeId = meshIndexBySourceNode;
+        _sourceNodeIdByMeshIndex = sourceNodeByMeshIndex;
+        _selectableNodeIdByMeshIndex = selectableNodeByMeshIndex;
     }
 
     public void Load(DocumentDto document)
@@ -105,6 +113,7 @@ public sealed class GpuScene : IDisposable
         MillimetersPerSceneUnit = millimetersPerSceneUnit;
         Bounds = bounds;
         _meshes = meshes;
+        RebuildNodeMeshLookups(meshes);
         IncrementSectionCapGeometryVersion();
         InvalidateTransformSyncTracking();
         DisposeMeshes(oldMeshes);
@@ -338,6 +347,9 @@ public sealed class GpuScene : IDisposable
     {
         IReadOnlyList<GpuMesh> oldMeshes = _meshes;
         _meshes = Array.Empty<GpuMesh>();
+        _meshIndexBySourceNodeId = new();
+        _sourceNodeIdByMeshIndex = new();
+        _selectableNodeIdByMeshIndex = new();
         Bounds = BoundingBox.Empty;
         MillimetersPerSceneUnit = 1000.0;
         _document = null;

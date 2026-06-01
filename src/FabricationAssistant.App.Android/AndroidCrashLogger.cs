@@ -130,7 +130,10 @@ public static class AndroidCrashLogger
             }
             catch
             {
-                // Rotation is best-effort; fall through and keep appending.
+                // S23-10: the log is at/over the cap and rotation failed, so the file
+                // is still full. Skip this append - a perpetually-failing truncate
+                // must not grow the log unbounded; rotation retries on the next write.
+                return;
             }
 
             File.AppendAllText(logPath, record);

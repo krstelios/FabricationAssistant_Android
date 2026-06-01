@@ -158,7 +158,13 @@ internal sealed class AndroidModelExplorerPanel : IDisposable
 
     public void SetScene(Scene? scene)
     {
-        IReadOnlyDictionary<int, bool>? expansionState = _tree?.CaptureExpansionState();
+        // S14-2: only carry expand/collapse state forward when re-attaching the
+        // SAME scene instance. Opening a different file must use default expansion;
+        // otherwise overlapping integer node IDs apply the old model's state to
+        // unrelated nodes. (Pack/Unpack keep the same scene and go through a
+        // separate rebuild, so they still preserve expansion.)
+        bool sameScene = scene is not null && ReferenceEquals(_scene, scene);
+        IReadOnlyDictionary<int, bool>? expansionState = sameScene ? _tree?.CaptureExpansionState() : null;
         _scene = scene;
         _tree = scene is null
             ? null
@@ -210,7 +216,12 @@ internal sealed class AndroidModelExplorerPanel : IDisposable
         }
         else if (_highlightedPresentedIds.Count > 0)
         {
-            _selectedPresentedId = _highlightedPresentedIds.OrderBy(id => id).First();
+            // S14-F8: focus the smallest real (non-negative) node id; only fall back
+            // to a virtual/packed group id (negative) when no real node is selected,
+            // so the scrolled-to row is a real body rather than a synthetic group.
+            _selectedPresentedId = _highlightedPresentedIds.Any(id => id >= 0)
+                ? _highlightedPresentedIds.Where(id => id >= 0).Min()
+                : _highlightedPresentedIds.Min();
             if (tree.TryGetNode(_selectedPresentedId.Value, out AndroidModelExplorerNode? selectedNode)
                 && selectedNode is not null)
                 _pathPresentedIds.Add(selectedNode.Id);
@@ -470,14 +481,20 @@ internal sealed class AndroidModelExplorerPanel : IDisposable
 
         public override View GetView(int position, View? convertView, ViewGroup? parent)
         {
-            AndroidModelExplorerRow row = _rows[position];
-            AndroidModelExplorerNode node = row.Node;
-            int? selectedId = _selectedIdAccessor();
-            IReadOnlySet<int> highlightedIds = _highlightedAccessor();
-            IReadOnlySet<int> pathIds = _pathAccessor();
-            bool selected = selectedId.HasValue && selectedId.Value == node.Id;
-            bool highlighted = selected || highlightedIds.Contains(node.Id);
-            bool onPath = pathIds.Contains(node.Id);
+            // S14-F6: recycle convertView. Building a fresh row view tree on every
+            // GetView (including during a fling over a large assembly) churned
+            // allocations and GC. The holder caches the row's child views and
+            // BindRow updates only the per-row state. The click listeners are wired
+            // once and act on the holder's current node, so recycling cannot mis-
+            // route an expand/visibility tap.
+            RowHolder holder = convertView?.Tag as RowHolder ?? BuildRowView();
+            BindRow(holder, _rows[position]);
+            return holder.Root;
+        }
+
+        private RowHolder BuildRowView()
+        {
+            var holder = new RowHolder();
 
             var root = new LinearLayout(_ctx)
             {
@@ -487,77 +504,113 @@ internal sealed class AndroidModelExplorerPanel : IDisposable
             root.SetGravity(GravityFlags.CenterVertical);
             root.SetMinimumHeight(Dp(_ctx, 36));
             root.SetPadding(Dp(_ctx, 2), 0, Dp(_ctx, 4), 0);
-            root.ContentDescription = "Select " + node.DisplayName;
-            root.Background = CreateRowBackground(_ctx, selected, highlighted, onPath);
 
             var indent = new Space(_ctx);
-            root.AddView(indent, new LinearLayout.LayoutParams(
-                Math.Min(Dp(_ctx, 160), Dp(_ctx, row.Depth * 16)),
-                1));
+            root.AddView(indent, new LinearLayout.LayoutParams(0, 1));
 
-            var expand = new TextView(_ctx)
-            {
-                Gravity = GravityFlags.Center,
-                Text = node.Children.Count == 0 ? string.Empty : node.IsExpanded ? "-" : "+",
-            };
+            var expand = new TextView(_ctx) { Gravity = GravityFlags.Center };
             expand.SetTextSize(ComplexUnitType.Sp, 15f);
             expand.SetTypeface(Typeface.Default, TypefaceStyle.Bold);
             expand.SetTextColor(ColorRes(_ctx, Resource.Color.fa_text_secondary));
-            expand.Clickable = node.Children.Count > 0;
             expand.Focusable = false;
-            expand.ContentDescription = node.Children.Count == 0
-                ? null
-                : node.IsExpanded ? "Collapse " + node.DisplayName : "Expand " + node.DisplayName;
-            expand.SetOnClickListener(node.Children.Count > 0
-                ? new NodeActionClickListener(_toggleExpansion, node)
-                : null);
+            expand.SetOnClickListener(new ActionClickListener(() =>
+            {
+                if (holder.Node is { } current && current.Children.Count > 0)
+                    _toggleExpansion(current);
+            }));
             root.AddView(expand, new LinearLayout.LayoutParams(Dp(_ctx, 28), Dp(_ctx, 36)));
 
-            var icon = new TextView(_ctx)
-            {
-                Gravity = GravityFlags.Center,
-                Text = IconText(node),
-            };
+            var icon = new TextView(_ctx) { Gravity = GravityFlags.Center };
             icon.SetTextSize(ComplexUnitType.Sp, 11f);
             icon.SetTypeface(Typeface.Default, TypefaceStyle.Bold);
             icon.SetTextColor(ColorRes(_ctx, Resource.Color.fa_text_secondary));
-            icon.ContentDescription = node.NodeType.ToString();
             root.AddView(icon, new LinearLayout.LayoutParams(Dp(_ctx, 24), Dp(_ctx, 36)));
 
             var label = new TextView(_ctx)
             {
-                Text = node.DisplayName,
                 Gravity = GravityFlags.CenterVertical,
                 Ellipsize = TextUtils.TruncateAt.End,
             };
             label.SetSingleLine(true);
             label.SetTextSize(ComplexUnitType.Sp, 14f);
-            label.SetTextColor(ColorRes(_ctx, selected
-                ? Resource.Color.fa_text_primary
-                : Resource.Color.fa_text_primary));
-            label.Alpha = node.IsEffectivelyVisible ? 1f : 0.42f;
-            root.AddView(label, new LinearLayout.LayoutParams(
-                0,
-                Dp(_ctx, 36),
-                1f));
+            label.SetTextColor(ColorRes(_ctx, Resource.Color.fa_text_primary));
+            root.AddView(label, new LinearLayout.LayoutParams(0, Dp(_ctx, 36), 1f));
 
             var visibility = new ImageButton(_ctx)
             {
                 Background = null,
-                ContentDescription = node.IsVisible ? "Hide item" : "Show item",
                 Focusable = false,
                 Clickable = true,
             };
-            visibility.SetImageResource(node.IsVisible
-                ? Resource.Drawable.ic_tool_show_all
-                : Resource.Drawable.ic_tool_hide);
-            visibility.SetColorFilter(ColorRes(_ctx, node.IsVisible
-                ? Resource.Color.fa_text_secondary
-                : Resource.Color.fa_text_disabled));
-            visibility.SetOnClickListener(new NodeActionClickListener(_toggleVisibility, node));
+            visibility.SetOnClickListener(new ActionClickListener(() =>
+            {
+                if (holder.Node is { } current)
+                    _toggleVisibility(current);
+            }));
             root.AddView(visibility, new LinearLayout.LayoutParams(Dp(_ctx, 40), Dp(_ctx, 36)));
 
-            return root;
+            holder.Root = root;
+            holder.Indent = indent;
+            holder.Expand = expand;
+            holder.Icon = icon;
+            holder.Label = label;
+            holder.Visibility = visibility;
+            root.Tag = holder;
+            return holder;
+        }
+
+        private void BindRow(RowHolder holder, AndroidModelExplorerRow row)
+        {
+            AndroidModelExplorerNode node = row.Node;
+            holder.Node = node;
+
+            int? selectedId = _selectedIdAccessor();
+            IReadOnlySet<int> highlightedIds = _highlightedAccessor();
+            IReadOnlySet<int> pathIds = _pathAccessor();
+            bool selected = selectedId.HasValue && selectedId.Value == node.Id;
+            bool highlighted = selected || highlightedIds.Contains(node.Id);
+            bool onPath = pathIds.Contains(node.Id);
+
+            holder.Root.ContentDescription = "Select " + node.DisplayName;
+            holder.Root.Background = CreateRowBackground(_ctx, selected, highlighted, onPath);
+
+            if (holder.Indent.LayoutParameters is { } indentLp)
+            {
+                indentLp.Width = Math.Min(Dp(_ctx, 160), Dp(_ctx, row.Depth * 16));
+                holder.Indent.LayoutParameters = indentLp;
+            }
+
+            bool hasChildren = node.Children.Count > 0;
+            holder.Expand.Text = !hasChildren ? string.Empty : node.IsExpanded ? "-" : "+";
+            holder.Expand.Clickable = hasChildren;
+            holder.Expand.ContentDescription = !hasChildren
+                ? null
+                : node.IsExpanded ? "Collapse " + node.DisplayName : "Expand " + node.DisplayName;
+
+            holder.Icon.Text = IconText(node);
+            holder.Icon.ContentDescription = node.NodeType.ToString();
+
+            holder.Label.Text = node.DisplayName;
+            holder.Label.Alpha = node.IsEffectivelyVisible ? 1f : 0.42f;
+
+            holder.Visibility.ContentDescription = node.IsVisible ? "Hide item" : "Show item";
+            holder.Visibility.SetImageResource(node.IsVisible
+                ? Resource.Drawable.ic_tool_show_all
+                : Resource.Drawable.ic_tool_hide);
+            holder.Visibility.SetColorFilter(ColorRes(_ctx, node.IsVisible
+                ? Resource.Color.fa_text_secondary
+                : Resource.Color.fa_text_disabled));
+        }
+
+        private sealed class RowHolder : Java.Lang.Object
+        {
+            public LinearLayout Root = null!;
+            public Space Indent = null!;
+            public TextView Expand = null!;
+            public TextView Icon = null!;
+            public TextView Label = null!;
+            public ImageButton Visibility = null!;
+            public AndroidModelExplorerNode? Node;
         }
 
         private static string IconText(AndroidModelExplorerNode node)
@@ -597,13 +650,6 @@ internal sealed class AndroidModelExplorerPanel : IDisposable
     private sealed class ActionClickListener(Action action) : Java.Lang.Object, View.IOnClickListener
     {
         public void OnClick(View? v) => action();
-    }
-
-    private sealed class NodeActionClickListener(
-        Action<AndroidModelExplorerNode> action,
-        AndroidModelExplorerNode node) : Java.Lang.Object, View.IOnClickListener
-    {
-        public void OnClick(View? v) => action(node);
     }
 
     private sealed class ModelExplorerViewDisposer(AndroidModelExplorerPanel owner) : IDisposable
@@ -904,42 +950,44 @@ internal sealed class AndroidModelExplorerTree
         if (children.Count < 2)
             return children;
 
-        var countsByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        // S14-5: bucket children by grouping key in a single pass so packing is
+        // O(siblings) instead of O(siblings^2) (the previous inner Where scanned
+        // every child once per emitted group). First-encounter order and the group
+        // label/count are preserved exactly.
+        var buckets = new Dictionary<string, List<AndroidModelExplorerNode>>(StringComparer.OrdinalIgnoreCase);
+        var order = new List<string>(children.Count);
         foreach (AndroidModelExplorerNode child in children)
         {
             string key = NormalizeGroupingKey(child.DisplayName);
-            countsByName[key] = countsByName.TryGetValue(key, out int count) ? count + 1 : 1;
+            if (!buckets.TryGetValue(key, out List<AndroidModelExplorerNode>? bucket))
+            {
+                bucket = new List<AndroidModelExplorerNode>();
+                buckets[key] = bucket;
+                order.Add(key);
+            }
+
+            bucket.Add(child);
         }
 
-        var emittedGroups = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var packed = new List<AndroidModelExplorerNode>(children.Count);
-
-        foreach (AndroidModelExplorerNode child in children)
+        var packed = new List<AndroidModelExplorerNode>(order.Count);
+        foreach (string key in order)
         {
-            string key = NormalizeGroupingKey(child.DisplayName);
-            if (!countsByName.TryGetValue(key, out int count) || count <= 1)
+            List<AndroidModelExplorerNode> bucket = buckets[key];
+            if (bucket.Count <= 1)
             {
-                packed.Add(child);
+                packed.Add(bucket[0]);
                 continue;
             }
 
-            if (!emittedGroups.Add(key))
-                continue;
-
+            AndroidModelExplorerNode first = bucket[0];
             var group = AndroidModelExplorerNode.CreateVirtual(
                 nextVirtualId--,
-                $"{FormatDisplayName(child.DisplayName)} ({count})",
+                $"{FormatDisplayName(first.DisplayName)} ({bucket.Count})",
                 SceneNodeType.Assembly);
             lookup[group.Id] = group;
 
-            foreach (AndroidModelExplorerNode match in children.Where(candidate =>
-                         string.Equals(
-                             NormalizeGroupingKey(candidate.DisplayName),
-                             key,
-                             StringComparison.OrdinalIgnoreCase)))
-            {
+            foreach (AndroidModelExplorerNode match in bucket)
                 group.AddChild(match);
-            }
 
             packed.Add(group);
         }

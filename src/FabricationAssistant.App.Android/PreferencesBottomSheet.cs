@@ -140,8 +140,17 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         AddSwitch(ctx, helpers, "Show ground grid", AppSettings.ShowGrid, v => AppSettings.ShowGrid = v);
         AddSwitch(ctx, helpers, "Double tap Fit Screen", AppSettings.DoubleTapFitScreenEnabled, v => AppSettings.DoubleTapFitScreenEnabled = v);
         AddSwitch(ctx, helpers, "Push grid to model min", AppSettings.ShiftGridToModelMin, v => AppSettings.ShiftGridToModelMin = v);
-        AddSwitch(ctx, helpers, "Automatic grid spacing", AppSettings.UseAutomaticGridSpacing, v => AppSettings.UseAutomaticGridSpacing = v);
-        AddFloatSlider(ctx, helpers, "Grid spacing (mm)", 0.001f, 1000f, AppSettings.GridSpacingMm, AppSettings.SetManualGridSpacing);
+        var autoGridSwitch = AddSwitch(ctx, helpers, "Automatic grid spacing", AppSettings.UseAutomaticGridSpacing, v => AppSettings.UseAutomaticGridSpacing = v);
+        // S10-F2: span the full grid-spacing clamp (0.001..1e6) on a log scale so a
+        // persisted value above the old 1000 max is no longer pinned/truncated.
+        AddFloatSlider(ctx, helpers, "Grid spacing (mm)", 0.001f, 1_000_000f, AppSettings.GridSpacingMm, value =>
+        {
+            AppSettings.SetManualGridSpacing(value);
+            // S10-1: dragging spacing switches to manual mode (SetManualGridSpacing
+            // already persisted auto_grid_spacing = false); reflect that in the switch.
+            if (autoGridSwitch.Checked)
+                autoGridSwitch.Checked = false;
+        }, logarithmic: true);
         AddFloatSlider(ctx, helpers, "Grid line thickness", 1f, 8f, AppSettings.GridLineThickness, v => AppSettings.GridLineThickness = v);
         AddRgbRow(ctx, helpers, "Grid color",
             AppSettings.GridLineColorR, AppSettings.GridLineColorG, AppSettings.GridLineColorB,
@@ -165,14 +174,25 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
 
         // CAD edges
         var edges = AddSection(ctx, root, "CAD Edges", "Edge lines and tolerances");
-        AddSwitch(ctx, edges, "Enable edges", AppSettings.EdgesEnabled, AppSettings.SetEdgesEnabledFromUi);
+        FloatSliderControl? edgeWidthSlider = null;
+        AddSwitch(ctx, edges, "Enable edges", AppSettings.EdgesEnabled, enabled =>
+        {
+            AppSettings.SetEdgesEnabledFromUi(enabled);
+            // S10-F4: re-enabling edges can bump a sub-visible width up to the
+            // default, so re-sync the slider with the value actually persisted.
+            edgeWidthSlider?.SetValue(AppSettings.EdgeWidth);
+        });
         AddRgbRow(ctx, edges, "Edge color",
             AppSettings.EdgeR, AppSettings.EdgeG, AppSettings.EdgeB,
             AppSettings.SetEdgeColor);
-        AddFloatSlider(ctx, edges, "Normal edge thickness", 0.05f, 4f, AppSettings.EdgeWidth, v => AppSettings.EdgeWidth = v);
+        // S10-F7: min matches the durable visible floor (MinimumVisibleEdgeWidth);
+        // values below it are bumped on re-enable and stripped by migration.
+        edgeWidthSlider = AddFloatSlider(ctx, edges, "Normal edge thickness", 0.75f, 4f, AppSettings.EdgeWidth, v => AppSettings.EdgeWidth = v);
         AddFloatSlider(ctx, edges, "Feature angle (deg)", 1f, 150f, AppSettings.CadEdgeFeatureAngleDegrees, v => AppSettings.CadEdgeFeatureAngleDegrees = v);
         AddFloatSlider(ctx, edges, "Coplanar tolerance (deg)", 0f, 30f, AppSettings.CadEdgeCoplanarToleranceDegrees, v => AppSettings.CadEdgeCoplanarToleranceDegrees = v);
-        AddFloatSlider(ctx, edges, "Weld tolerance", 1e-6f, 1e-4f, AppSettings.CadEdgeWeldToleranceScale, v => AppSettings.CadEdgeWeldToleranceScale = v);
+        // S10-F8: weld tolerance spans two decades (1e-6..1e-4); a log scale makes
+        // the low end tunable instead of compressing it into ~9% of the track.
+        AddFloatSlider(ctx, edges, "Weld tolerance", 1e-6f, 1e-4f, AppSettings.CadEdgeWeldToleranceScale, v => AppSettings.CadEdgeWeldToleranceScale = v, logarithmic: true);
         AddSwitch(ctx, edges, "Silhouettes", AppSettings.CadEdgeSilhouetteEnabled, v => AppSettings.CadEdgeSilhouetteEnabled = v);
         AddFloatSlider(ctx, edges, "Depth bias", 0f, 0.002f, AppSettings.EdgeDepthBias, v => AppSettings.EdgeDepthBias = v);
         AddFloatSlider(ctx, edges, "Surface offset F", 0f, 4f, AppSettings.SurfaceOffsetFactor, v => AppSettings.SurfaceOffsetFactor = v);
@@ -299,6 +319,8 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
             AppSettings.SectionCapR, AppSettings.SectionCapG, AppSettings.SectionCapB,
             AppSettings.SetSectionCapColor);
         AddFloatSlider(ctx, sections, "Plane size", 0.005f, 0.20f, AppSettings.SectionPlaneSizeFraction, v => AppSettings.SectionPlaneSizeFraction = v);
+        // S10-F9: gizmo scale belongs with the Section Tools controls it affects.
+        AddFloatSlider(ctx, sections, "Section gizmo scale", 0.5f, 4f, AppSettings.SectionGizmoScale, v => AppSettings.SectionGizmoScale = v);
 
         var cloud = AddSection(ctx, root, "FA Cloud", "Connection, account, and project");
         var cloudSecureStore = new CloudSecureStore(ctx.ApplicationContext ?? ctx);
@@ -323,7 +345,6 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         // Navigation
         var nav = AddSection(ctx, root, "Navigation", "Orbit, pan, zoom");
         AddSwitch(ctx, nav, "Lightweight camera navigation", AppSettings.LightweightNavigationEnabled, v => AppSettings.LightweightNavigationEnabled = v);
-        AddFloatSlider(ctx, nav, "Section gizmo scale", 0.5f, 4f, AppSettings.SectionGizmoScale, v => AppSettings.SectionGizmoScale = v);
         AddFloatSlider(ctx, nav, "Orbit sensitivity", 0.1f, 5f, AppSettings.OrbitSensitivity, v => AppSettings.OrbitSensitivity = v);
         AddFloatSlider(ctx, nav, "Pan sensitivity", 0.1f, 5f, AppSettings.PanSensitivity, v => AppSettings.PanSensitivity = v);
         AddFloatSlider(ctx, nav, "Pinch-zoom sensitivity", 0.1f, 5f, AppSettings.ZoomSensitivity, v => AppSettings.ZoomSensitivity = v);
@@ -805,7 +826,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
             GetColor(ctx, expanded ? Resource.Color.fa_accent_700 : Resource.Color.fa_border)));
     }
 
-    private void AddSwitch(Context ctx, ViewGroup parent, string label, bool initial, Action<bool> save)
+    private MaterialSwitch AddSwitch(Context ctx, ViewGroup parent, string label, bool initial, Action<bool> save)
     {
         var sw = new MaterialSwitch(ctx) { Text = label, Checked = initial };
         sw.ContentDescription = FormatSwitchContentDescription(label, initial);
@@ -821,12 +842,13 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
             NotifySettingsChanged();
         };
         parent.AddView(sw);
+        return sw;
     }
 
     private static string FormatSwitchContentDescription(string label, bool isChecked)
         => label + (isChecked ? ", on" : ", off");
 
-    private EditText AddTextField(Context ctx, ViewGroup parent, string label, string initial, Action<string> save, bool isPassword = false)
+    private EditText AddTextField(Context ctx, ViewGroup parent, string label, string initial, Action<string> save, bool isPassword = false, bool commitOnChange = true)
     {
         var row = new LinearLayout(ctx) { Orientation = Orientation.Vertical };
         var lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MatchParent, LinearLayout.LayoutParams.WrapContent);
@@ -852,7 +874,8 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         SetTooltip(ctx, row, label);
         SetTooltip(ctx, labelTv, label);
         SetTooltip(ctx, input, label, useLongClick: false);
-        input.TextChanged += (_, _) => save(input.Text ?? "");
+        if (commitOnChange)
+            input.TextChanged += (_, _) => save(input.Text ?? "");
         row.AddView(input, new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MatchParent,
             Dp(ctx, 44)));
@@ -863,20 +886,33 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
 
     private EditText AddFloatField(Context ctx, ViewGroup parent, string label, float initial, Action<float> save)
     {
-        var input = AddTextField(
+        // S10-2: commit only on Enter/Done or focus loss, not on every keystroke.
+        // Numeric setters (e.g. clip planes) rewrite dependent state and clamp on
+        // each call, so committing partially-typed values shuffles them per digit.
+        EditText input = null!;
+        void Commit()
+        {
+            if (!TryParseFloatField(input.Text, out float value))
+                return;
+
+            save(value);
+            NotifySettingsChanged();
+        }
+
+        input = AddTextField(
             ctx,
             parent,
             label,
             initial.ToString("G9", CultureInfo.InvariantCulture),
-            text =>
-            {
-                if (!TryParseFloatField(text, out float value))
-                    return;
-
-                save(value);
-                NotifySettingsChanged();
-            });
+            _ => { },
+            commitOnChange: false);
         input.InputType = InputTypes.ClassNumber | InputTypes.NumberFlagDecimal;
+        DialogKeyboard.ConfirmOnEnter(input, Commit);
+        input.FocusChange += (_, e) =>
+        {
+            if (!e.HasFocus)
+                Commit();
+        };
         return input;
     }
 
@@ -892,7 +928,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         return false;
     }
 
-    private void AddFloatSlider(Context ctx, ViewGroup parent, string label, float min, float max, float initial, Action<float> save)
+    private FloatSliderControl AddFloatSlider(Context ctx, ViewGroup parent, string label, float min, float max, float initial, Action<float> save, bool logarithmic = false)
     {
         var row = new LinearLayout(ctx) { Orientation = Orientation.Vertical };
         var lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MatchParent, LinearLayout.LayoutParams.WrapContent);
@@ -907,11 +943,25 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         var seek = new SeekBar(ctx) { ContentDescription = label };
         SetTooltip(ctx, seek, label);
         seek.Max = 1000;
-        int progressInit = System.Math.Clamp((int)System.Math.Round((initial - min) / (max - min) * 1000f), 0, 1000);
-        seek.Progress = progressInit;
+
+        // Logarithmic mapping (requires min > 0) gives each decade equal travel so
+        // sliders spanning several orders of magnitude (e.g. grid spacing
+        // 0.001..1e6 or weld tolerance 1e-6..1e-4) stay usable instead of crushing
+        // the low end into a few pixels.
+        float ProgressToValue(int progress) => logarithmic
+            ? (float)(min * System.Math.Pow(max / (double)min, progress / 1000.0))
+            : min + progress / 1000f * (max - min);
+        int ValueToProgress(float value) => System.Math.Clamp(
+            (int)System.Math.Round(logarithmic
+                ? System.Math.Log(value / (double)min) / System.Math.Log(max / (double)min) * 1000.0
+                : (value - min) / (double)(max - min) * 1000.0),
+            0,
+            1000);
+
+        seek.Progress = ValueToProgress(initial);
         seek.ProgressChanged += (_, e) =>
         {
-            float v = min + e.Progress / 1000f * (max - min);
+            float v = ProgressToValue(e.Progress);
             labelTv.Text = FormatSliderValue(label, v);
             if (e.FromUser)
             {
@@ -923,6 +973,25 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         row.AddView(labelTv);
         row.AddView(seek);
         parent.AddView(row);
+        return new FloatSliderControl(seek, ValueToProgress);
+    }
+
+    // Handle returned by AddFloatSlider so a caller can refresh the displayed value
+    // when another control changes the underlying setting. SetValue updates the
+    // thumb + label without invoking the save callback (the programmatic progress
+    // change fires ProgressChanged with FromUser == false).
+    private sealed class FloatSliderControl
+    {
+        private readonly SeekBar _seek;
+        private readonly Func<float, int> _valueToProgress;
+
+        public FloatSliderControl(SeekBar seek, Func<float, int> valueToProgress)
+        {
+            _seek = seek;
+            _valueToProgress = valueToProgress;
+        }
+
+        public void SetValue(float value) => _seek.Progress = _valueToProgress(value);
     }
 
     private static string FormatSliderValue(string label, float value)

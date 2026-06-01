@@ -163,6 +163,24 @@ public sealed class ViewportTouchGestureRecognizerTests
         var events = r.PointerUp(1, new Point2D(120, 100), T(50));
 
         Assert.Equal(new[] { TouchGestureKind.OrbitEnd }, Kinds(events));
+        Assert.False(events[0].IsMultiTouchTransition);
+    }
+
+    [Fact]
+    public void Orbit_SecondFingerDown_FlagsOrbitEndAsMultiTouchTransition()
+    {
+        var r = new ViewportTouchGestureRecognizer();
+        r.PointerDown(1, new Point2D(100, 100), T(0));
+        Assert.Contains(TouchGestureKind.OrbitBegin, Kinds(r.PointerMove(1, new Point2D(140, 100), T(40))));
+
+        // Second finger lands mid-orbit -> recognizer hands off to pan/zoom.
+        var events = r.PointerDown(2, new Point2D(200, 200), T(60));
+
+        Assert.Equal(
+            new[] { TouchGestureKind.OrbitEnd, TouchGestureKind.PanZoomBegin },
+            Kinds(events));
+        TouchGestureEvent orbitEnd = events.First(e => e.Kind == TouchGestureKind.OrbitEnd);
+        Assert.True(orbitEnd.IsMultiTouchTransition);
     }
 
     // -- Pinch / pan (two-finger) ----------------------------------------

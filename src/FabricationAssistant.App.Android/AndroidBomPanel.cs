@@ -971,9 +971,6 @@ internal sealed class AndroidBomPanel : IDisposable
             return;
 
         BomPanelRow row = _visibleRows[e.Position];
-        if (!_visibleRows.Contains(row))
-            return;
-
         _selectedRow = row;
         _selectedRowKey = RowIdentity(row);
         _adapter?.NotifyDataSetChanged();
@@ -1109,10 +1106,14 @@ internal sealed class AndroidBomPanel : IDisposable
         {
             BomPanelRow row = _rows[position];
             var root = CreateRowContainer(_ctx);
+            // S15-F10: wrap the row height (with a 24dp floor) so 12sp cell text
+            // grows the row at large system font scales instead of clipping inside
+            // a fixed 24dp box (sp scales with the user's font size, dp does not).
             root.LayoutParameters = new AbsListView.LayoutParams(
                 _tableWidthAccessor(),
-                Dp(_ctx, 24));
+                ViewGroup.LayoutParams.WrapContent);
             root.SetMinimumWidth(_tableWidthAccessor());
+            root.SetMinimumHeight(Dp(_ctx, 24));
             root.ContentDescription = "Select BOM row " + RowTooltip(row);
             bool selected = ReferenceEquals(row, _selectedAccessor());
             root.SetBackgroundColor(selected

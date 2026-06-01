@@ -66,8 +66,19 @@ internal sealed class GlesFaceHighlightOverlay : IDisposable
         try
         {
             _gl.Disable(EnableCap.CullFace);
-            _gl.Disable(EnableCap.DepthTest);
+            // Depth-test the fill against the scene so it is occluded by any body in
+            // front of the face, instead of drawing unconditionally on top (which made
+            // it visible through geometry). The overlay runs while the scene depth
+            // buffer is still populated (before the MSAA resolve), so the test is valid.
+            // DepthMask stays off - this is a translucent tint, not occluding geometry.
+            // LEQUAL plus a small polygon offset toward the camera lets the fill win
+            // against the coplanar face it tints without z-fighting, while still losing
+            // to closer geometry.
+            _gl.Enable(EnableCap.DepthTest);
+            _gl.DepthFunc(DepthFunction.Lequal);
             _gl.DepthMask(false);
+            _gl.Enable(EnableCap.PolygonOffsetFill);
+            _gl.PolygonOffset(-1.0f, -1.0f);
             _gl.Enable(EnableCap.Blend);
             _gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
 
@@ -75,6 +86,11 @@ internal sealed class GlesFaceHighlightOverlay : IDisposable
         }
         finally
         {
+            // PolygonOffsetFill is not reset by ResetMainFramebufferState, and the
+            // measurement overlay draws right after this one, so clear it here.
+            _gl.PolygonOffset(0.0f, 0.0f);
+            _gl.Disable(EnableCap.PolygonOffsetFill);
+            _gl.DepthFunc(DepthFunction.Lequal);
             _gl.DepthMask(true);
             _gl.Disable(EnableCap.Blend);
             _gl.Enable(EnableCap.DepthTest);

@@ -335,6 +335,10 @@ public sealed class MainActivity : AppCompatActivity
     private CancellationTokenSource? _loadCts;
     private int _loadVersion;
     private int _renderModeBusyVersion;
+    private FrameLayout? _measureBusyOverlay;
+    private TextView? _measureBusyDetail;
+    private int _measureBusyVersion;
+    private const int MeasureBusyShowDelayMs = 180;
     private bool _renderModeChangeInFlight;
     private long _lastSectionPlacementHintMs;
     private bool _isDestroyed;
@@ -504,6 +508,7 @@ public sealed class MainActivity : AppCompatActivity
         };
         container.AddView(_contextMenuAnchor, new FrameLayout.LayoutParams(1, 1));
         CreateRenderBusyOverlay(container);
+        CreateMeasureBusyOverlay(container);
 
         // Touch input: pointer source feeds the gesture recognizer, the
         // adapter translates recognized events into CameraState calls.
@@ -969,6 +974,11 @@ public sealed class MainActivity : AppCompatActivity
         if (active)
         {
             _interactiveNavigationVersion++;
+            // S19-F7: starting a camera gesture means the pointer is no longer
+            // hovering, so clear any hover highlight. This also self-heals a hover
+            // that stuck because a hover-exit was dropped (e.g. the S Pen lifted
+            // off-surface without an ActionHoverExit).
+            SetHoveredMesh(0);
             ApplyInteractiveNavigationActive(viewport, true, source);
             return;
         }
@@ -5764,6 +5774,7 @@ public sealed class MainActivity : AppCompatActivity
             $"BBox commit requested: reason={reason}, additive={additive}, selectedNodes=[{string.Join(",", selectedNodeIds)}], commitNodes=[{string.Join(",", commitNodeIds)}], groups={commitGroups.Length}.");
         ApplyMeasurementSettings();
         _measureBoundingBoxBusy = true;
+        ShowMeasureBusyDelayed("Computing bounding box...");
         ReplaceSelectedNodeIds(
             scene,
             highlightedNodeIds,
@@ -5798,6 +5809,7 @@ public sealed class MainActivity : AppCompatActivity
         finally
         {
             _measureBoundingBoxBusy = false;
+            HideMeasureBusy();
 
             if (_selectedNodeIds.SetEquals(highlightedNodeIds))
             {
@@ -5964,7 +5976,7 @@ public sealed class MainActivity : AppCompatActivity
         int px = (int)(ev.Position.X * density);
         int py = (int)(ev.Position.Y * density);
 
-        _viewport.PickAsync(px, py, "body-move-select", hit =>
+        PickModelBodyAsync(px, py, "body-move-select", hit =>
         {
             if (_activeModalTool != AndroidModalTool.BodyMove)
                 return;
@@ -6300,9 +6312,8 @@ public sealed class MainActivity : AppCompatActivity
         // S12#3: While a section sub-mode is active, a double-tap's first Tap
         // places the section plane (handled by OnGestureForSelection). Swallow
         // the following DoubleTap here so it does not also re-fit the camera.
-        // Only DoubleTap is suppressed, so orbit/pan during axis placement still
-        // work; Custom mode also stays covered (ShouldSuppressNavigationGestures
-        // already suppresses its camera gestures).
+        // Only DoubleTap is suppressed, so orbit/pan during placement still work
+        // for every sub-mode (axis and Custom alike, per S16-2).
         if (ev.Kind == TouchGestureKind.DoubleTap
             && _activeModalTool == AndroidModalTool.Section
             && _activeSectionSubMode != SectionSubMode.None)
@@ -6338,6 +6349,14 @@ public sealed class MainActivity : AppCompatActivity
                 break;
             case TouchGestureKind.OrbitEnd:
             case TouchGestureKind.MouseToolEnd:
+                if (ev.IsMultiTouchTransition)
+                {
+                    // S11-1: a second finger landed mid-marquee (palm/accidental
+                    // contact). Abandon the half-drawn rectangle but stay in the
+                    // Zoom Window tool instead of committing a partial zoom.
+                    ResetZoomWindowOverlay();
+                    break;
+                }
                 _zoomWindowCurrentDip = ev.Position;
                 ApplyZoomWindowSelection();
                 ActivateSelectTool("zoom window finished");
@@ -6349,8 +6368,12 @@ public sealed class MainActivity : AppCompatActivity
     }
 
     private bool ShouldSuppressNavigationGestures()
+        // S16-2: Custom (3-point) section placement no longer freezes the camera.
+        // Orbit/pan work during placement (as they already do for the X/Y/Z axis
+        // sub-modes) so the user can rotate to reach an occluded point; only the
+        // placement Tap is consumed (OnGestureForSelection), and the DoubleTap is
+        // swallowed separately in OnGestureForNavigation.
         => _activeModalTool == AndroidModalTool.ZoomWindow
-           || (_activeModalTool == AndroidModalTool.Section && _activeSectionSubMode == SectionSubMode.Custom)
            || _sectionGizmoActive != GlesTransformGizmoHandle.None
            || _bodyMoveGizmoActive != GlesTransformGizmoHandle.None;
 
@@ -10683,7 +10706,7 @@ public sealed class MainActivity : AppCompatActivity
         int py = (int)(ev.Position.Y * density);
 
         string pickReason = _activeModalTool == AndroidModalTool.Explode ? "explode-tap" : "tap";
-        _viewport.PickAsync(px, py, pickReason, hit => OnPickResult(hit));
+        PickModelBodyAsync(px, py, pickReason, hit => OnPickResult(hit));
     }
 
     private bool CanPickViewportModelBodies()
@@ -10712,7 +10735,7 @@ public sealed class MainActivity : AppCompatActivity
         global::Android.Util.Log.Info(
             "FA.ContextMenu",
             $"Request: kind={ev.Kind}, px={px}, py={py}, dip=({ev.Position.X:0.#},{ev.Position.Y:0.#}).");
-        _viewport.PickAsync(px, py, "context", hit =>
+        PickModelBodyAsync(px, py, "context", hit =>
         {
             if (hit is > 0)
                 OnPickResult(hit);
@@ -11158,6 +11181,24 @@ public sealed class MainActivity : AppCompatActivity
         return tMax > HitDistanceEpsilon && tMax < double.MaxValue;
     }
 
+    // S15-1: issue a model-body pick whose looper-posted result is ignored if the
+    // document was swapped out after the pick was queued. Otherwise OnPickResult
+    // would map a stale mesh index through the new scene and select the wrong node.
+    private void PickModelBodyAsync(int px, int py, string reason, Action<int?> onResult)
+    {
+        if (_viewport is null)
+            return;
+
+        int issuedLoadVersion = Volatile.Read(ref _loadVersion);
+        _viewport.PickAsync(px, py, reason, hit =>
+        {
+            if (issuedLoadVersion != Volatile.Read(ref _loadVersion))
+                return;
+
+            onResult(hit);
+        });
+    }
+
     private void OnPickResult(int? meshIndex)
     {
         if (_viewport is null) return;
@@ -11313,6 +11354,19 @@ public sealed class MainActivity : AppCompatActivity
             return true;
         }
 
+        if (_measureBoundingBoxAwaitingSelection)
+        {
+            // The bounding-box (boundary) tool selects whole bodies: a tap picks the
+            // body under the pointer (HandleBoundingBoxSelectionTap), so the S Pen hover
+            // must highlight that body too. Falling through to the _measure.IsActive
+            // branch below would instead clear the highlight and run feature-snap hover,
+            // which the body-driven BoundingBox mode never uses. Mirror the tap path's
+            // early _measureBoundingBoxAwaitingSelection check and body-pick on hover.
+            SetHoveredMeasurementLabel(null);
+            QueueHoverPick((int)motionEvent.GetX(), (int)motionEvent.GetY());
+            return true;
+        }
+
         if (_measure is { IsActive: true })
         {
             CancelHoverPick();
@@ -11421,7 +11475,10 @@ public sealed class MainActivity : AppCompatActivity
             return;
 
         _hoverPickInFlight = false;
-        if (!CanPickViewportModelBodies())
+        // CanPickViewportModelBodies() is Select/Explode only; bounding-box selection
+        // runs under the Measure tool but is equally body-pick-driven, so accept its
+        // hover-pick result too instead of force-clearing the body highlight.
+        if (!CanPickViewportModelBodies() && !_measureBoundingBoxAwaitingSelection)
         {
             SetHoveredMesh(0);
             return;
@@ -12498,6 +12555,9 @@ public sealed class MainActivity : AppCompatActivity
         _sectionCustomPoints.Clear();
         _activeSectionSubMode = SectionSubMode.None;
         ClearBodyMoveGizmoDragState();
+        // S12-F2: drop the previous model's navigation pivot so the first orbit/
+        // pinch over empty space in the new scene resolves a fresh pivot.
+        _interaction?.ResetNavigationPivot();
         _runtimeScene = scene;
         _undoService?.Clear();
         BindPackageSessionForScene(scene);
@@ -14408,6 +14468,75 @@ public sealed class MainActivity : AppCompatActivity
             RunOnUiThread(Apply);
     }
 
+    private void CreateMeasureBusyOverlay(FrameLayout container)
+    {
+        _measureBusyOverlay = CreateBusyChip(container, "Computing bounding box...", out _measureBusyDetail);
+    }
+
+    // Schedules the measurement busy chip to appear only if the calculation is
+    // still running after MeasureBusyShowDelayMs, so fast bounding-box commits
+    // never flash the chip. Each call takes a fresh version token; a later show
+    // or any hide invalidates a pending show.
+    private void ShowMeasureBusyDelayed(string detail)
+    {
+        int token = Interlocked.Increment(ref _measureBusyVersion);
+        _ = ShowMeasureBusyAfterDelayAsync(token, detail);
+    }
+
+    private async Task ShowMeasureBusyAfterDelayAsync(int token, string detail)
+    {
+        try
+        {
+            await Task.Delay(MeasureBusyShowDelayMs);
+        }
+        catch (Exception)
+        {
+            return;
+        }
+
+        void Apply()
+        {
+            // The token is stale once the calc finished (hide) or a newer show
+            // started, so do not pop the chip up after the fact.
+            if (token != Volatile.Read(ref _measureBusyVersion) || _measureBusyOverlay is null)
+                return;
+
+            if (_measureBusyDetail is not null)
+                _measureBusyDetail.Text = detail;
+
+            _measureBusyOverlay.Animate()?.Cancel();
+            _measureBusyOverlay.Visibility = ViewStates.Visible;
+            _measureBusyOverlay.Alpha = 0f;
+            _measureBusyOverlay.Animate()?.Alpha(1f)?.SetDuration(100)?.Start();
+        }
+
+        if (Looper.MyLooper() == Looper.MainLooper)
+            Apply();
+        else
+            RunOnUiThread(Apply);
+    }
+
+    private void HideMeasureBusy()
+    {
+        // Bumping the version cancels any delayed show still pending its token.
+        Interlocked.Increment(ref _measureBusyVersion);
+
+        void Apply()
+        {
+            if (_measureBusyOverlay is null)
+                return;
+
+            _measureBusyOverlay.Animate()?.Cancel();
+            _measureBusyOverlay.Alpha = 0f;
+            _measureBusyOverlay.Visibility = ViewStates.Gone;
+        }
+
+        if (Looper.MyLooper() == Looper.MainLooper)
+            Apply();
+        else
+            RunOnUiThread(Apply);
+    }
+
     private void CreateLoadingOverlay()
     {
         var content = FindViewById<ViewGroup>(global::Android.Resource.Id.Content);
@@ -14772,6 +14901,7 @@ public sealed class MainActivity : AppCompatActivity
         UpdateMainToolButtonStates();
         UpdateRenderModeButtonStates();
         HideRenderBusy(pausedRenderVersion);
+        HideMeasureBusy();
         if (SnapshotActiveLoad() is { } loadCts)
         {
             UpdateLoadingDetail("Canceling...");
@@ -15154,6 +15284,7 @@ public sealed class MainActivity : AppCompatActivity
         RemoveFromParent(_contextMenuAnchor);
         RemoveFromParent(_loadingOverlay);
         RemoveFromParent(_renderBusyOverlay);
+        RemoveFromParent(_measureBusyOverlay);
     }
 
     private AlertDialog ShowOwnedDialog(AlertDialog.Builder builder)

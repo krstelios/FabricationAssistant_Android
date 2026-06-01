@@ -120,7 +120,9 @@ internal sealed class AndroidLogcatFeed : IDisposable
             using var reader = new StreamReader(input ?? Stream.Null);
             while (!token.IsCancellationRequested)
             {
-                string? line = await reader.ReadLineAsync().ConfigureAwait(false);
+                // S23-11: pass the token so a stalled logcat read unblocks on Stop()
+                // instead of only on process Destroy.
+                string? line = await reader.ReadLineAsync(token).ConfigureAwait(false);
                 if (line is null)
                     break;
 
@@ -129,8 +131,12 @@ internal sealed class AndroidLogcatFeed : IDisposable
         }
         catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
-            LastError = ex.GetBaseException().Message;
-            AppendInternal("Diagnostics log feed stopped: " + LastError, synthetic: true);
+            // A cancelled read is a clean stop, not a failure - don't surface it.
+            if (!token.IsCancellationRequested)
+            {
+                LastError = ex.GetBaseException().Message;
+                AppendInternal("Diagnostics log feed stopped: " + LastError, synthetic: true);
+            }
         }
         finally
         {

@@ -9,10 +9,17 @@ internal sealed class AndroidMeshRaycastAcceleration
     private const double BoundsIntersectionEpsilon = 1e-12;
     private const double RayTriangleIntersectionEpsilon = 1e-10;
 
+    // Fast path for the iterative traversal stack. The balanced median split keeps
+    // the tree height well under this, but the actual height is computed at build
+    // so a deeper (e.g. future unbalanced-split) tree falls back to a heap array
+    // instead of overflowing a fixed stackalloc (S17-4).
+    private const int InlineTraversalStackCapacity = 128;
+
     private readonly float[] _positions;
     private readonly int[] _indices;
     private readonly int[] _triangleIndexOffsets;
     private readonly BvhNode[] _nodes;
+    private readonly int _maxTraversalStackDepth;
 
     private AndroidMeshRaycastAcceleration(
         float[] positions,
@@ -24,6 +31,36 @@ internal sealed class AndroidMeshRaycastAcceleration
         _indices = indices;
         _triangleIndexOffsets = triangleIndexOffsets;
         _nodes = nodes;
+        _maxTraversalStackDepth = ComputeMaxTraversalStackDepth(nodes);
+    }
+
+    // The iterative DFS keeps at most one pending sibling per level on the descent
+    // path, so the worklist never exceeds the tree height; a +2 margin covers the
+    // node currently being pushed. Computed iteratively to avoid recursing a
+    // pathologically deep tree.
+    private static int ComputeMaxTraversalStackDepth(BvhNode[] nodes)
+    {
+        if (nodes.Length == 0)
+            return 0;
+
+        var pending = new Stack<(int Index, int Depth)>();
+        pending.Push((0, 1));
+        int maxDepth = 1;
+        while (pending.Count > 0)
+        {
+            (int index, int depth) = pending.Pop();
+            if (depth > maxDepth)
+                maxDepth = depth;
+
+            BvhNode node = nodes[index];
+            if (node.IsLeaf)
+                continue;
+
+            pending.Push((node.LeftChildIndex, depth + 1));
+            pending.Push((node.RightChildIndex, depth + 1));
+        }
+
+        return maxDepth + 2;
     }
 
     public static AndroidMeshRaycastAcceleration Build(MeshDto mesh)
@@ -65,7 +102,12 @@ internal sealed class AndroidMeshRaycastAcceleration
         if (!RayIntersectsBounds(rayOrigin, rayDirection, _nodes[0].Bounds, hitDistance, out _))
             return false;
 
-        Span<int> stack = stackalloc int[128];
+        // S17-4: size the worklist to the actual tree height so a deep/unbalanced
+        // BVH cannot overflow the inline stack. Shallow trees (the common case) use
+        // the inline stackalloc; deeper ones rent a heap array.
+        Span<int> stack = _maxTraversalStackDepth <= InlineTraversalStackCapacity
+            ? stackalloc int[InlineTraversalStackCapacity]
+            : new int[_maxTraversalStackDepth];
         int stackCount = 0;
         stack[stackCount++] = 0;
 

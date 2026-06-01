@@ -15,6 +15,24 @@ internal static class DialogKeyboard
         input.SetOnEditorActionListener(new ConfirmOnEnterListener(() => TryPerformClick(confirmView)));
     }
 
+    /// <summary>
+    /// Runs <paramref name="confirm"/> when the user presses Enter/Done in
+    /// <paramref name="input"/>. For fields that commit a value directly rather
+    /// than clicking a button (e.g. numeric settings fields).
+    /// </summary>
+    public static void ConfirmOnEnter(EditText? input, Action confirm)
+    {
+        if (input is null)
+            return;
+
+        input.ImeOptions = ImeAction.Done;
+        input.SetOnEditorActionListener(new ConfirmOnEnterListener(() =>
+        {
+            confirm();
+            return true;
+        }));
+    }
+
     private static bool TryPerformClick(View confirmView)
     {
         if (!confirmView.Enabled || confirmView.Visibility != ViewStates.Visible || !confirmView.IsShown)

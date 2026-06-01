@@ -106,6 +106,54 @@ public sealed class ViewportInteractionAdapterTests
     }
 
     [Fact]
+    public void ResetNavigationPivot_DropsSeededPivotSoNextOrbitUsesSceneBounds()
+    {
+        var camera = InteractionCamera();
+        var seededPivot = new Vector3d(5, 0, 0);
+        var boundsCenter = new Vector3d(0, 0, 0);
+
+        var adapter = new ViewportInteractionAdapter(
+            camera,
+            boundsAccessor: () => new BoundingBox(new Vector3d(-20, -20, -20), new Vector3d(20, 20, 20)),
+            aspectAccessor: () => 1.0,
+            requestRender: () => { },
+            pivotPicker: _ => null);
+
+        adapter.SetNavigationPivot(seededPivot);
+        adapter.ResetNavigationPivot();
+
+        double seededDistanceBefore = Vector3d.Distance(camera.Position, seededPivot);
+        double centerDistanceBefore = Vector3d.Distance(camera.Position, boundsCenter);
+
+        adapter.OnGesture(new TouchGestureEvent(TouchGestureKind.OrbitBegin, new Point2D(300, 300), Vector2D.Zero, 1.0));
+        adapter.OnGesture(new TouchGestureEvent(TouchGestureKind.OrbitDelta, new Point2D(360, 300), new Vector2D(60, 0), 1.0));
+
+        // After the reset the orbit falls back to the scene-bounds center, not the
+        // stale seeded pivot: distance to the center is preserved, distance to the
+        // old pivot is not.
+        Assert.Equal(centerDistanceBefore, Vector3d.Distance(camera.Position, boundsCenter), 9);
+        Assert.NotEqual(seededDistanceBefore, Vector3d.Distance(camera.Position, seededPivot), 6);
+    }
+
+    [Fact]
+    public void PanZoomBegin_RequestsRenderForPivotNormalization()
+    {
+        var camera = InteractionCamera();
+        int renders = 0;
+
+        var adapter = new ViewportInteractionAdapter(
+            camera,
+            boundsAccessor: () => new BoundingBox(new Vector3d(-20, -20, -20), new Vector3d(20, 20, 20)),
+            aspectAccessor: () => 1.0,
+            requestRender: () => renders++,
+            pivotPicker: _ => new Vector3d(0, 0, 0));
+
+        adapter.OnGesture(new TouchGestureEvent(TouchGestureKind.PanZoomBegin, new Point2D(100, 100), Vector2D.Zero, 1.0));
+
+        Assert.Equal(1, renders);
+    }
+
+    [Fact]
     public void PanZoomBegin_WhenPickMisses_ReusesLastResolvedPivot()
     {
         var camera = InteractionCamera();

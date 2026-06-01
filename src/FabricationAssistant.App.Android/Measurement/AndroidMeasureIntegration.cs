@@ -531,7 +531,19 @@ internal sealed class AndroidMeasureIntegration : IDisposable
         try
         {
             int beforeCount = _store.Snapshot().Count;
-            _tool.CommitBoundingBox(points, mode);
+            // Run the (potentially multi-second) BestFit oriented-box solver off
+            // the UI thread so the viewport stays responsive and the measurement
+            // busy chip can animate; only the cheap store commit runs on the UI thread.
+            BoundingBoxMeasurement? boundingBox =
+                await Task.Run(() => _tool.ComputeBoundingBox(points, mode)).ConfigureAwait(true);
+
+            if (!ReferenceEquals(_sceneAccessor(), sceneAtStart))
+            {
+                Log.Warn("FA.Measure", "BBox skipped: scene changed while the bounding box was being solved.");
+                return null;
+            }
+
+            _tool.CommitComputedBoundingBox(boundingBox);
             int afterCount = _store.Snapshot().Count;
             EnforceSingleMeasurementIfNeeded(beforeCount, afterCount, "bbox");
             IReadOnlyList<MeasurementResult> afterSnapshot = _store.Snapshot();
@@ -548,6 +560,10 @@ internal sealed class AndroidMeasureIntegration : IDisposable
         catch (UnitSystemUnavailableException ex)
         {
             Log.Warn("FA.Measure", "Bounding box ignored because scene units are unavailable: " + ex.Message);
+            // The solve threw before anything was committed; reset transient state
+            // and notify, matching the recovery the single-threaded CommitBoundingBox
+            // performed internally before this split.
+            _tool.CommitComputedBoundingBox(null);
             return null;
         }
     }

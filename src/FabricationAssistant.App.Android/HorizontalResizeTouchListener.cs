@@ -48,14 +48,11 @@ internal sealed class HorizontalResizeTouchListener : Java.Lang.Object, View.IOn
 
             case MotionEventActions.PointerDown:
             {
-                if (!_dragging)
-                    return false;
-
-                int pointerIndex = e.ActionIndex;
-                if (AndroidMotionEvents.IsPointerStylusOrEraser(e, pointerIndex))
-                    ResetDragOrigin(e, pointerIndex);
-
-                return true;
+                // S12-F3: ignore additional pointers (e.g. a transient S Pen tap or
+                // a palm contact) while a divider drag is in progress. Adopting them
+                // here meant the drag could end when that second pointer lifted even
+                // though the original finger was still down.
+                return _dragging;
             }
 
             case MotionEventActions.Move:
@@ -77,7 +74,16 @@ internal sealed class HorizontalResizeTouchListener : Java.Lang.Object, View.IOn
                 if (actionIndex >= 0
                     && actionIndex < e.PointerCount
                     && e.GetPointerId(actionIndex) == _activePointerId)
-                    EndDrag(v);
+                {
+                    // S12-F3: the pointer driving the drag lifted. If another pointer
+                    // is still down on the divider, keep dragging with it instead of
+                    // ending - so lifting a transient second contact first does not
+                    // abandon a drag the user is still performing with another finger.
+                    if (TryFindOtherPointer(e, actionIndex, out int remainingIndex))
+                        ResetDragOrigin(e, remainingIndex);
+                    else
+                        EndDrag(v);
+                }
                 return true;
 
             case MotionEventActions.Up:
@@ -102,5 +108,22 @@ internal sealed class HorizontalResizeTouchListener : Java.Lang.Object, View.IOn
         _activePointerId = e.GetPointerId(pointerIndex);
         _startRawX = AndroidMotionEvents.RawX(e, pointerIndex);
         _startWidth = _getWidth();
+    }
+
+    // Finds any pointer still down on the divider other than the one at
+    // <paramref name="excludedIndex"/> (the pointer being lifted in a PointerUp).
+    private static bool TryFindOtherPointer(MotionEvent e, int excludedIndex, out int otherIndex)
+    {
+        for (int i = 0; i < e.PointerCount; i++)
+        {
+            if (i != excludedIndex)
+            {
+                otherIndex = i;
+                return true;
+            }
+        }
+
+        otherIndex = -1;
+        return false;
     }
 }

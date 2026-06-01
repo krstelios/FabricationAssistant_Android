@@ -757,6 +757,11 @@ public sealed class CloudApiClient : IDisposable
         return recoveryPath;
     }
 
+    // S23-8: low-level cache delete - it does NOT know the live session, so the
+    // caller must not pass the active session's local path. Audited call sites are
+    // safe: the open-success path only deletes the temp when it differs from the
+    // session path (SameFilePath guard), and the failed-open path deletes a download
+    // that never became the active session.
     public void DeleteCloudTempFile(string? path)
     {
         if (!string.IsNullOrWhiteSpace(path))
@@ -1329,7 +1334,10 @@ public sealed class CloudApiClient : IDisposable
         return request;
     }
 
-    private static async Task EnsureSuccessAsync(HttpResponseMessage response)
+    // S22-2b: cap the error-body read and honor the operation's cancellation token.
+    private const int MaxErrorBodyBytes = 64 * 1024;
+
+    private static async Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken ct = default)
     {
         if (response.IsSuccessStatusCode)
             return;
@@ -1338,7 +1346,7 @@ public sealed class CloudApiClient : IDisposable
         string? code = null;
         try
         {
-            string text = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            string text = await ReadCappedAsync(response.Content, MaxErrorBodyBytes, ct).ConfigureAwait(false);
             if (!string.IsNullOrWhiteSpace(text))
             {
                 CloudProblemDetails? problem = JsonSerializer.Deserialize<CloudProblemDetails>(text, JsonOptions);
@@ -1346,12 +1354,27 @@ public sealed class CloudApiClient : IDisposable
                 code = problem?.Code;
             }
         }
-        catch
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // Problem bodies are best-effort; keep the HTTP status reason.
         }
 
         throw new CloudApiException(title, (int)response.StatusCode, code);
+    }
+
+    private static async Task<string> ReadCappedAsync(HttpContent content, int maxBytes, CancellationToken ct)
+    {
+        using System.IO.Stream stream = await content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+        byte[] buffer = new byte[maxBytes];
+        int total = 0;
+        int read;
+        while (total < maxBytes
+            && (read = await stream.ReadAsync(buffer.AsMemory(total, maxBytes - total), ct).ConfigureAwait(false)) > 0)
+        {
+            total += read;
+        }
+
+        return Encoding.UTF8.GetString(buffer, 0, total);
     }
 
     private static bool ShouldRetryResponse(HttpResponseMessage response)
@@ -1553,7 +1576,58 @@ public sealed class CloudApiClient : IDisposable
             throw new CloudApiException("Cloud server must be an http or https URL.");
         }
 
+        // S22-1: never send credentials/tokens in cleartext to an internet host.
+        // http:// is only allowed for a private/loopback (LAN) server the operator
+        // configured for the Local profile; an internet server must use https.
+        if (uri.Scheme == Uri.UriSchemeHttp && !IsPrivateOrLoopbackHost(uri.Host))
+        {
+            throw new CloudApiException(
+                "Cleartext (http) is only allowed for a local/LAN server. Use an https:// URL for an internet server.");
+        }
+
         return value;
+    }
+
+    // S22-1: a host is treated as local when it is a loopback/link-local/RFC1918
+    // address, or a non-routable name (localhost, *.local mDNS, or a single-label
+    // LAN hostname). Public internet hosts are always FQDNs, so they require https.
+    internal static bool IsPrivateOrLoopbackHost(string host)
+    {
+        if (string.IsNullOrWhiteSpace(host))
+            return false;
+
+        if (System.Net.IPAddress.TryParse(host, out System.Net.IPAddress? ip))
+        {
+            if (System.Net.IPAddress.IsLoopback(ip))
+                return true;
+
+            byte[] b = ip.GetAddressBytes();
+            if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && b.Length == 4)
+            {
+                if (b[0] == 10) return true;                          // 10.0.0.0/8
+                if (b[0] == 172 && b[1] >= 16 && b[1] <= 31) return true; // 172.16.0.0/12
+                if (b[0] == 192 && b[1] == 168) return true;         // 192.168.0.0/16
+                if (b[0] == 169 && b[1] == 254) return true;         // 169.254.0.0/16 link-local
+                return false;
+            }
+
+            if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
+            {
+                if (ip.IsIPv6LinkLocal) return true;
+                if (b.Length == 16 && (b[0] & 0xFE) == 0xFC) return true; // fc00::/7 unique-local
+                return false;
+            }
+
+            return false;
+        }
+
+        if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (host.EndsWith(".local", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        // A single-label host (no dot) is a LAN/NetBIOS name, not an internet FQDN.
+        return !host.Contains('.');
     }
 
     private static Uri BuildUri(string serverUrl, string path)

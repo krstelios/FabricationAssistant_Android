@@ -97,7 +97,11 @@ public sealed class ViewportTouchGestureRecognizer
                 _state = InternalState.PanZoom;
                 return new[]
                 {
-                    new TouchGestureEvent(TouchGestureKind.OrbitEnd, _touches[id].Current, Vector2D.Zero, 1.0),
+                    // This OrbitEnd is a hand-off to two-finger pan/zoom, not the
+                    // end of the one-finger drag - flag it so tools like the Zoom
+                    // Window marquee don't treat an accidental second finger as
+                    // "drag finished".
+                    new TouchGestureEvent(TouchGestureKind.OrbitEnd, _touches[id].Current, Vector2D.Zero, 1.0, IsMultiTouchTransition: true),
                     begin,
                 };
             }

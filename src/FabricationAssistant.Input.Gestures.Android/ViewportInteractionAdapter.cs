@@ -223,6 +223,11 @@ public sealed class ViewportInteractionAdapter
                     CapturePanZoomAnchor(ev.Position);
                     RefreshClipPlanes();
                 }
+                // S12-F4: CaptureGesturePivot may widen a narrow FOV via
+                // NormalizeZoomAroundPivot. Unlike OrbitBegin (always followed by an
+                // OrbitDelta that renders), PanZoomBegin has no immediate delta, so
+                // request a render here to show the normalized camera at once.
+                _requestRender();
                 break;
 
             case TouchGestureKind.PanZoomDelta:
@@ -438,6 +443,18 @@ public sealed class ViewportInteractionAdapter
             return;
 
         _lastResolvedPivot = pivot;
+        _activeGesturePivot = null;
+    }
+
+    /// <summary>
+    /// Clears the fallback navigation pivot so the next gesture re-resolves it
+    /// (picked point, else scene-bounds center). Hosts call this on model load:
+    /// without it, the first orbit/pinch over empty space after a model swap
+    /// reuses the previous model's pivot (S12-F2).
+    /// </summary>
+    public void ResetNavigationPivot()
+    {
+        _lastResolvedPivot = null;
         _activeGesturePivot = null;
     }
 

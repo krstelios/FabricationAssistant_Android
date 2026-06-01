@@ -13,21 +13,47 @@ public static class RecentFilesStore
     private static readonly TimeSpan ReadableAccessProbeTimeout = TimeSpan.FromSeconds(5);
     private static readonly object Gate = new();
 
+    /// <summary>
+    /// Loads the recent-files list, pruning entries whose access has been revoked.
+    /// NOT UI-thread-safe: each entry is probed with a blocking ContentResolver
+    /// round-trip (up to <see cref="ReadableAccessProbeTimeout"/> apiece), so this
+    /// can take several seconds for offline/cloud URIs. Call it off the UI thread
+    /// (RecentFilesBottomSheet offloads via Task.Run).
+    /// </summary>
     public static IReadOnlyList<RecentFileEntry> Load(Context context)
     {
         ArgumentNullException.ThrowIfNull(context);
 
+        IReadOnlyList<RecentFileEntry> entries;
         lock (Gate)
+            entries = LoadUnsafe(context);
+
+        // S23-1: probe OUTSIDE the lock so slow/unreachable URIs no longer serialize
+        // every Add/Remove/Load behind a multi-second (up to 10 x timeout) hold.
+        var accessible = RecentFilesList.FilterReadableOrUnknown(
+            entries,
+            uriText => ProbeReadableAccess(context, uriText),
+            MaxEntries);
+
+        if (accessible.Count != entries.Count)
         {
-            var entries = LoadUnsafe(context);
-            var accessible = RecentFilesList.FilterReadableOrUnknown(
-                entries,
-                uriText => ProbeReadableAccess(context, uriText),
-                MaxEntries);
-            if (accessible.Count != entries.Count)
-                SaveUnsafe(context, accessible);
-            return accessible;
+            // Persist the pruning, but reconcile against the current store under the
+            // lock so a concurrent Add/Remove during the (unlocked) probe is kept.
+            var prunedUris = new HashSet<string>(
+                entries.Select(e => e.Uri),
+                StringComparer.Ordinal);
+            prunedUris.ExceptWith(accessible.Select(e => e.Uri));
+
+            lock (Gate)
+            {
+                var current = LoadUnsafe(context);
+                var reconciled = current.Where(e => !prunedUris.Contains(e.Uri)).ToList();
+                if (reconciled.Count != current.Count)
+                    SaveUnsafe(context, reconciled);
+            }
         }
+
+        return accessible;
     }
 
     private static IReadOnlyList<RecentFileEntry> LoadUnsafe(Context context)
@@ -101,9 +127,6 @@ public static class RecentFilesStore
 
     public readonly record struct PersistableUriAccess(bool CanRead, bool CanWrite);
 
-    public static PersistableUriAccess TryTakePersistableReadPermission(Context context, AndroidUri uri)
-        => TryTakePersistableReadWritePermission(context, uri);
-
     public static PersistableUriAccess TryTakePersistableReadWritePermission(Context context, AndroidUri uri)
     {
         try
@@ -159,12 +182,6 @@ public static class RecentFilesStore
         }
 
         return new PersistableUriAccess(canRead, canWrite);
-    }
-
-    private static void Save(Context context, IReadOnlyList<RecentFileEntry> entries)
-    {
-        lock (Gate)
-            SaveUnsafe(context, entries);
     }
 
     private static void SaveUnsafe(Context context, IReadOnlyList<RecentFileEntry> entries)

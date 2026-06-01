@@ -34,10 +34,11 @@ public sealed class GlesRendererSourceTests
 
         string scene = File.ReadAllText(ResolveRepoPath(
             @"..\FabricationAssistant.Rendering.Gles\GpuScene.cs"));
-        string pickMethod = ExtractMethod(scene, "public bool TryGetSelectableNodeIdForMeshIndex");
-        Assert.Contains("mesh.SelectableNodeId >= 0", pickMethod);
-        Assert.Contains("? mesh.SelectableNodeId", pickMethod);
-        Assert.Contains(": mesh.SourceNodeId", pickMethod);
+        // S13-1: the selectable-node resolution now lives in the lookup builder.
+        string selectableLookup = ExtractMethod(scene, "private void RebuildNodeMeshLookups");
+        Assert.Contains("mesh.SelectableNodeId >= 0", selectableLookup);
+        Assert.Contains("? mesh.SelectableNodeId", selectableLookup);
+        Assert.Contains(": mesh.SourceNodeId", selectableLookup);
 
         string mainActivity = File.ReadAllText(ResolveRepoPath(
             @"..\FabricationAssistant.App.Android\MainActivity.cs"));
@@ -144,7 +145,7 @@ public sealed class GlesRendererSourceTests
             @"..\FabricationAssistant.Rendering.Gles\GlesSectionOverlay.cs"));
 
         Assert.Contains("public static float SectionEdgeWidth", settings);
-        Assert.Contains("\"Normal edge thickness\", 0.05f, 4f", preferences);
+        Assert.Contains("\"Normal edge thickness\", 0.75f, 4f", preferences);
         Assert.Contains("\"Section edge thickness\", 0.5f, 8f", preferences);
         Assert.Contains("renderer.SectionEdgeWidth = AppSettings.SectionEdgeWidth;", mainActivity);
         Assert.Contains(": System.Math.Clamp(a.EdgeWidth, 0.05f, 4.0f)", renderer);
@@ -152,6 +153,365 @@ public sealed class GlesRendererSourceTests
         Assert.Contains("new GlesSectionOverlay(_gl, measureVs, measureFs, edgeVs, edgeFs)", renderer);
         Assert.Contains("uLineWidthPixels", overlay);
         Assert.Contains("DrawElementsInstanced", overlay);
+    }
+
+    [Fact]
+    public void FaceHighlightOverlay_IsOccludedByGeometry()
+    {
+        string overlay = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.Rendering.Gles\GlesFaceHighlightOverlay.cs"));
+        string render = ExtractMethod(overlay, "public void Render");
+
+        // The translucent face fill is depth-tested against the scene so it is
+        // hidden behind bodies in front of the face, rather than drawn
+        // unconditionally on top (which made it visible through geometry).
+        Assert.Contains("_gl.Enable(EnableCap.DepthTest)", render);
+        Assert.DoesNotContain("_gl.Disable(EnableCap.DepthTest)", render);
+        Assert.Contains("DepthFunction.Lequal", render);
+
+        // A polygon offset toward the camera keeps the fill from z-fighting with
+        // the coplanar mesh face it tints, while still losing to closer geometry.
+        Assert.Contains("EnableCap.PolygonOffsetFill", render);
+
+        // Still a translucent overlay: it must not write depth.
+        Assert.Contains("_gl.DepthMask(false)", render);
+    }
+
+    [Fact]
+    public void BoundingBoxSelectionHover_HighlightsBodyUnderPointer()
+    {
+        string mainActivity = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\MainActivity.cs"));
+
+        // The bounding-box (boundary) tool is body-selection-driven: a tap picks
+        // the body under the pointer (HandleBoundingBoxSelectionTap), so the S Pen
+        // hover must body-pick too. The fix adds a _measureBoundingBoxAwaitingSelection
+        // branch BEFORE the generic "_measure is { IsActive: true }" branch, which
+        // would otherwise clear the highlight and run feature-snap hover (a no-op for
+        // the body-driven BoundingBox mode).
+        string hover = ExtractMethod(mainActivity, "private bool OnViewportHover");
+        int bboxBranch = hover.IndexOf("_measureBoundingBoxAwaitingSelection", StringComparison.Ordinal);
+        int measureBranch = hover.IndexOf("_measure is { IsActive: true }", StringComparison.Ordinal);
+        Assert.True(bboxBranch >= 0, "OnViewportHover is missing the bounding-box selection hover branch.");
+        Assert.True(measureBranch >= 0, "OnViewportHover is missing the measure-active hover branch.");
+        Assert.True(
+            bboxBranch < measureBranch,
+            "The bounding-box hover branch must precede the feature-snap measure branch.");
+
+        // The hover-pick result must be applied (not force-cleared) while the
+        // bounding-box selection is awaiting a body, so the body highlight survives.
+        string hoverResult = ExtractMethod(mainActivity, "private void OnHoverPickResult");
+        Assert.Contains("_measureBoundingBoxAwaitingSelection", hoverResult);
+    }
+
+    [Fact]
+    public void Slice24_DeadStringsRemovedAndSwitchLabelsDecoupled()
+    {
+        string strings = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\Resources\values\strings.xml"));
+        string layout = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\Resources\layout\activity_main.xml"));
+
+        // S24-L1: the two unreferenced strings are deleted.
+        Assert.DoesNotContain("name=\"open_button\"", strings);
+        Assert.DoesNotContain("name=\"cd_open_drawer\"", strings);
+
+        // S24-M3: each toolbar switch now has a dedicated visible label string...
+        Assert.Contains("name=\"label_section_fill\"", strings);
+        Assert.Contains("name=\"label_section_edges\"", strings);
+        Assert.Contains("name=\"label_section_curves\"", strings);
+        Assert.Contains("name=\"label_section_caps\"", strings);
+        Assert.Contains("name=\"label_measure_snap_endpoint\"", strings);
+        Assert.Contains("name=\"label_measure_snap_midpoint\"", strings);
+
+        // ...the visible text points at the label, and the cd_* string is the
+        // separate contentDescription - so no switch reuses cd_* as android:text.
+        Assert.DoesNotContain("android:text=\"@string/cd_", layout);
+        Assert.Contains("android:contentDescription=\"@string/cd_section_fill\"", layout);
+        Assert.Contains("android:text=\"@string/label_section_fill\"", layout);
+    }
+
+    [Fact]
+    public void Slice23_StorageAndLogHardening()
+    {
+        string recent = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\RecentFilesStore.cs"));
+        // S23-1: probing runs outside the Gate lock.
+        string load = ExtractMethod(recent, "public static IReadOnlyList<RecentFileEntry> Load");
+        Assert.Contains("probe OUTSIDE the lock", load);
+        // S23-14 / S23-15: dead members are gone.
+        Assert.DoesNotContain("private static void Save(", recent);
+        Assert.DoesNotContain("TryTakePersistableReadPermission", recent);
+
+        // S23-10: the crash logger skips the append when truncation fails.
+        string crash = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\AndroidCrashLogger.cs"));
+        string write = ExtractMethod(crash, "private static void WriteToFile");
+        Assert.Contains("must not grow the log unbounded", write);
+
+        // S23-11: the logcat read is cancellable.
+        string feed = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\AndroidLogcatFeed.cs"));
+        Assert.Contains("reader.ReadLineAsync(token)", feed);
+    }
+
+    [Fact]
+    public void Slice22_CleartextGatedToLanAndErrorBodyCapped()
+    {
+        string client = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\CloudApiClient.cs"));
+
+        // S22-1: http:// is rejected for non-private/non-loopback (internet) hosts.
+        string normalize = ExtractMethod(client, "public static string NormalizeServerUrl");
+        Assert.Contains("uri.Scheme == Uri.UriSchemeHttp", normalize);
+        Assert.Contains("IsPrivateOrLoopbackHost(uri.Host)", normalize);
+
+        // S22-1: the blunt global cleartext flag is gone from the manifest.
+        string manifest = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\Properties\AndroidManifest.xml"));
+        Assert.DoesNotContain("usesCleartextTraffic", manifest);
+
+        // S22-2b: the error-body read is capped and cancellation-aware.
+        string ensure = ExtractMethod(client, "private static async Task EnsureSuccessAsync");
+        Assert.Contains("CancellationToken ct", ensure);
+        Assert.Contains("ReadCappedAsync", ensure);
+        Assert.DoesNotContain("response.Content.ReadAsStringAsync()", ensure);
+    }
+
+    [Fact]
+    public void Slice20_SilhouetteOverlayOnlyInShadedWithEdges()
+    {
+        // S20-F10: the screen-space silhouette runs only in ShadedWithEdges (desktop
+        // parity), not in plain Shaded; the old Clay/Wireframe exclusion is replaced.
+        string renderer = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.Rendering.Gles\GlesViewportRenderer.cs"));
+
+        int start = renderer.IndexOf("bool silhouetteOverlayActive = normalDepthRanThisFrame", StringComparison.Ordinal);
+        Assert.True(start >= 0, "silhouetteOverlayActive assignment was not found.");
+        int end = renderer.IndexOf("if (silhouetteOverlayActive)", start, StringComparison.Ordinal);
+        Assert.True(end > start, "silhouetteOverlayActive assignment end was not found.");
+        string assignment = renderer[start..end];
+
+        Assert.Contains("a.Mode == RenderMode.ShadedWithEdges", assignment);
+        Assert.DoesNotContain("a.Mode != RenderMode.Clay", assignment);
+    }
+
+    [Fact]
+    public void Slice19_HoverClearedOnNavStartAndOutlineIntentDocumented()
+    {
+        // S19-F7: starting a camera gesture clears any (possibly stuck) hover.
+        string mainActivity = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\MainActivity.cs"));
+        string setNav = ExtractMethod(mainActivity, "private void SetInteractiveNavigationActive");
+        Assert.Contains("SetHoveredMesh(0)", setNav);
+
+        // S7/19-F4: the outline-through-occluders behavior is documented as intentional.
+        string outline = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.Rendering.Gles\GlesOutlineRenderer.cs"));
+        Assert.Contains("S7/19-F4", outline);
+        Assert.Contains("through occluders", outline);
+    }
+
+    [Fact]
+    public void Slice17_BvhStackBoundedAndMeasureOverlayUnclippedByDesign()
+    {
+        // S17-4: the BVH raycast worklist is sized from the tree height with a heap
+        // fallback, so a deep/unbalanced tree can't overflow the inline stackalloc.
+        string bvh = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\Measurement\AndroidMeshRaycastAcceleration.cs"));
+        Assert.Contains("ComputeMaxTraversalStackDepth", bvh);
+        string tryRaycast = ExtractMethod(bvh, "public bool TryRaycast");
+        Assert.Contains("_maxTraversalStackDepth <= InlineTraversalStackCapacity", tryRaycast);
+        Assert.Contains("new int[_maxTraversalStackDepth]", tryRaycast);
+        Assert.DoesNotContain("stackalloc int[128]", tryRaycast);
+
+        // S17-1: the measurement overlay is intentionally not section-clipped; the
+        // decision is documented so it is not re-flagged as a missing clip.
+        string overlay = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.Rendering.Gles\GlesMeasurementOverlay.cs"));
+        Assert.Contains("intentionally NOT section-clipped", overlay);
+    }
+
+    [Fact]
+    public void Slice16_SectionPlacementAndStaleCaps()
+    {
+        string mainActivity = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\MainActivity.cs"));
+
+        // S16-2: Custom section placement no longer suppresses camera navigation.
+        // (ShouldSuppressNavigationGestures is expression-bodied, so slice to the ';'.)
+        int suppressStart = mainActivity.IndexOf("private bool ShouldSuppressNavigationGestures()", StringComparison.Ordinal);
+        Assert.True(suppressStart >= 0, "ShouldSuppressNavigationGestures was not found.");
+        // Slice from the '=>' (past the doc comment) to the terminating ';'.
+        int suppressArrow = mainActivity.IndexOf("=>", suppressStart, StringComparison.Ordinal);
+        int suppressEnd = mainActivity.IndexOf(';', suppressArrow);
+        Assert.True(suppressArrow > suppressStart && suppressEnd > suppressArrow, "ShouldSuppressNavigationGestures body was not found.");
+        string suppress = mainActivity[suppressArrow..suppressEnd];
+        Assert.DoesNotContain("SectionSubMode.Custom", suppress);
+        Assert.Contains("AndroidModalTool.ZoomWindow", suppress);
+
+        // S16-5: a stale section-cap build (fewer geometries than visual planes) is
+        // surfaced and re-rendered instead of silently dropping trailing caps.
+        string renderer = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.Rendering.Gles\GlesViewportRenderer.cs"));
+        string caps = ExtractMethod(renderer, "private void RenderSectionCaps");
+        Assert.Contains("capGeometries.Length < SectionVisualPlanes.Count", caps);
+        Assert.Contains("Section caps stale", caps);
+    }
+
+    [Fact]
+    public void Slice15_BomRowsWrapHeightForLargeFontScale()
+    {
+        // S15-F10: BOM rows must not pin a fixed 24dp height around sp-scaled text.
+        string bom = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\AndroidBomPanel.cs"));
+        string getView = ExtractMethod(bom, "public override View GetView");
+        // Row height wraps content with a 24dp floor instead of a fixed 24dp box.
+        Assert.Contains("new AbsListView.LayoutParams(", getView);
+        Assert.Contains("ViewGroup.LayoutParams.WrapContent", getView);
+        Assert.Contains("SetMinimumHeight(Dp(_ctx, 24))", getView);
+    }
+
+    [Fact]
+    public void Slice14_TreeExplorerAndBomFixes()
+    {
+        string explorer = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\AndroidModelExplorerPanel.cs"));
+
+        // S14-2: expansion state is only carried forward for the same scene instance.
+        string setScene = ExtractMethod(explorer, "public void SetScene");
+        Assert.Contains("ReferenceEquals(_scene, scene)", setScene);
+        Assert.Contains("? _tree?.CaptureExpansionState() : null", setScene);
+
+        // S14-5: duplicate packing buckets children in one pass (no inner per-group scan).
+        string pack = ExtractMethod(explorer, "private static IReadOnlyList<AndroidModelExplorerNode> PackDuplicateChildren");
+        Assert.Contains("Dictionary<string, List<AndroidModelExplorerNode>>", pack);
+        Assert.DoesNotContain("children.Where(", pack);
+
+        // S14-F6: the model-explorer row recycles convertView through a holder.
+        string getView = ExtractMethod(explorer, "public override View GetView");
+        Assert.Contains("convertView?.Tag as RowHolder", getView);
+
+        // S14-F8: the focused row prefers a real (non-negative) presented id.
+        string setSelection = ExtractMethod(explorer, "public void SetSelection");
+        Assert.Contains("_highlightedPresentedIds.Where(id => id >= 0).Min()", setSelection);
+
+        // S14-F9: the always-true _visibleRows.Contains guard is removed.
+        string bom = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\AndroidBomPanel.cs"));
+        string click = ExtractMethod(bom, "private void OnListItemClick");
+        Assert.DoesNotContain("_visibleRows.Contains(row)", click);
+    }
+
+    [Fact]
+    public void Slice13_SelectionLookupsArePrebuiltAndPicksGuarded()
+    {
+        // S13-1: GpuScene resolves selection via prebuilt maps (built in Load),
+        // not per-call linear _meshes scans.
+        string gpuScene = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.Rendering.Gles\GpuScene.cs"));
+        Assert.Contains("RebuildNodeMeshLookups(meshes);", gpuScene);
+        string forNode = ExtractMethod(gpuScene, "public bool TryGetMeshIndexForSourceNodeId");
+        Assert.Contains("_meshIndexBySourceNodeId.TryGetValue", forNode);
+        Assert.DoesNotContain("foreach", forNode);
+
+        // S15-1: model-body picks are issued through a load-version guard so a
+        // result that arrives after a document swap is ignored.
+        string mainActivity = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\MainActivity.cs"));
+        string pickHelper = ExtractMethod(mainActivity, "private void PickModelBodyAsync");
+        Assert.Contains("issuedLoadVersion != Volatile.Read(ref _loadVersion)", pickHelper);
+        Assert.Contains("PickModelBodyAsync(px, py, pickReason", mainActivity);
+        Assert.Contains("PickModelBodyAsync(px, py, \"context\"", mainActivity);
+        Assert.Contains("PickModelBodyAsync(px, py, \"body-move-select\"", mainActivity);
+    }
+
+    [Fact]
+    public void MultiMeshSelection_FillTintsEverySelectedMesh()
+    {
+        // S13-F7 (verified false positive): DrawSurfaceMesh sets uSelectedMeshIndex
+        // per mesh from the full selection set, so EVERY selected body is fill-
+        // tinted, not just the first. This locks in that per-mesh behavior.
+        string renderer = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.Rendering.Gles\GlesViewportRenderer.cs"));
+        string draw = ExtractMethod(renderer, "private void DrawSurfaceMesh");
+        Assert.Contains("IsSelectedMesh(mesh.MeshIndex) ? mesh.MeshIndex : 0", draw);
+        string isSelected = ExtractMethod(renderer, "private bool IsSelectedMesh");
+        Assert.Contains("_selectedMeshIndexLookup.Contains(meshIndex)", isSelected);
+    }
+
+    [Fact]
+    public void Slice12_NavigationPivotResetAndDividerDragRobustness()
+    {
+        // S12-F2: the navigation pivot is reset when a scene is attached.
+        string mainActivity = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\MainActivity.cs"));
+        string attach = ExtractMethod(mainActivity, "private void AttachRuntimeScene");
+        Assert.Contains("_interaction?.ResetNavigationPivot();", attach);
+
+        // S12-F3: the divider drag no longer adopts a transient second (stylus)
+        // pointer, and restores to a remaining pointer when the active one lifts.
+        string resize = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\HorizontalResizeTouchListener.cs"));
+        Assert.DoesNotContain("IsPointerStylusOrEraser", resize);
+        Assert.Contains("TryFindOtherPointer", resize);
+    }
+
+    [Fact]
+    public void ZoomWindowMarquee_KeepsToolOnSecondFingerOrbitEnd()
+    {
+        string mainActivity = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\MainActivity.cs"));
+
+        string handler = ExtractMethod(mainActivity, "private void OnGestureForToolbarTools");
+
+        // S11-1: a second-finger OrbitEnd (Orbit->PanZoom hand-off) must cancel the
+        // marquee and keep the tool, not commit + exit.
+        int guardIndex = handler.IndexOf("if (ev.IsMultiTouchTransition)", StringComparison.Ordinal);
+        Assert.True(guardIndex >= 0, "OrbitEnd handling must guard on ev.IsMultiTouchTransition.");
+
+        int resetIndex = handler.IndexOf("ResetZoomWindowOverlay();", guardIndex, StringComparison.Ordinal);
+        int commitIndex = handler.IndexOf("ApplyZoomWindowSelection();", StringComparison.Ordinal);
+        Assert.True(resetIndex > guardIndex, "The transition guard should cancel the marquee via ResetZoomWindowOverlay.");
+        Assert.True(commitIndex > resetIndex, "The commit path must be guarded out for the second-finger transition.");
+    }
+
+    [Fact]
+    public void PreferencesControls_ApplySlice10Fixes()
+    {
+        string preferences = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\PreferencesBottomSheet.cs"));
+
+        // S10-1: dragging grid spacing clears the Automatic-grid switch.
+        Assert.Contains("var autoGridSwitch = AddSwitch(ctx, helpers, \"Automatic grid spacing\"", preferences);
+        Assert.Contains("autoGridSwitch.Checked = false;", preferences);
+
+        // S10-F2: grid-spacing slider spans the full clamp (no longer pinned at 1000).
+        Assert.Contains("\"Grid spacing (mm)\", 0.001f, 1_000_000f", preferences);
+
+        // S10-2: numeric fields commit on Enter/focus loss, not on every keystroke.
+        string addFloatField = ExtractMethod(preferences, "private EditText AddFloatField");
+        Assert.Contains("commitOnChange: false", addFloatField);
+        Assert.Contains("DialogKeyboard.ConfirmOnEnter(input, Commit)", addFloatField);
+        Assert.Contains("if (!e.HasFocus)", addFloatField);
+
+        // S10-F4: re-enabling edges re-syncs the edge-width slider to the saved value.
+        Assert.Contains("edgeWidthSlider?.SetValue(AppSettings.EdgeWidth)", preferences);
+
+        // S10-F7: edge-width slider min is the durable visible floor (0.75).
+        Assert.Contains("\"Normal edge thickness\", 0.75f, 4f", preferences);
+
+        // S10-F8: weld tolerance (two decades) uses a logarithmic slider.
+        Assert.Contains("CadEdgeWeldToleranceScale = v, logarithmic: true", preferences);
+
+        // S10-F9: section gizmo scale lives under Section Tools, not Navigation.
+        Assert.Contains("AddFloatSlider(ctx, sections, \"Section gizmo scale\"", preferences);
+        Assert.DoesNotContain("AddFloatSlider(ctx, nav, \"Section gizmo scale\"", preferences);
+
+        // AddFloatSlider gained logarithmic mapping + a refresh handle.
+        string addFloatSlider = ExtractMethod(preferences, "private FloatSliderControl AddFloatSlider");
+        Assert.Contains("bool logarithmic", addFloatSlider);
+        Assert.Contains("max / (double)min", addFloatSlider);
     }
 
     [Fact]
@@ -331,6 +691,52 @@ public sealed class GlesRendererSourceTests
         string renderOverlay = ExtractMethod(mainActivity, "private void CreateRenderBusyOverlay");
         Assert.Contains("CreateBusyChip(container, \"Updating render...\", out _renderBusyDetail)", renderOverlay);
         Assert.DoesNotContain("new ProgressBar", renderOverlay);
+    }
+
+    [Fact]
+    public void MeasureBusyChip_IsCreatedDelayedAndCleanedUp()
+    {
+        string mainActivity = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\MainActivity.cs"));
+
+        // Built through the shared helper next to the render chip.
+        string createMeasure = ExtractMethod(mainActivity, "private void CreateMeasureBusyOverlay");
+        Assert.Contains("CreateBusyChip(container, \"Computing bounding box...\", out _measureBusyDetail)", createMeasure);
+        Assert.Contains("CreateMeasureBusyOverlay(container);", mainActivity);
+
+        // 180 ms anti-flicker gate, guarded by the version token.
+        Assert.Contains("private const int MeasureBusyShowDelayMs = 180;", mainActivity);
+        string delayed = ExtractMethod(mainActivity, "private async Task ShowMeasureBusyAfterDelayAsync");
+        Assert.Contains("await Task.Delay(MeasureBusyShowDelayMs)", delayed);
+        Assert.Contains("token != Volatile.Read(ref _measureBusyVersion)", delayed);
+
+        // Hide bumps the version (cancels a pending show) and lives in the loop.
+        string hide = ExtractMethod(mainActivity, "private void HideMeasureBusy");
+        Assert.Contains("Interlocked.Increment(ref _measureBusyVersion);", hide);
+        Assert.Contains("_measureBusyOverlay.Visibility = ViewStates.Gone;", hide);
+
+        // Lifecycle: hidden on pause, removed on teardown.
+        string onPause = ExtractMethod(mainActivity, "protected override void OnPause");
+        Assert.Contains("HideMeasureBusy();", onPause);
+        string cleanup = ExtractMethod(mainActivity, "private void RemoveOwnedOverlayViews");
+        Assert.Contains("RemoveFromParent(_measureBusyOverlay);", cleanup);
+    }
+
+    [Fact]
+    public void BoundingBoxCommit_ShowsAndHidesMeasureBusyChip()
+    {
+        string mainActivity = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\MainActivity.cs"));
+
+        string commit = ExtractMethod(mainActivity, "private async Task CommitBoundingBoxForNodesAsync");
+        Assert.Contains("ShowMeasureBusyDelayed(\"Computing bounding box...\");", commit);
+
+        // The hide must run in the finally so the chip is dismissed even if the
+        // boundary calculation throws or times out.
+        int finallyIndex = commit.IndexOf("finally", StringComparison.Ordinal);
+        int hideIndex = commit.IndexOf("HideMeasureBusy();", StringComparison.Ordinal);
+        Assert.True(finallyIndex >= 0, "CommitBoundingBoxForNodesAsync must have a finally block.");
+        Assert.True(hideIndex > finallyIndex, "HideMeasureBusy() must be called inside the finally block.");
     }
 
     [Fact]

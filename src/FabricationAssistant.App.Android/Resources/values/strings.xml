@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Fabrication Assistant</string>
-    <string name="open_button">Open</string>
 
     <!-- Navigation rail / toolbar content descriptions -->
     <string name="cd_nav_open">Open file</string>
@@ -74,7 +73,17 @@
     <string name="cd_toggle_properties">Toggle properties</string>
     <string name="cd_open_properties">Open properties</string>
     <string name="cd_close_properties">Close properties</string>
-    <string name="cd_open_drawer">Open navigation drawer</string>
+
+    <!-- S24-M3: visible toolbar-switch labels, decoupled from the cd_* a11y wording.
+         These are the android:text shown next to the switch; the matching cd_* string
+         stays the android:contentDescription so the visible label and the spoken
+         accessibility label can diverge without touching each other. -->
+    <string name="label_measure_snap_endpoint">Endpoint snap</string>
+    <string name="label_measure_snap_midpoint">Midpoint snap</string>
+    <string name="label_section_fill">Fill</string>
+    <string name="label_section_edges">Edges</string>
+    <string name="label_section_curves">Show section curves</string>
+    <string name="label_section_caps">Show Caps</string>
     <string name="measure_select_body_first">Select a body first</string>
     <string name="measure_bounding_box_title">Bounding Box</string>
     <string name="measure_bounding_box_additive">Additive</string>
