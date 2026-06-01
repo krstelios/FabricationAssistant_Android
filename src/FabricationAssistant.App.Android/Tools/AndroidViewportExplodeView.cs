@@ -1,5 +1,6 @@
 using FabricationAssistant.Core.Math;
 using FabricationAssistant.Core.SceneGraph;
+using FabricationAssistant.Core.BodyMove;
 
 namespace FabricationAssistant.App.Android.Tools;
 
@@ -31,21 +32,19 @@ internal static class AndroidViewportExplodeView
 
     public static AndroidViewportExplodeLayout Build(Scene scene)
     {
-        BoundingBox sceneBounds = SceneBoundsUtilities.TryComputeNodeBounds(scene, scene.Root, out BoundingBox liveSceneBounds)
-            ? liveSceneBounds
-            : scene.Bounds;
-        if (!sceneBounds.IsValid)
-            return new AndroidViewportExplodeLayout(Array.Empty<AndroidViewportExplodeUnit>());
-
-        Vector3d sceneCenter = sceneBounds.Center;
-        Vector3d sceneHalfExtents = ClampHalfExtents(sceneBounds.Size * 0.5);
-        double sceneDiagonal = System.Math.Max(sceneBounds.Diagonal, MinimumSceneExtent);
-
         List<ExplodeCandidate> candidates = EnumerateCandidates(scene)
             .OrderBy(candidate => candidate.NodeId)
             .ToList();
         if (candidates.Count == 0)
             return new AndroidViewportExplodeLayout(Array.Empty<AndroidViewportExplodeUnit>());
+
+        BoundingBox visibleBounds = ComputeCandidateBounds(candidates);
+        if (!visibleBounds.IsValid)
+            return new AndroidViewportExplodeLayout(Array.Empty<AndroidViewportExplodeUnit>());
+
+        Vector3d sceneCenter = visibleBounds.Center;
+        Vector3d sceneHalfExtents = ClampHalfExtents(visibleBounds.Size * 0.5);
+        double sceneDiagonal = System.Math.Max(visibleBounds.Diagonal, MinimumSceneExtent);
 
         List<ExplodePartPlan> plans = candidates
             .Select(candidate => BuildPlan(candidate, sceneCenter, sceneHalfExtents))
@@ -65,10 +64,23 @@ internal static class AndroidViewportExplodeView
     }
 
     public static void Apply(Scene scene, AndroidViewportExplodeLayout layout, double amount)
+        => Apply(scene, layout, amount, 1.0, 1.0, 1.0);
+
+    public static void Apply(
+        Scene scene,
+        AndroidViewportExplodeLayout layout,
+        double amount,
+        double xAmount,
+        double yAmount,
+        double zAmount)
     {
         double clampedAmount = double.IsFinite(amount)
             ? System.Math.Clamp(amount, 0.0, 1.0)
             : 0.0;
+        Vector3d axisAmounts = new(
+            ClampAxisAmount(xAmount),
+            ClampAxisAmount(yAmount),
+            ClampAxisAmount(zAmount));
 
         foreach (AndroidViewportExplodeUnit unit in layout.Units)
         {
@@ -78,10 +90,56 @@ internal static class AndroidViewportExplodeView
                 continue;
             }
 
-            Matrix4d translation = Matrix4d.CreateTranslation(unit.FullOffsetWorld * clampedAmount);
+            Vector3d offset = ScaleOffset(unit.FullOffsetWorld, axisAmounts);
+            Matrix4d translation = Matrix4d.CreateTranslation(offset * clampedAmount);
             node.TransientTransform = translation * unit.BaseTransientTransform;
         }
     }
+
+    public static IReadOnlyList<BodyMoveSnapshot> BuildCommittedMoveSnapshots(
+        Scene scene,
+        AndroidViewportExplodeLayout layout,
+        double amount,
+        double xAmount,
+        double yAmount,
+        double zAmount)
+    {
+        double clampedAmount = double.IsFinite(amount)
+            ? System.Math.Clamp(amount, 0.0, 1.0)
+            : 0.0;
+        if (clampedAmount <= 0.0)
+            return Array.Empty<BodyMoveSnapshot>();
+
+        Vector3d axisAmounts = new(
+            ClampAxisAmount(xAmount),
+            ClampAxisAmount(yAmount),
+            ClampAxisAmount(zAmount));
+        var snapshots = new List<BodyMoveSnapshot>();
+        foreach (AndroidViewportExplodeUnit unit in layout.Units)
+        {
+            if (scene.GetNode(unit.NodeId) is not SceneNode node)
+                continue;
+
+            Vector3d offset = ScaleOffset(unit.FullOffsetWorld, axisAmounts) * clampedAmount;
+            if (offset.LengthSquared <= DirectionEpsilonSquared)
+                continue;
+
+            snapshots.Add(new BodyMoveSnapshot(
+                unit.NodeId,
+                node.MoveTransform * Matrix4d.CreateTranslation(offset)));
+        }
+
+        return snapshots;
+    }
+
+    private static double ClampAxisAmount(double amount)
+        => double.IsFinite(amount) ? System.Math.Clamp(amount, 0.0, 5.0) : 1.0;
+
+    private static Vector3d ScaleOffset(Vector3d offset, Vector3d axisAmounts)
+        => new(
+            offset.X * axisAmounts.X,
+            offset.Y * axisAmounts.Y,
+            offset.Z * axisAmounts.Z);
 
     public static void Clear(Scene scene, AndroidViewportExplodeLayout layout)
     {
@@ -94,7 +152,7 @@ internal static class AndroidViewportExplodeView
 
     private static IEnumerable<ExplodeCandidate> EnumerateCandidates(Scene scene)
     {
-        foreach (SceneNode node in scene.NodesById.Values)
+        foreach (SceneNode node in scene.GetVisibleNodes())
         {
             if (node.MeshId is not int meshId)
                 continue;
@@ -109,6 +167,15 @@ internal static class AndroidViewportExplodeView
 
             yield return new ExplodeCandidate(node.Id, directBounds, node.TransientTransform);
         }
+    }
+
+    private static BoundingBox ComputeCandidateBounds(IEnumerable<ExplodeCandidate> candidates)
+    {
+        BoundingBox bounds = BoundingBox.Empty;
+        foreach (ExplodeCandidate candidate in candidates)
+            bounds = BoundingBox.Merge(bounds, candidate.Bounds);
+
+        return bounds;
     }
 
     private static ExplodePartPlan BuildPlan(ExplodeCandidate candidate, Vector3d sceneCenter, Vector3d sceneHalfExtents)

@@ -2143,8 +2143,18 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
 
     private void NotifySettingsChanged()
     {
-        if (Activity is { IsDestroyed: true })
+        if (_disposed)
             return;
+
+        try
+        {
+            if (Activity is { IsDestroyed: true } or { IsFinishing: true })
+                return;
+        }
+        catch (ObjectDisposedException)
+        {
+            return;
+        }
 
         OnSettingsChanged?.Invoke();
     }

@@ -69,6 +69,9 @@ public sealed class MainActivity : AppCompatActivity
     private const string SavedStateSelectedNodeIdsKey = "fa_selected_node_ids";
     private const string SavedStateSelectedOccurrencesKey = "fa_selected_occurrences";
     private const string SavedStateExplodeAmountKey = "fa_explode_amount";
+    private const string SavedStateExplodeXAmountKey = "fa_explode_x_amount";
+    private const string SavedStateExplodeYAmountKey = "fa_explode_y_amount";
+    private const string SavedStateExplodeZAmountKey = "fa_explode_z_amount";
     private const string SavedStateSectionSubModeKey = "fa_section_sub_mode";
 #if DEBUG
     private const string DebugIntentModelUriExtra = "fa_debug_model_uri";
@@ -97,6 +100,10 @@ public sealed class MainActivity : AppCompatActivity
     private const long ToolbarDuplicateActivationGuardMs = 350;
     private const long BodyMovePromptToastDebounceMs = 1500;
     private const long SpenPalmToggleToastDebounceMs = 750;
+    private const double ExplodeAmountMax = 0.5;
+    private const double ExplodeAxisAmountDefault = 1.0;
+    private const double ExplodeAxisAmountMax = 5.0;
+    private const int ExplodeAxisSliderScale = 100;
     private const int AndroidStateEnabled = 16842910;
     private const int AndroidStateFocused = 16842908;
     private const int AndroidStatePressed = 16842919;
@@ -240,6 +247,13 @@ public sealed class MainActivity : AppCompatActivity
     private MaterialButton? _explodeBackButton;
     private SeekBar? _explodeSlider;
     private TextView? _explodeValueLabel;
+    private SeekBar? _explodeXSlider;
+    private TextView? _explodeXValueLabel;
+    private SeekBar? _explodeYSlider;
+    private TextView? _explodeYValueLabel;
+    private SeekBar? _explodeZSlider;
+    private TextView? _explodeZValueLabel;
+    private MaterialButton? _explodeCommitButton;
     private MaterialButton? _renderModeBackButton;
     private MaterialButton? _renderModeShadedButton;
     private MaterialButton? _renderModeWireframeButton;
@@ -319,7 +333,11 @@ public sealed class MainActivity : AppCompatActivity
     private AndroidViewportExplodeLayout? _explodeLayout;
     private Scene? _explodeLayoutScene;
     private double _explodeAmount;
+    private double _explodeXAmount = ExplodeAxisAmountDefault;
+    private double _explodeYAmount = ExplodeAxisAmountDefault;
+    private double _explodeZAmount = ExplodeAxisAmountDefault;
     private bool _explodeSliderUpdating;
+    private bool _explodeAxisSliderUpdating;
     private ZoomWindowOverlayView? _zoomWindowOverlay;
     private Point2D? _zoomWindowStartDip;
     private Point2D? _zoomWindowCurrentDip;
@@ -357,6 +375,9 @@ public sealed class MainActivity : AppCompatActivity
     private int[]? _pendingRestoredSelectedNodeIds;
     private string[]? _pendingRestoredSelectedOccurrences;
     private double? _pendingRestoredExplodeAmount;
+    private double? _pendingRestoredExplodeXAmount;
+    private double? _pendingRestoredExplodeYAmount;
+    private double? _pendingRestoredExplodeZAmount;
     private SectionSubMode? _pendingRestoredSectionSubMode;
     private bool _openPickerInFlight;
     private CancellationTokenSource? _cloudOpenCts;
@@ -597,6 +618,7 @@ public sealed class MainActivity : AppCompatActivity
         UpdateCloudAccountButton();
         UpdateUndoRedoButtons();
         UpdateSaveButton();
+        UpdateModelNavigationButtonStates();
         RestoreCloudSessionFromRefreshToken();
 
         BindPropertiesPanel();
@@ -665,6 +687,12 @@ public sealed class MainActivity : AppCompatActivity
         _pendingRestoredSelectedOccurrences = savedInstanceState.GetStringArray(SavedStateSelectedOccurrencesKey);
         if (savedInstanceState.ContainsKey(SavedStateExplodeAmountKey))
             _pendingRestoredExplodeAmount = savedInstanceState.GetDouble(SavedStateExplodeAmountKey);
+        if (savedInstanceState.ContainsKey(SavedStateExplodeXAmountKey))
+            _pendingRestoredExplodeXAmount = savedInstanceState.GetDouble(SavedStateExplodeXAmountKey);
+        if (savedInstanceState.ContainsKey(SavedStateExplodeYAmountKey))
+            _pendingRestoredExplodeYAmount = savedInstanceState.GetDouble(SavedStateExplodeYAmountKey);
+        if (savedInstanceState.ContainsKey(SavedStateExplodeZAmountKey))
+            _pendingRestoredExplodeZAmount = savedInstanceState.GetDouble(SavedStateExplodeZAmountKey);
         string? sectionSubMode = savedInstanceState.GetString(SavedStateSectionSubModeKey);
         if (!string.IsNullOrWhiteSpace(sectionSubMode)
             && Enum.TryParse(sectionSubMode, ignoreCase: false, out SectionSubMode parsedSubMode))
@@ -3720,7 +3748,7 @@ public sealed class MainActivity : AppCompatActivity
 
     private void ToggleModelExplorerPanel()
     {
-        if (IsImportUiBusy())
+        if (IsImportUiBusy() || !HasScene())
             return;
 
         if (_leftToolPanelKind == LeftToolPanelKind.ModelExplorer)
@@ -3855,7 +3883,7 @@ public sealed class MainActivity : AppCompatActivity
 
     private void ToggleBomPanel(AndroidBomPanelKind bomKind)
     {
-        if (IsImportUiBusy())
+        if (IsImportUiBusy() || !HasScene())
             return;
 
         LeftToolPanelKind panelKind = bomKind == AndroidBomPanelKind.Hierarchy
@@ -4632,6 +4660,7 @@ public sealed class MainActivity : AppCompatActivity
         yield return _sectionCustomButton;
         yield return _sectionClearButton;
         yield return _explodeBackButton;
+        yield return _explodeCommitButton;
         yield return _renderModeBackButton;
         yield return _renderModeShadedButton;
         yield return _renderModeWireframeButton;
@@ -4871,6 +4900,21 @@ public sealed class MainActivity : AppCompatActivity
         }
     }
 
+    private void UpdateModelNavigationButtonStates(bool closeUnavailablePanel = false)
+    {
+        bool hasScene = HasScene();
+        bool enabled = !IsImportUiBusy() && hasScene;
+        SetButtonEnabled(_navModelExplorerButton, enabled);
+        SetButtonEnabled(_navBomButton, enabled);
+        SetButtonEnabled(_navBomFlatButton, enabled);
+
+        if (closeUnavailablePanel && !hasScene && IsModelScopedLeftToolPanel(_leftToolPanelKind))
+            SetLeftToolPanelExpanded(false, animate: false);
+    }
+
+    private static bool IsModelScopedLeftToolPanel(LeftToolPanelKind kind)
+        => kind is LeftToolPanelKind.ModelExplorer or LeftToolPanelKind.Bom or LeftToolPanelKind.BomFlat;
+
     private void LogSaveButtonState(
         bool canSave,
         bool hasActiveLoad,
@@ -5069,6 +5113,13 @@ public sealed class MainActivity : AppCompatActivity
         _explodeBackButton = FindViewById<MaterialButton>(Resource.Id.explodeBack);
         _explodeSlider = FindViewById<SeekBar>(Resource.Id.explodeSlider);
         _explodeValueLabel = FindViewById<TextView>(Resource.Id.explodeValueLabel);
+        _explodeXSlider = FindViewById<SeekBar>(Resource.Id.explodeXSlider);
+        _explodeXValueLabel = FindViewById<TextView>(Resource.Id.explodeXValueLabel);
+        _explodeYSlider = FindViewById<SeekBar>(Resource.Id.explodeYSlider);
+        _explodeYValueLabel = FindViewById<TextView>(Resource.Id.explodeYValueLabel);
+        _explodeZSlider = FindViewById<SeekBar>(Resource.Id.explodeZSlider);
+        _explodeZValueLabel = FindViewById<TextView>(Resource.Id.explodeZValueLabel);
+        _explodeCommitButton = FindViewById<MaterialButton>(Resource.Id.explodeCommit);
         _renderModeBackButton = FindViewById<MaterialButton>(Resource.Id.renderModeBack);
         _renderModeShadedButton = FindViewById<MaterialButton>(Resource.Id.renderModeShaded);
         _renderModeWireframeButton = FindViewById<MaterialButton>(Resource.Id.renderModeWireframe);
@@ -5178,6 +5229,23 @@ public sealed class MainActivity : AppCompatActivity
             _explodeSlider.SetOnTouchListener(new DisallowParentInterceptTouchListener());
             _explodeSlider.ProgressChanged += OnExplodeSliderProgressChanged;
         }
+        if (_explodeXSlider is not null)
+        {
+            _explodeXSlider.SetOnTouchListener(new DisallowParentInterceptTouchListener());
+            _explodeXSlider.ProgressChanged += OnExplodeAxisSliderProgressChanged;
+        }
+        if (_explodeYSlider is not null)
+        {
+            _explodeYSlider.SetOnTouchListener(new DisallowParentInterceptTouchListener());
+            _explodeYSlider.ProgressChanged += OnExplodeAxisSliderProgressChanged;
+        }
+        if (_explodeZSlider is not null)
+        {
+            _explodeZSlider.SetOnTouchListener(new DisallowParentInterceptTouchListener());
+            _explodeZSlider.ProgressChanged += OnExplodeAxisSliderProgressChanged;
+        }
+        if (_explodeCommitButton is not null)
+            _explodeCommitButton.Click += OnExplodeCommitClicked;
         if (_renderModeBackButton is not null)
             _renderModeBackButton.Click += OnRenderModeBackClicked;
         if (_renderModeShadedButton is not null)
@@ -5386,8 +5454,32 @@ public sealed class MainActivity : AppCompatActivity
         if (_explodeSliderUpdating || !e.FromUser)
             return;
 
-        SetExplodeAmount(e.Progress / 100.0, "slider");
+        SetExplodeAmount(e.Progress / 100.0 * ExplodeAmountMax, "slider");
     }
+
+    private void OnExplodeAxisSliderProgressChanged(object? sender, SeekBar.ProgressChangedEventArgs e)
+    {
+        if (_explodeAxisSliderUpdating || !e.FromUser)
+            return;
+
+        double amount = e.Progress / (double)ExplodeAxisSliderScale;
+        if (ReferenceEquals(sender, _explodeXSlider))
+        {
+            SetExplodeAxisAmounts(amount, _explodeYAmount, _explodeZAmount, "x slider");
+            return;
+        }
+
+        if (ReferenceEquals(sender, _explodeYSlider))
+        {
+            SetExplodeAxisAmounts(_explodeXAmount, amount, _explodeZAmount, "y slider");
+            return;
+        }
+
+        if (ReferenceEquals(sender, _explodeZSlider))
+            SetExplodeAxisAmounts(_explodeXAmount, _explodeYAmount, amount, "z slider");
+    }
+
+    private void OnExplodeCommitClicked(object? sender, EventArgs e) => CommitExplodePositions();
 
     private void OnRenderModeBackClicked(object? sender, EventArgs e) => ExitRenderModeToolbar();
 
@@ -5610,6 +5702,13 @@ public sealed class MainActivity : AppCompatActivity
         SetVisibility(_explodeBackButton, explodeVisibility);
         SetVisibility(_explodeSlider, explodeVisibility);
         SetVisibility(_explodeValueLabel, explodeVisibility);
+        SetVisibility(_explodeXSlider, explodeVisibility);
+        SetVisibility(_explodeXValueLabel, explodeVisibility);
+        SetVisibility(_explodeYSlider, explodeVisibility);
+        SetVisibility(_explodeYValueLabel, explodeVisibility);
+        SetVisibility(_explodeZSlider, explodeVisibility);
+        SetVisibility(_explodeZValueLabel, explodeVisibility);
+        SetVisibility(_explodeCommitButton, explodeVisibility);
 
         SetVisibility(_renderModeBackButton, renderModeVisibility);
         SetVisibility(_renderModeShadedButton, renderModeVisibility);
@@ -6031,6 +6130,10 @@ public sealed class MainActivity : AppCompatActivity
         return false;
     }
 
+    private bool CanRestoreAllPositions()
+        => _runtimeScene is not null
+           && _bodyMove?.MovedNodeCount > 0;
+
     private void RestoreSelectedPositions()
     {
         Scene? scene = _runtimeScene;
@@ -6054,6 +6157,33 @@ public sealed class MainActivity : AppCompatActivity
         UpdateMainToolButtonStates();
         _viewport?.RequestRender();
         global::Android.Util.Log.Info("FA.BodyMove", $"Restore positions: nodes=[{string.Join(",", movableNodes.Select(node => node.Id))}].");
+    }
+
+    private void RestoreAllPositions()
+    {
+        Scene? scene = _runtimeScene;
+        if (scene is null || _bodyMove is null)
+            return;
+
+        int[] nodeIds = scene.NodesById.Values
+            .Where(node => _bodyMove.HasMove(node.Id))
+            .Select(node => node.Id)
+            .ToArray();
+        if (nodeIds.Length == 0)
+            return;
+
+        BodyMoveSnapshot[] before = _bodyMove.SnapshotFor(nodeIds).ToArray();
+        BodyMoveSnapshot[] identityTransforms = before
+            .Select(snapshot => new BodyMoveSnapshot(snapshot.NodeId, Matrix4d.Identity))
+            .ToArray();
+        _bodyMove.RestoreTransforms(identityTransforms);
+        BodyMoveSnapshot[] after = _bodyMove.SnapshotFor(nodeIds).ToArray();
+        if (!SameBodyMoveSnapshots(before, after))
+            _undoService?.Record(new BodyMoveChange(before, after), "Restore all positions");
+        UpdateBodyMoveGizmoRendererState();
+        UpdateMainToolButtonStates();
+        _viewport?.RequestRender();
+        global::Android.Util.Log.Info("FA.BodyMove", $"Restore all positions: nodes=[{string.Join(",", nodeIds)}].");
     }
 
     private void ShowBoundingBoxSelectionRequiredDialog()
@@ -6200,17 +6330,62 @@ public sealed class MainActivity : AppCompatActivity
         if (_explodeSlider is not null)
         {
             _explodeSlider.Enabled = canExplode;
-            int progress = (int)Math.Round(Math.Clamp(_explodeAmount, 0.0, 1.0) * 100.0);
+            int progress = (int)Math.Round(Math.Clamp(_explodeAmount, 0.0, ExplodeAmountMax) / ExplodeAmountMax * 100.0);
             if (_explodeSlider.Progress != progress)
             {
                 _explodeSliderUpdating = true;
-                _explodeSlider.Progress = progress;
-                _explodeSliderUpdating = false;
+                try
+                {
+                    _explodeSlider.Progress = progress;
+                }
+                finally
+                {
+                    _explodeSliderUpdating = false;
+                }
             }
         }
 
         if (_explodeValueLabel is not null)
             _explodeValueLabel.Text = $"{_explodeAmount * 100.0:0}%";
+
+        UpdateExplodeAxisSlider(_explodeXSlider, _explodeXAmount, canExplode);
+        UpdateExplodeAxisSlider(_explodeYSlider, _explodeYAmount, canExplode);
+        UpdateExplodeAxisSlider(_explodeZSlider, _explodeZAmount, canExplode);
+
+        if (_explodeXValueLabel is not null)
+            _explodeXValueLabel.Text = $"X {_explodeXAmount * 100.0:0}%";
+        if (_explodeYValueLabel is not null)
+            _explodeYValueLabel.Text = $"Y {_explodeYAmount * 100.0:0}%";
+        if (_explodeZValueLabel is not null)
+            _explodeZValueLabel.Text = $"Z {_explodeZAmount * 100.0:0}%";
+        SetEnabled(_explodeCommitButton, CanCommitExplodePositions(canExplode));
+    }
+
+    private bool CanCommitExplodePositions(bool canExplode)
+        => canExplode
+           && _bodyMove is not null
+           && _explodeAmount > 1e-9
+           && (_explodeXAmount > 1e-9 || _explodeYAmount > 1e-9 || _explodeZAmount > 1e-9);
+
+    private void UpdateExplodeAxisSlider(SeekBar? slider, double amount, bool enabled)
+    {
+        if (slider is null)
+            return;
+
+        slider.Enabled = enabled;
+        int progress = ExplodeAxisAmountToProgress(amount);
+        if (slider.Progress == progress)
+            return;
+
+        _explodeAxisSliderUpdating = true;
+        try
+        {
+            slider.Progress = progress;
+        }
+        finally
+        {
+            _explodeAxisSliderUpdating = false;
+        }
     }
 
     private void UpdateRenderModeButtonStates()
@@ -9703,6 +9878,8 @@ public sealed class MainActivity : AppCompatActivity
 
     private void OnBodyMovesCommitted(IReadOnlyList<int> nodeIds)
     {
+        _explodeLayout = null;
+        _explodeLayoutScene = null;
         _measure?.ClearRaycastAccelerationCache("body move");
         _sectionRaycaster?.ClearAccelerationCache("body move");
         RefreshMeasurementOverlays();
@@ -10089,11 +10266,12 @@ public sealed class MainActivity : AppCompatActivity
         }
 
         EnterToolbarMode(BottomToolbarMode.Explode, AndroidModalTool.Explode);
+        ResetExplodeAxisAmounts();
         SetExplodeAmount(0.0, "tool opened");
     }
 
     private bool CanUseExplodeView()
-        => _runtimeScene is not null && _runtimeScene.NodesById.Values.Count(node => node.MeshId.HasValue) > 1;
+        => _runtimeScene is not null && _runtimeScene.GetVisibleNodes().Count > 1;
 
     private void EnsureExplodeLayout()
     {
@@ -10111,11 +10289,34 @@ public sealed class MainActivity : AppCompatActivity
 
     private void SetExplodeAmount(double amount, string reason)
     {
-        _explodeAmount = double.IsFinite(amount) ? Math.Clamp(amount, 0.0, 1.0) : 0.0;
+        _explodeAmount = double.IsFinite(amount) ? Math.Clamp(amount, 0.0, ExplodeAmountMax) : 0.0;
         UpdateExplodeButtonState();
         if (_activeModalTool == AndroidModalTool.Explode)
             ApplyExplodeViewAmount(reason);
     }
+
+    private void SetExplodeAxisAmounts(double xAmount, double yAmount, double zAmount, string reason)
+    {
+        _explodeXAmount = NormalizeExplodeAxisAmount(xAmount);
+        _explodeYAmount = NormalizeExplodeAxisAmount(yAmount);
+        _explodeZAmount = NormalizeExplodeAxisAmount(zAmount);
+        UpdateExplodeButtonState();
+        if (_activeModalTool == AndroidModalTool.Explode)
+            ApplyExplodeViewAmount(reason);
+    }
+
+    private void ResetExplodeAxisAmounts()
+    {
+        _explodeXAmount = ExplodeAxisAmountDefault;
+        _explodeYAmount = ExplodeAxisAmountDefault;
+        _explodeZAmount = ExplodeAxisAmountDefault;
+    }
+
+    private static int ExplodeAxisAmountToProgress(double amount)
+        => (int)Math.Round(NormalizeExplodeAxisAmount(amount) * ExplodeAxisSliderScale);
+
+    private static double NormalizeExplodeAxisAmount(double amount)
+        => double.IsFinite(amount) ? Math.Clamp(amount, 0.0, ExplodeAxisAmountMax) : ExplodeAxisAmountDefault;
 
     private void ApplyExplodeViewAmount(string reason)
     {
@@ -10127,10 +10328,57 @@ public sealed class MainActivity : AppCompatActivity
         if (_explodeLayout is null)
             return;
 
-        AndroidViewportExplodeView.Apply(scene, _explodeLayout, _explodeAmount);
+        AndroidViewportExplodeView.Apply(scene, _explodeLayout, _explodeAmount, _explodeXAmount, _explodeYAmount, _explodeZAmount);
         SyncRuntimeSceneTransformsToRenderer("explode " + reason);
-        if (!string.Equals(reason, "slider", StringComparison.Ordinal))
-            global::Android.Util.Log.Info("FA.Explode", $"Applied amount={_explodeAmount:0.###}: reason={reason}.");
+        if (!IsExplodeSliderReason(reason))
+        {
+            global::Android.Util.Log.Info(
+                "FA.Explode",
+                $"Applied amount={_explodeAmount:0.###}, axes=({_explodeXAmount:0.###},{_explodeYAmount:0.###},{_explodeZAmount:0.###}): reason={reason}.");
+        }
+    }
+
+    private static bool IsExplodeSliderReason(string reason)
+        => string.Equals(reason, "slider", StringComparison.Ordinal)
+           || reason.EndsWith(" slider", StringComparison.Ordinal);
+
+    private void CommitExplodePositions()
+    {
+        Scene? scene = _runtimeScene;
+        if (scene is null || _bodyMove is null || !CanCommitExplodePositions(CanUseExplodeView()))
+            return;
+
+        EnsureExplodeLayout();
+        if (_explodeLayout is null)
+            return;
+
+        BodyMoveSnapshot[] after = AndroidViewportExplodeView.BuildCommittedMoveSnapshots(
+                scene,
+                _explodeLayout,
+                _explodeAmount,
+                _explodeXAmount,
+                _explodeYAmount,
+                _explodeZAmount)
+            .ToArray();
+        if (after.Length == 0)
+            return;
+
+        int[] nodeIds = after.Select(snapshot => snapshot.NodeId).ToArray();
+        BodyMoveSnapshot[] before = _bodyMove.SnapshotFor(nodeIds).ToArray();
+        ClearExplodeView("commit", syncRenderer: false);
+        _explodeLayout = null;
+        _explodeLayoutScene = null;
+
+        _bodyMove.RestoreTransforms(after);
+        BodyMoveSnapshot[] committed = _bodyMove.SnapshotFor(nodeIds).ToArray();
+        if (!SameBodyMoveSnapshots(before, committed))
+            _undoService?.Record(new BodyMoveChange(before, committed), "Commit exploded positions");
+
+        UpdateBodyMoveGizmoRendererState();
+        UpdateMainToolButtonStates();
+        UpdateExplodeButtonState();
+        _viewport?.RequestRender();
+        global::Android.Util.Log.Info("FA.Explode", $"Committed positions: nodes={after.Length}.");
     }
 
     private void ClearExplodeView(string reason, bool syncRenderer = true)
@@ -10139,6 +10387,7 @@ public sealed class MainActivity : AppCompatActivity
             AndroidViewportExplodeView.Clear(_explodeLayoutScene, _explodeLayout);
 
         _explodeAmount = 0.0;
+        ResetExplodeAxisAmounts();
         if (syncRenderer)
             SyncRuntimeSceneTransformsToRenderer("explode clear " + reason);
         UpdateExplodeButtonState();
@@ -10444,6 +10693,11 @@ public sealed class MainActivity : AppCompatActivity
     private void ApplyExplodeTooltips()
     {
         SetTooltip(_explodeBackButton, Resource.String.cd_explode_return);
+        SetTooltip(_explodeSlider, Resource.String.cd_explode_amount);
+        SetTooltip(_explodeXSlider, Resource.String.cd_explode_x_amount);
+        SetTooltip(_explodeYSlider, Resource.String.cd_explode_y_amount);
+        SetTooltip(_explodeZSlider, Resource.String.cd_explode_z_amount);
+        SetTooltip(_explodeCommitButton, Resource.String.cd_explode_commit);
     }
 
     private void ApplyRenderModeTooltips()
@@ -10758,6 +11012,7 @@ public sealed class MainActivity : AppCompatActivity
         AddAction(Resource.String.context_redo, _undoService?.CanRedo == true, RedoLastAction);
         AddAction(Resource.String.context_move, CanMoveSelectedBodies(), () => ActivateBodyMoveTool("context menu"));
         AddAction(Resource.String.context_restore_position, CanRestoreSelectedPositions(), RestoreSelectedPositions);
+        AddAction(Resource.String.context_restore_all_positions, CanRestoreAllPositions(), RestoreAllPositions);
         AddAction(Resource.String.context_properties, hasSelection, OpenSelectedProperties);
         AddAction(Resource.String.context_zoom_selected, hasScene && hasSelection, ZoomToSelection);
         AddAction(Resource.String.context_hide, hasSelection && CanHideSelectedNodes(), HideSelectedNodes);
@@ -12263,10 +12518,19 @@ public sealed class MainActivity : AppCompatActivity
         if (_pendingRestoredExplodeAmount is not { } amount)
             return;
 
+        double xAmount = _pendingRestoredExplodeXAmount ?? ExplodeAxisAmountDefault;
+        double yAmount = _pendingRestoredExplodeYAmount ?? ExplodeAxisAmountDefault;
+        double zAmount = _pendingRestoredExplodeZAmount ?? ExplodeAxisAmountDefault;
         _pendingRestoredExplodeAmount = null;
+        _pendingRestoredExplodeXAmount = null;
+        _pendingRestoredExplodeYAmount = null;
+        _pendingRestoredExplodeZAmount = null;
         if (amount <= 0.0 || !CanUseExplodeView())
             return;
 
+        _explodeXAmount = NormalizeExplodeAxisAmount(xAmount);
+        _explodeYAmount = NormalizeExplodeAxisAmount(yAmount);
+        _explodeZAmount = NormalizeExplodeAxisAmount(zAmount);
         SetExplodeAmount(amount, "activity recreation");
     }
 
@@ -12607,6 +12871,7 @@ public sealed class MainActivity : AppCompatActivity
         SyncRuntimeSceneVisibilityToRenderer("scene attached");
         UpdateBottomToolbarVisibility();
         UpdateSaveButton();
+        UpdateModelNavigationButtonStates(closeUnavailablePanel: true);
     }
 
     private void RestorePendingSectionSubMode()
@@ -14844,9 +15109,16 @@ public sealed class MainActivity : AppCompatActivity
         SetButtonEnabled(_navCloudButton, enabled);
         SetButtonEnabled(_navUndoButton, enabled && _undoService?.CanUndo == true);
         SetButtonEnabled(_navRedoButton, enabled && _undoService?.CanRedo == true);
-        SetButtonEnabled(_navModelExplorerButton, enabled);
-        SetButtonEnabled(_navBomButton, enabled);
-        SetButtonEnabled(_navBomFlatButton, enabled);
+        if (enabled)
+        {
+            UpdateModelNavigationButtonStates();
+        }
+        else
+        {
+            SetButtonEnabled(_navModelExplorerButton, false);
+            SetButtonEnabled(_navBomButton, false);
+            SetButtonEnabled(_navBomFlatButton, false);
+        }
         SetButtonEnabled(_navSpenPalmButton, enabled);
         SetButtonEnabled(_navSettingsButton, enabled);
         SetButtonEnabled(_cloudAccountButton, enabled);
@@ -14968,7 +15240,12 @@ public sealed class MainActivity : AppCompatActivity
                 selectedOccurrenceIds.OrderBy(id => id, StringComparer.Ordinal).ToArray());
         }
         if (_explodeAmount > 0.0)
-            outState.PutDouble(SavedStateExplodeAmountKey, Math.Clamp(_explodeAmount, 0.0, 1.0));
+        {
+            outState.PutDouble(SavedStateExplodeAmountKey, Math.Clamp(_explodeAmount, 0.0, ExplodeAmountMax));
+            outState.PutDouble(SavedStateExplodeXAmountKey, NormalizeExplodeAxisAmount(_explodeXAmount));
+            outState.PutDouble(SavedStateExplodeYAmountKey, NormalizeExplodeAxisAmount(_explodeYAmount));
+            outState.PutDouble(SavedStateExplodeZAmountKey, NormalizeExplodeAxisAmount(_explodeZAmount));
+        }
         if (_activeSectionSubMode != SectionSubMode.None)
             outState.PutString(SavedStateSectionSubModeKey, _activeSectionSubMode.ToString());
 
@@ -15242,6 +15519,7 @@ public sealed class MainActivity : AppCompatActivity
         DetachClick(_sectionCustomButton, OnSectionCustomClicked);
         DetachClick(_sectionClearButton, OnSectionClearClicked);
         DetachClick(_explodeBackButton, OnExplodeBackClicked);
+        DetachClick(_explodeCommitButton, OnExplodeCommitClicked);
         DetachClick(_renderModeBackButton, OnRenderModeBackClicked);
         DetachClick(_renderModeShadedButton, OnRenderModeShadedClicked);
         DetachClick(_renderModeWireframeButton, OnRenderModeWireframeClicked);
@@ -15274,6 +15552,24 @@ public sealed class MainActivity : AppCompatActivity
             _explodeSlider.ProgressChanged -= OnExplodeSliderProgressChanged;
             _explodeSlider.SetOnTouchListener(null);
             _explodeSlider.SetOnSeekBarChangeListener(null);
+        }
+        if (_explodeXSlider is not null)
+        {
+            _explodeXSlider.ProgressChanged -= OnExplodeAxisSliderProgressChanged;
+            _explodeXSlider.SetOnTouchListener(null);
+            _explodeXSlider.SetOnSeekBarChangeListener(null);
+        }
+        if (_explodeYSlider is not null)
+        {
+            _explodeYSlider.ProgressChanged -= OnExplodeAxisSliderProgressChanged;
+            _explodeYSlider.SetOnTouchListener(null);
+            _explodeYSlider.SetOnSeekBarChangeListener(null);
+        }
+        if (_explodeZSlider is not null)
+        {
+            _explodeZSlider.ProgressChanged -= OnExplodeAxisSliderProgressChanged;
+            _explodeZSlider.SetOnTouchListener(null);
+            _explodeZSlider.SetOnSeekBarChangeListener(null);
         }
     }
 

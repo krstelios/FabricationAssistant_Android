@@ -45,6 +45,8 @@
              LinkBase="Linked\UndoRedo" />
     <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Selection\PackageSessionState.cs"
              LinkBase="Linked\Selection" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\BodyMove\BodyMoveSnapshot.cs"
+             LinkBase="Linked\BodyMove" />
     <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Measurement\Domain\*.cs"
              LinkBase="Linked\Measurement\Domain" />
     <!-- MeshMeasurePicker + its host-safe Core deps (Task 1).
@@ -154,6 +156,8 @@
              LinkBase="Linked\Android" />
     <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\CloudServerUrls.cs"
              LinkBase="Linked\Android" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\Tools\AndroidViewportExplodeView.cs"
+             LinkBase="Linked\Android.Tools" />
     <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\ImportFileTypeResolver.cs"
              LinkBase="Linked\Android" />
     <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\ImportFileSignatureValidator.cs"

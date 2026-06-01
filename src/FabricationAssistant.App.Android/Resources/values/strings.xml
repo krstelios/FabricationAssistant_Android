@@ -65,6 +65,11 @@
     <string name="cd_section_curves">Show section curves</string>
     <string name="cd_section_caps">Show Caps</string>
     <string name="cd_explode_return">Return to main tools</string>
+    <string name="cd_explode_amount">Explode amount</string>
+    <string name="cd_explode_x_amount">X explode amount</string>
+    <string name="cd_explode_y_amount">Y explode amount</string>
+    <string name="cd_explode_z_amount">Z explode amount</string>
+    <string name="cd_explode_commit">Commit exploded positions</string>
     <string name="cd_render_mode_return">Return to main tools</string>
     <string name="cd_render_mode_shaded">Shaded</string>
     <string name="cd_render_mode_wireframe">Wireframe</string>
@@ -101,6 +106,7 @@
     <string name="context_redo">Redo</string>
     <string name="context_move">Move</string>
     <string name="context_restore_position">Restore Position</string>
+    <string name="context_restore_all_positions">Restore All Positions</string>
     <string name="context_zoom_selected">Zoom selected</string>
     <string name="context_hide">Hide</string>
     <string name="context_isolate">Isolate</string>
