@@ -156,7 +156,8 @@ public sealed class CloudFilesPanel : IDisposable
             ContentDescription = "Cloud project filter",
         };
         _projectSpinner.Background = CreateProjectSpinnerBackground(ctx);
-        _projectSpinner.SetPadding(Dp(ctx, 12), 0, Dp(ctx, 10), 0);
+        // Extra right padding leaves room for the dropdown arrow drawn by the background.
+        _projectSpinner.SetPadding(Dp(ctx, 12), 0, Dp(ctx, 34), 0);
         try
         {
             _projectSpinner.SetPopupBackgroundDrawable(CreateProjectDropdownBackground(ctx));
@@ -197,8 +198,8 @@ public sealed class CloudFilesPanel : IDisposable
 
         _search = new EditText(ctx)
         {
-            Hint = "Search part or revision",
-            ContentDescription = "Search part or revision",
+            Hint = "Search Model",
+            ContentDescription = "Search Model",
         };
         _search.SetSingleLine(true);
         _search.SetTextColor(GetColor(ctx, Resource.Color.fa_text_primary));
@@ -444,6 +445,36 @@ public sealed class CloudFilesPanel : IDisposable
         title.SetOnClickListener(clickListener);
         textGroup.AddView(title);
 
+        if (!string.IsNullOrWhiteSpace(package.PartName))
+        {
+            var partName = new TextView(ctx)
+            {
+                Text = package.PartName,
+                Ellipsize = TextUtils.TruncateAt.End,
+            };
+            partName.SetSingleLine(true);
+            partName.SetTextColor(GetColor(ctx, Resource.Color.fa_text_primary));
+            partName.SetTextSize(ComplexUnitType.Px, Dp(ctx, 13));
+            partName.Clickable = package.IsReadyToOpen;
+            partName.SetOnClickListener(clickListener);
+            textGroup.AddView(partName);
+        }
+
+        if (!string.IsNullOrWhiteSpace(package.RevName))
+        {
+            var revName = new TextView(ctx)
+            {
+                Text = package.RevName,
+                Ellipsize = TextUtils.TruncateAt.End,
+            };
+            revName.SetSingleLine(true);
+            revName.SetTextColor(GetColor(ctx, Resource.Color.fa_text_secondary));
+            revName.SetTextSize(ComplexUnitType.Px, Dp(ctx, 12));
+            revName.Clickable = package.IsReadyToOpen;
+            revName.SetOnClickListener(clickListener);
+            textGroup.AddView(revName);
+        }
+
         var detail = new TextView(ctx)
         {
             Text = package.DetailLine,
@@ -459,45 +490,69 @@ public sealed class CloudFilesPanel : IDisposable
         string readiness = package.IsReadyToOpen
             ? "Ready"
             : $"Not ready: {package.CurrentVersionStatus ?? "unknown"} / {package.CurrentVersionValidationStatus ?? "unknown"}";
+
+        var statusRow = new LinearLayout(ctx) { Orientation = Orientation.Horizontal };
+        statusRow.SetGravity(GravityFlags.CenterVertical);
+        statusRow.Clickable = package.IsReadyToOpen;
+        statusRow.SetOnClickListener(clickListener);
+
         var status = new TextView(ctx) { Text = readiness };
         status.SetTextColor(GetColor(ctx, package.IsReadyToOpen ? Resource.Color.fa_accent_500 : Resource.Color.fa_warning));
         status.SetTextSize(ComplexUnitType.Px, Dp(ctx, 12));
-        status.Clickable = package.IsReadyToOpen;
-        status.SetOnClickListener(clickListener);
-        textGroup.AddView(status);
+        statusRow.AddView(status);
+
+        if (!string.IsNullOrWhiteSpace(package.UploadedBy))
+        {
+            var uploader = new TextView(ctx)
+            {
+                Text = "·  " + package.UploadedBy,
+                Ellipsize = TextUtils.TruncateAt.End,
+                LayoutParameters = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent)
+                {
+                    LeftMargin = Dp(ctx, 8),
+                },
+            };
+            uploader.SetSingleLine(true);
+            uploader.SetTextColor(GetColor(ctx, Resource.Color.fa_text_secondary));
+            uploader.SetTextSize(ComplexUnitType.Px, Dp(ctx, 12));
+            statusRow.AddView(uploader);
+        }
+
+        textGroup.AddView(statusRow);
 
         if (package.IsReadyToOpen && package.CurrentCounter > 0)
-            AddCountersButton(ctx, textGroup, package);
+            AddVersionsButton(ctx, textGroup, package);
 
         _list?.AddView(card);
         _ = LoadPreviewIntoAsync(ctx, package, preview);
     }
 
-    private void AddCountersButton(Context ctx, ViewGroup parent, CloudPackageSummary package)
+    private void AddVersionsButton(Context ctx, ViewGroup parent, CloudPackageSummary package)
     {
         var button = new MaterialButton(ctx, null, Resource.Attribute.materialButtonOutlinedStyle)
         {
-            Text = "Counters",
-            ContentDescription = "Choose file counter",
+            Text = "Versions",
+            ContentDescription = "Choose file version",
         };
         button.SetMinWidth(0);
         button.SetMinimumWidth(0);
         button.SetTextSize(ComplexUnitType.Px, Dp(ctx, 11));
         button.SetTextColor(GetColor(ctx, Resource.Color.fa_accent_500));
         button.SetPadding(Dp(ctx, 8), 0, Dp(ctx, 8), 0);
-        button.Click += (_, _) => _ = ShowCounterPickerAsync(ctx, package);
+        button.Click += (_, _) => _ = ShowVersionPickerAsync(ctx, package, button);
 
         var lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, Dp(ctx, 32));
         lp.TopMargin = Dp(ctx, 6);
         parent.AddView(button, lp);
     }
 
-    private async Task ShowCounterPickerAsync(Context ctx, CloudPackageSummary package)
+    private async Task ShowVersionPickerAsync(Context ctx, CloudPackageSummary package, View anchor)
     {
         if (_disposed)
             return;
 
-        SetStatus("Loading cloud counters...");
+        SetStatus("Loading versions...");
         try
         {
             IReadOnlyList<CloudPackageVersionSummary> versions = await _client.LoadPackageVersionsAsync(
@@ -506,18 +561,21 @@ public sealed class CloudFilesPanel : IDisposable
             if (_disposed)
                 return;
 
-            RunOnUi(ctx, () => ShowCounterPicker(ctx, package, versions));
+            RunOnUi(ctx, () => ShowVersionPicker(ctx, package, anchor, versions));
         }
         catch (OperationCanceledException)
         {
         }
         catch (Exception ex)
         {
-            RunOnUi(ctx, () => SetStatus("Could not load counters: " + ex.GetBaseException().Message));
+            RunOnUi(ctx, () => SetStatus("Could not load versions: " + ex.GetBaseException().Message));
         }
     }
 
-    private void ShowCounterPicker(Context ctx, CloudPackageSummary package, IReadOnlyList<CloudPackageVersionSummary> versions)
+    // Custom anchored popup matching the app's other menus (rounded surface card,
+    // app palette, compact rows) instead of the stock AlertDialog list. The current
+    // version is highlighted in the accent colour.
+    private void ShowVersionPicker(Context ctx, CloudPackageSummary package, View anchor, IReadOnlyList<CloudPackageVersionSummary> versions)
     {
         CloudPackageVersionSummary[] openable = versions
             .Where(version => version.IsReadyToOpen)
@@ -525,26 +583,106 @@ public sealed class CloudFilesPanel : IDisposable
             .ToArray();
         if (openable.Length == 0)
         {
-            SetStatus("No validated counters are available for this model.");
+            SetStatus("No validated versions are available for this model.");
             return;
         }
 
-        SetStatus($"{openable.Length} counter{(openable.Length == 1 ? "" : "s")} available");
-        string[] labels = openable
-            .Select(version => version.IsCurrent
-                ? $"C{version.Counter} - current"
-                : $"C{version.Counter} - read-only")
-            .ToArray();
+        SetStatus($"{openable.Length} version{(openable.Length == 1 ? "" : "s")} available");
 
-        _ = new AlertDialog.Builder(ctx)
-            .SetTitle(package.DisplayName + " counters")!
-            .SetItems(labels, (_, e) =>
+        if (anchor.WindowToken is null)
+            return;
+
+        Color accent = GetColor(ctx, Resource.Color.fa_accent_500);
+        Color textPrimary = GetColor(ctx, Resource.Color.fa_text_primary);
+        Color textSecondary = GetColor(ctx, Resource.Color.fa_text_secondary);
+
+        var card = new MaterialCardView(ctx)
+        {
+            Radius = Dp(ctx, 14),
+            CardElevation = Dp(ctx, 12),
+            StrokeWidth = Dp(ctx, 1),
+        };
+        card.SetCardBackgroundColor(GetColor(ctx, Resource.Color.fa_surface_background));
+        card.SetStrokeColor(ColorStateList.ValueOf(GetColor(ctx, Resource.Color.fa_border)));
+
+        var listLayout = new LinearLayout(ctx) { Orientation = Orientation.Vertical };
+        listLayout.SetPadding(Dp(ctx, 6), Dp(ctx, 6), Dp(ctx, 6), Dp(ctx, 6));
+        var scroll = new ScrollView(ctx);
+        scroll.AddView(listLayout);
+        card.AddView(scroll);
+
+        var popup = new PopupWindow(
+            (View)card,
+            ViewGroup.LayoutParams.WrapContent,
+            ViewGroup.LayoutParams.WrapContent,
+            true)
+        {
+            Elevation = Dp(ctx, 12),
+        };
+        popup.SetBackgroundDrawable(new ColorDrawable(Color.Transparent));
+
+        var rippleAttr = new global::Android.Util.TypedValue();
+        bool hasRipple = ctx.Theme?.ResolveAttribute(
+            global::Android.Resource.Attribute.SelectableItemBackground, rippleAttr, true) == true;
+
+        foreach (CloudPackageVersionSummary version in openable)
+        {
+            bool current = version.IsCurrent;
+
+            var row = new LinearLayout(ctx) { Orientation = Orientation.Horizontal };
+            row.SetGravity(GravityFlags.CenterVertical);
+            row.SetPadding(Dp(ctx, 12), Dp(ctx, 9), Dp(ctx, 14), Dp(ctx, 9));
+            if (current)
             {
-                if (!_disposed && e.Which >= 0 && e.Which < openable.Length)
-                    PackageCounterSelected?.Invoke(package, openable[e.Which].Counter);
-            })!
-            .SetNegativeButton("Cancel", (_, _) => { })!
-            .Show()!;
+                var rowBackground = new GradientDrawable();
+                rowBackground.SetCornerRadius(Dp(ctx, 9));
+                rowBackground.SetColor(Color.Argb(38, accent.R, accent.G, accent.B));
+                row.Background = rowBackground;
+            }
+            else if (hasRipple && rippleAttr.ResourceId != 0)
+            {
+                row.SetBackgroundResource(rippleAttr.ResourceId);
+            }
+
+            var label = new TextView(ctx)
+            {
+                Text = $"V{version.Counter}",
+                LayoutParameters = new LinearLayout.LayoutParams(Dp(ctx, 56), ViewGroup.LayoutParams.WrapContent),
+            };
+            label.SetTextColor(current ? textPrimary : textSecondary);
+            label.SetTextSize(ComplexUnitType.Sp, 13f);
+            label.SetTypeface(label.Typeface, current ? TypefaceStyle.Bold : TypefaceStyle.Normal);
+            row.AddView(label);
+
+            var tag = new TextView(ctx) { Text = current ? "current" : "read-only" };
+            tag.SetTextColor(current ? accent : textSecondary);
+            tag.SetTextSize(ComplexUnitType.Sp, 11f);
+            row.AddView(tag);
+
+            int capturedCounter = version.Counter;
+            row.Click += (_, _) =>
+            {
+                popup.Dismiss();
+                if (!_disposed)
+                    PackageCounterSelected?.Invoke(package, capturedCounter);
+            };
+
+            listLayout.AddView(row, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent)
+            {
+                TopMargin = Dp(ctx, 2),
+                BottomMargin = Dp(ctx, 2),
+            });
+        }
+
+        card.Measure(
+            View.MeasureSpec.MakeMeasureSpec(0, MeasureSpecMode.Unspecified),
+            View.MeasureSpec.MakeMeasureSpec(0, MeasureSpecMode.Unspecified));
+        int maxHeight = Dp(ctx, 300);
+        if (card.MeasuredHeight > maxHeight)
+            popup.Height = maxHeight;
+
+        popup.ShowAsDropDown(anchor, 0, Dp(ctx, 4), GravityFlags.Start);
     }
 
     private async Task LoadPreviewIntoAsync(Context ctx, CloudPackageSummary package, ImageView preview)
@@ -600,7 +738,20 @@ public sealed class CloudFilesPanel : IDisposable
         states.AddState(new[] { AndroidStateHovered }, CreateProjectSpinnerFill(ctx, Color.Argb(46, 45, 212, 191), GetColor(ctx, Resource.Color.fa_accent_500)));
         states.AddState(new[] { AndroidStateFocused }, CreateProjectSpinnerFill(ctx, Color.Argb(46, 45, 212, 191), GetColor(ctx, Resource.Color.fa_accent_500)));
         states.AddState(Array.Empty<int>(), CreateProjectSpinnerFill(ctx, GetColor(ctx, Resource.Color.fa_control_background), GetColor(ctx, Resource.Color.fa_accent_700)));
-        return states;
+
+        Drawable? arrow = ctx.GetDrawable(Resource.Drawable.ic_dropdown_arrow);
+        if (arrow is null)
+            return states;
+
+        // Overlay a chevron at the trailing edge so the control reads as a dropdown.
+        var layers = new LayerDrawable(new[] { (Drawable)states, arrow });
+        const int arrowLayer = 1;
+        int arrowSize = Dp(ctx, 18);
+        layers.SetLayerGravity(arrowLayer, GravityFlags.End | GravityFlags.CenterVertical);
+        layers.SetLayerWidth(arrowLayer, arrowSize);
+        layers.SetLayerHeight(arrowLayer, arrowSize);
+        layers.SetLayerInsetEnd(arrowLayer, Dp(ctx, 10));
+        return layers;
     }
 
     private static GradientDrawable CreateProjectDropdownBackground(Context ctx)

@@ -407,7 +407,12 @@ public sealed class CloudApiClient : IDisposable
                     package.CurrentVersionValidationStatus,
                     package.HasPreview,
                     package.PreviewUrl,
-                    package.UpdatedAt));
+                    package.UpdatedAt)
+                {
+                    PartName = ProbeExtraString(package.Extra, PartNameKeys),
+                    RevName = ProbeExtraString(package.Extra, RevNameKeys),
+                    UploadedBy = ProbeExtraString(package.Extra, UploaderKeys),
+                });
             }
         }
 
@@ -418,6 +423,36 @@ public sealed class CloudApiClient : IDisposable
                 .ThenBy(package => package.PartNumber, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(package => package.Revision, StringComparer.OrdinalIgnoreCase)
                 .ToArray());
+    }
+
+    // The packages list carries the part name, revision name, and current-version uploader as
+    // plain top-level fields; they are read case-insensitively, tolerant of a couple of aliases.
+    private static readonly string[] PartNameKeys = { "part_name" };
+    private static readonly string[] RevNameKeys = { "rev_name" };
+    private static readonly string[] UploaderKeys = { "uploaded_by", "uploaded_by_name" };
+
+    private static string? ProbeExtraString(IDictionary<string, JsonElement>? extra, string[] keys)
+    {
+        if (extra is null || extra.Count == 0)
+            return null;
+
+        foreach (KeyValuePair<string, JsonElement> entry in extra)
+        {
+            if (entry.Value.ValueKind != JsonValueKind.String)
+                continue;
+
+            foreach (string key in keys)
+            {
+                if (!string.Equals(entry.Key, key, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                string? text = entry.Value.GetString();
+                if (!string.IsNullOrWhiteSpace(text))
+                    return text.Trim();
+            }
+        }
+
+        return null;
     }
 
     public async Task<Bitmap?> LoadPreviewAsync(CloudPackageSummary package, CancellationToken ct)

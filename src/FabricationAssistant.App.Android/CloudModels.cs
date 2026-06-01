@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace FabricationAssistant.App.Android;
@@ -21,6 +22,15 @@ public sealed record CloudPackageSummary(
     string? PreviewUrl,
     DateTimeOffset? UpdatedAt)
 {
+    /// <summary>Human-readable part name (DB_PART_NAME attribute), when the server provides it.</summary>
+    public string? PartName { get; init; }
+
+    /// <summary>Revision name (Rev_Name attribute), when the server provides it.</summary>
+    public string? RevName { get; init; }
+
+    /// <summary>Display name of the user who uploaded the current version, when available.</summary>
+    public string? UploadedBy { get; init; }
+
     public bool IsReadyToOpen =>
         string.Equals(Status, "active", StringComparison.OrdinalIgnoreCase)
         && string.Equals(CurrentVersionStatus, "current", StringComparison.OrdinalIgnoreCase)
@@ -33,7 +43,7 @@ public sealed record CloudPackageSummary(
             : $"{PartNumber} / {Revision}";
 
     public string DetailLine =>
-        $"Counter {CurrentCounter} - {ProjectName}";
+        $"V{CurrentCounter} - {ProjectName}";
 }
 
 public sealed record CloudBrowserSnapshot(
@@ -161,7 +171,13 @@ internal sealed record CloudPackageDto(
     [property: JsonPropertyName("current_version_validation_status")] string? CurrentVersionValidationStatus,
     [property: JsonPropertyName("has_preview")] bool HasPreview,
     [property: JsonPropertyName("preview_url")] string? PreviewUrl,
-    [property: JsonPropertyName("updated_at")] DateTimeOffset? UpdatedAt);
+    [property: JsonPropertyName("updated_at")] DateTimeOffset? UpdatedAt)
+{
+    // Captures any extra fields the server returns (e.g. part name / uploader) so the
+    // client can read them without the exact key being baked into the positional record.
+    [JsonExtensionData]
+    public IDictionary<string, JsonElement>? Extra { get; init; }
+}
 
 internal sealed record CloudPackageDetailDto(
     [property: JsonPropertyName("package_id")] string PackageId,

@@ -2576,7 +2576,7 @@ public sealed class MainActivity : AppCompatActivity
 
         if (_activeCloudSession is { IsReadOnly: true })
         {
-            ShowError("Cloud save unavailable", "This cloud counter is read-only. Open the latest cloud counter before saving.");
+            ShowError("Cloud save unavailable", "This cloud version is read-only. Open the latest cloud version before saving.");
             return;
         }
 
@@ -2812,7 +2812,7 @@ public sealed class MainActivity : AppCompatActivity
         CancellationToken ct)
     {
         if (session.IsReadOnly)
-            throw new CloudApiException("This cloud counter is read-only. Open the latest cloud counter before saving.");
+            throw new CloudApiException("This cloud version is read-only. Open the latest cloud version before saving.");
         if (_cloudClient is null)
             throw new CloudApiException("Sign in to FA Cloud first.");
 
@@ -2875,7 +2875,7 @@ public sealed class MainActivity : AppCompatActivity
                 versionId,
                 readerLock,
                 session.LocalPath,
-                $"{updated.DisplayName} - C{updated.CurrentCounter}",
+                $"{updated.DisplayName} - V{updated.CurrentCounter}",
                 updated.CurrentCounter,
                 false,
                 session.ImportCacheNameToken,
@@ -3199,7 +3199,7 @@ public sealed class MainActivity : AppCompatActivity
         _cloudReloadPromptShowing = true;
         string message = counter is null
             ? "A newer cloud version is available. Reload to open the latest model."
-            : $"Cloud counter C{counter.Value} is available. Reload to open the latest model.";
+            : $"Cloud version V{counter.Value} is available. Reload to open the latest model.";
         AlertDialog dialog = new AlertDialog.Builder(this)
             .SetTitle("Cloud model updated")!
             .SetMessage(message)!
@@ -3339,7 +3339,7 @@ public sealed class MainActivity : AppCompatActivity
             }
 
             UpdateSaveButton();
-            Toast.MakeText(this, downloaded.IsReadOnly ? "Opened read-only cloud counter" : "Opened cloud model", ToastLength.Short)?.Show();
+            Toast.MakeText(this, downloaded.IsReadOnly ? "Opened read-only cloud version" : "Opened cloud model", ToastLength.Short)?.Show();
         }
         catch (System.OperationCanceledException)
         {
