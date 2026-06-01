@@ -47,6 +47,49 @@
              LinkBase="Linked\Selection" />
     <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Measurement\Domain\*.cs"
              LinkBase="Linked\Measurement\Domain" />
+    <!-- MeshMeasurePicker + its host-safe Core deps (Task 1).
+         Note: MeasurementSession/MeasureTool/BoundingBoxService/OrientedBoxSolver
+         pull in the full UndoRedo+Selection+BodyMove stack; they are omitted here
+         and deferred to the task that first needs them in a test. -->
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Measurement\Engine\MeshMeasurePicker.cs"
+             LinkBase="Linked\Measurement\Engine" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Measurement\Engine\IMeasurementPicker.cs"
+             LinkBase="Linked\Measurement\Engine" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Measurement\Engine\IMeasureRaycaster.cs"
+             LinkBase="Linked\Measurement\Engine" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Measurement\Engine\PickTypes.cs"
+             LinkBase="Linked\Measurement\Engine" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Measurement\Engine\FaceDetectionService.cs"
+             LinkBase="Linked\Measurement\Engine" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Measurement\Engine\FacePatch.cs"
+             LinkBase="Linked\Measurement\Engine" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Measurement\Engine\FeatureEdgeExtractor.cs"
+             LinkBase="Linked\Measurement\Engine" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Measurement\Presentation\Primitives.cs"
+             LinkBase="Linked\Measurement\Presentation" />
+    <!-- SceneNode (needed by IMeasureRaycaster.GetNode) + its transitive SceneGraph closure -->
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\SceneGraph\SceneNode.cs"
+             LinkBase="Linked\SceneGraph" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\SceneGraph\SceneNodeType.cs"
+             LinkBase="Linked\SceneGraph" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\SceneGraph\SceneNodeDto.cs"
+             LinkBase="Linked\SceneGraph" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\SceneGraph\SceneNodeMetadataDto.cs"
+             LinkBase="Linked\SceneGraph" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\SceneGraph\ScenePropertyDto.cs"
+             LinkBase="Linked\SceneGraph" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\SceneGraph\Scene.cs"
+             LinkBase="Linked\SceneGraph" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\SceneGraph\ScenePackageInfoDto.cs"
+             LinkBase="Linked\SceneGraph" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\SceneGraph\MaterialDto.cs"
+             LinkBase="Linked\SceneGraph" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\SceneGraph\ImportStatsDto.cs"
+             LinkBase="Linked\SceneGraph" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\SceneGraph\DocumentDto.cs"
+             LinkBase="Linked\SceneGraph" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\SceneGraph\SceneBoundsUtilities.cs"
+             LinkBase="Linked\SceneGraph" />
     <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.Core.Android\Measurement\Engine\EdgeSnapService.cs"
              LinkBase="Linked\Core.Android.Measurement.Engine" />
   </ItemGroup>
