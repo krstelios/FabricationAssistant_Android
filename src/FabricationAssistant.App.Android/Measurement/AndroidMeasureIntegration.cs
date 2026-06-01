@@ -14,7 +14,6 @@ internal sealed class AndroidMeasureIntegration : IDisposable
     internal const double AndroidEdgeSnapAngularTolerance = MeshMeasurePicker.DefaultEdgeSnapAngularTolerance * 1.0;
     internal const double AndroidEndpointSnapAngularTolerance = MeshMeasurePicker.DefaultEndpointSnapAngularTolerance * 1.0;
     private const long SnapWarmupBudgetMs = 2500;
-    private const int SnapWarmupMaxSegmentsPerMesh = 10000;
 
     private readonly Func<Scene?> _sceneAccessor;
     private readonly Action _invalidate;
@@ -24,8 +23,7 @@ internal sealed class AndroidMeasureIntegration : IDisposable
     private readonly AndroidMeasureRaycaster _raycaster;
     private readonly MeasureTool _tool;
     private readonly MeasurementPresenter _presenter;
-    private readonly EdgeSnapService _snapWarmup = new();
-    private readonly FeatureEdgeExtractor _snapWarmupFeatureEdges = new();
+    private readonly AndroidSnapWarmupRunner _snapWarmup = new();
     private readonly Func<EdgeSnapVisibilityRequest, bool> _snapVisibilityFilter;
     private readonly Action<string> _snapDiagnosticsLog;
     private readonly EventHandler _measurementsChangedHandler;
@@ -151,7 +149,7 @@ internal sealed class AndroidMeasureIntegration : IDisposable
             return;
         }
 
-        var snapshots = new List<SnapWarmupMesh>();
+        var snapshots = new List<AndroidSnapWarmupMesh>();
         var seenMeshIds = new HashSet<int>();
         foreach (SceneNode node in scene.GetVisibleNodes())
         {
@@ -162,7 +160,7 @@ internal sealed class AndroidMeasureIntegration : IDisposable
             if (mesh is null)
                 continue;
 
-            snapshots.Add(new SnapWarmupMesh(mesh.EdgePositions, mesh.Positions, mesh.Indices));
+            snapshots.Add(new AndroidSnapWarmupMesh(mesh.EdgePositions, mesh.Positions, mesh.Indices));
         }
 
         if (snapshots.Count == 0)
@@ -174,48 +172,23 @@ internal sealed class AndroidMeasureIntegration : IDisposable
         _snapWarmupTask = Task.Run(() => WarmSnapModels(snapshots, reason, cts.Token), cts.Token);
     }
 
-    private void WarmSnapModels(IReadOnlyList<SnapWarmupMesh> snapshots, string reason, CancellationToken token)
+    private void WarmSnapModels(IReadOnlyList<AndroidSnapWarmupMesh> snapshots, string reason, CancellationToken token)
     {
-        long segmentCount = 0;
-        int warmedMeshes = 0;
         long start = Environment.TickCount64;
         try
         {
-            foreach (SnapWarmupMesh snapshot in snapshots)
+            AndroidSnapWarmupResult result = _snapWarmup.WarmSnapModels(snapshots, SnapWarmupBudgetMs, token);
+            if (result.BudgetReached)
             {
-                token.ThrowIfCancellationRequested();
-
-                float[] edges = snapshot.EdgePositions.Length >= 6
-                    ? snapshot.EdgePositions
-                    : _snapWarmupFeatureEdges.Extract(snapshot.Positions, snapshot.Indices);
-                if (edges.Length < 6)
-                    continue;
-
-                int meshSegments = edges.Length / 6;
-                if (meshSegments > SnapWarmupMaxSegmentsPerMesh)
-                {
-                    Log.Debug(
-                        "FA.MeasureSnap",
-                        $"Warmup skipped large mesh: reason={reason}, segments={meshSegments}, maxSegments={SnapWarmupMaxSegmentsPerMesh}.");
-                    continue;
-                }
-
-                _snapWarmup.Prepare(edges);
-                segmentCount += meshSegments;
-                warmedMeshes++;
-
-                if (Environment.TickCount64 - start >= SnapWarmupBudgetMs)
-                {
-                    Log.Debug(
-                        "FA.MeasureSnap",
-                        $"Warmup budget reached: reason={reason}, meshes={warmedMeshes}/{snapshots.Count}, segments={segmentCount}, elapsedMs={Environment.TickCount64 - start}.");
-                    return;
-                }
+                Log.Debug(
+                    "FA.MeasureSnap",
+                    $"Warmup budget reached: reason={reason}, meshes={result.WarmedMeshes}/{snapshots.Count}, segments={result.SegmentCount}, elapsedMs={Environment.TickCount64 - start}.");
+                return;
             }
 
             Log.Debug(
                 "FA.MeasureSnap",
-                $"Warmup complete: reason={reason}, meshes={warmedMeshes}, segments={segmentCount}, elapsedMs={Environment.TickCount64 - start}.");
+                $"Warmup complete: reason={reason}, meshes={result.WarmedMeshes}, segments={result.SegmentCount}, elapsedMs={Environment.TickCount64 - start}.");
         }
         catch (OperationCanceledException)
         {
@@ -766,8 +739,6 @@ internal sealed class AndroidMeasureIntegration : IDisposable
         => $"({value.X:0.###},{value.Y:0.###},{value.Z:0.###})";
 
     private readonly record struct MeshSnapshot(Matrix4d Transform, float[] Positions, int VertexCount);
-
-    private readonly record struct SnapWarmupMesh(float[] EdgePositions, float[] Positions, int[] Indices);
 
     private static void CollectMeshSnapshots(Scene scene, SceneNode node, List<MeshSnapshot> sink)
     {

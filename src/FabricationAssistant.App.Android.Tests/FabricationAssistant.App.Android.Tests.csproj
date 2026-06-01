@@ -65,6 +65,8 @@
              LinkBase="Linked\Measurement\Engine" />
     <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Measurement\Engine\FeatureEdgeExtractor.cs"
              LinkBase="Linked\Measurement\Engine" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Measurement\Engine\SectionMeasureGeometryProvider.cs"
+             LinkBase="Linked\Measurement\Engine" />
     <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Measurement\Presentation\Primitives.cs"
              LinkBase="Linked\Measurement\Presentation" />
     <!-- SceneNode (needed by IMeasureRaycaster.GetNode) + its transitive SceneGraph closure -->
@@ -135,6 +137,12 @@
     <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.Input.Gestures.Android\ViewportInteractionAdapter.cs"
              LinkBase="Linked\Gestures" />
     <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\Measurement\AndroidSectionClipper.cs"
+             LinkBase="Linked\Android.Measurement" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\Measurement\AndroidMeasureRaycaster.cs"
+             LinkBase="Linked\Android.Measurement" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\Measurement\AndroidMeshRaycastAcceleration.cs"
+             LinkBase="Linked\Android.Measurement" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\Measurement\AndroidSnapWarmupRunner.cs"
              LinkBase="Linked\Android.Measurement" />
     <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\AndroidPathComparer.cs"
              LinkBase="Linked\Android" />

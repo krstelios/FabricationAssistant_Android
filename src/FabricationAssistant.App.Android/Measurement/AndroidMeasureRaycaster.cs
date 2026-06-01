@@ -19,6 +19,8 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster, IMeasureSuppl
     private readonly FeatureEdgeExtractor _sceneFeatureEdges = new();
     private readonly Dictionary<int, AccelerationEntry> _accelerations = new();
     private Scene? _cachedScene;
+    private float[]? _preparedSectionEdgePositions;
+    private double _preparedSectionWeldToleranceScale = double.NaN;
     private long _cachedVisibilityVersion = -1;
     private long _cachedTransientTransformVersion = -1;
     private long _cachedMoveTransformVersion = -1;
@@ -54,7 +56,7 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster, IMeasureSuppl
     {
         Scene? scene = _sceneAccessor();
         if (SectionMeasureGeometryProvider.IsSectionMesh(meshId))
-            return _sectionGeometry.GetMesh(scene, GetActiveSectionPlanes());
+            return GetPreparedSectionMesh(scene, GetActiveSectionPlanes());
 
         return scene?.GetMesh(meshId);
     }
@@ -81,6 +83,8 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster, IMeasureSuppl
         int count = _accelerations.Count;
         _accelerations.Clear();
         _sectionGeometry.Clear();
+        _preparedSectionEdgePositions = null;
+        _preparedSectionWeldToleranceScale = double.NaN;
         _cachedScene = null;
         _cachedVisibilityVersion = -1;
         _cachedTransientTransformVersion = -1;
@@ -290,21 +294,51 @@ internal sealed class AndroidMeasureRaycaster : IMeasureRaycaster, IMeasureSuppl
         if (scene is null || sectionPlanes.Count == 0)
             return null;
 
-        MeshDto? mesh = _sectionGeometry.GetMesh(scene, sectionPlanes);
+        MeshDto? mesh = GetPreparedSectionMesh(scene, sectionPlanes);
         if (mesh is null || mesh.EdgePositions.Length < 6)
             return null;
 
         sectionAvailable = true;
-        if (!allowBuild)
-            return null;
+        return allowBuild
+            ? _sectionEdgeSnap.TrySnap(
+                mesh.EdgePositions,
+                Matrix4d.Identity,
+                rayOrigin,
+                rayDirection,
+                edgeAngularTolerance,
+                endpointAngularTolerance)
+            : _sectionEdgeSnap.TrySnapPrepared(
+                mesh.EdgePositions,
+                Matrix4d.Identity,
+                rayOrigin,
+                rayDirection,
+                edgeAngularTolerance,
+                endpointAngularTolerance);
+    }
 
-        return _sectionEdgeSnap.TrySnap(
-            mesh.EdgePositions,
-            Matrix4d.Identity,
-            rayOrigin,
-            rayDirection,
-            edgeAngularTolerance,
-            endpointAngularTolerance);
+    private MeshDto? GetPreparedSectionMesh(Scene? scene, IReadOnlyList<SectionPlane> sectionPlanes)
+    {
+        MeshDto? mesh = _sectionGeometry.GetMesh(scene, sectionPlanes);
+        PrepareSectionSnapModel(mesh);
+        return mesh;
+    }
+
+    private void PrepareSectionSnapModel(MeshDto? mesh)
+    {
+        if (mesh is null || mesh.EdgePositions.Length < 6)
+            return;
+
+        float[] edges = mesh.EdgePositions;
+        double weldScale = EdgeSnapService.WeldToleranceScale;
+        if (ReferenceEquals(_preparedSectionEdgePositions, edges)
+            && _preparedSectionWeldToleranceScale == weldScale)
+        {
+            return;
+        }
+
+        _sectionEdgeSnap.Prepare(edges);
+        _preparedSectionEdgePositions = edges;
+        _preparedSectionWeldToleranceScale = weldScale;
     }
 
     private EdgeSnapResult? TrySnapVisibleModelEdges(
