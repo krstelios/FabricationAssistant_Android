@@ -1,3 +1,21 @@
+<#
+.SYNOPSIS
+On-device render-queue / frame-timing harness. Doubles as the GLES shader-compile
+(COMPILE_STATUS) smoke (S25-1).
+
+.DESCRIPTION
+Drives sustained scripted swipes/taps so the viewport renders many frames, then parses
+the FA.FrameTiming / FA.RenderQueue logs. Because rendering frames exercises the whole
+shader pipeline on real hardware, this also serves as the shader-compile smoke:
+ShaderProgram throws "<name> compile failed" / "<name> link failed" (with the GL info
+log) on a bad shader - a fatal one exits the app (caught below), a logged one is matched
+in the captured logcat - and a healthy run must produce frames (> 0).
+
+PRECONDITION: the app must be showing the 3D viewport with a model loaded, otherwise it
+renders no frames and the harness fails (by design - S25-L4 - rather than false-passing).
+The host suite cannot compile shaders at all, so this device run is the only COMPILE_STATUS
+coverage.
+#>
 param(
     [string]$AdbPath = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe",
     [string]$Package = "com.fabricationassistant.android",
@@ -122,6 +140,19 @@ if ([string]::IsNullOrWhiteSpace($pidText)) {
 
 $lines = Invoke-Adb logcat -d -v threadtime --pid $pidText
 
+# S25-1: shader-compile (COMPILE_STATUS) assertions. ShaderProgram throws
+# "<name> compile failed" / "<name> link failed" on a bad shader; surface any such
+# failure - or a crash - distinctly, before the timing parse below. (A fatal shader
+# failure also exits the app, which the "App exited during test" check above catches.)
+$shaderFailures = $lines | Select-String -Pattern "compile failed|link failed" -CaseSensitive:$false
+if ($shaderFailures) {
+    throw "Shader compile/link failure detected on device:`n$(($shaderFailures | ForEach-Object { $_.Line }) -join "`n")"
+}
+$crashLines = $lines | Select-String -Pattern "FATAL EXCEPTION|FA\.Crash"
+if ($crashLines) {
+    throw "App logged a crash during the render test:`n$(($crashLines | ForEach-Object { $_.Line }) -join "`n")"
+}
+
 $frameLines = $lines | Select-String -Pattern "FA\.FrameTiming: Render timing" | ForEach-Object { $_.Line }
 $frames = foreach ($line in $frameLines) {
     if ($line -match "avg=([0-9.]+)ms, max=([0-9.]+)ms, over16=([0-9]+), over33=([0-9]+), over50=([0-9]+), queue=([0-9.]+)ms, queueCommands=([0-9]+), ssao=([0-9.]+)ms, scene=([0-9.]+)ms") {
@@ -157,6 +188,14 @@ Write-Host ""
 Write-Host "FrameTiming blocks: $(@($frames).Count)"
 if (@($frames).Count -gt 0) {
     $frames | Sort-Object Avg -Descending | Select-Object -First 8 | Format-Table -AutoSize
+}
+
+# S25-L4: a render test that parses zero frames has verified nothing. The timing
+# regex (above) can silently match nothing if the FA.FrameTiming log format changes,
+# which previously still reported success (exit 0). Fail loudly instead so a parser
+# drift cannot masquerade as a passing run.
+if (@($frames).Count -eq 0) {
+    throw "No FA.FrameTiming blocks parsed from $(@($frameLines).Count) candidate log line(s). Either the app rendered no frames, or the 'FA.FrameTiming: Render timing' log format changed and the parser regex no longer matches. Failing rather than reporting a false pass."
 }
 
 Write-Host ""

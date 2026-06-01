@@ -3,7 +3,13 @@ using Xunit;
 
 namespace FabricationAssistant.App.Android.Tests;
 
-public sealed class GlesRendererSourceTests
+// S25-1: these are SOURCE GUARDS, not behavioural tests. The GLES renderer cannot
+// load in the net8.0 host runner, so each fact asserts on the *source text* of a
+// renderer/Android file (a specific line or shader fragment is present/absent). They
+// catch regressions of specific fixes but execute no GL and can break on a benign
+// refactor. Real shader compilation (COMPILE_STATUS) is covered on-device by
+// tools/run-render-queue-test.ps1, which drives rendering and asserts no shader failure.
+public sealed class GlesRendererSourceGuards
 {
     [Fact]
     public void MeshShader_FlipsBackFaceNormalsOutsideSectionMode()
