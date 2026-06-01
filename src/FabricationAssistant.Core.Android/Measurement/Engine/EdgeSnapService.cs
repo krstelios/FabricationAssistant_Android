@@ -70,7 +70,7 @@ public sealed class EdgeSnapService
 
         return TrySnapTargets(
             model.Targets,
-            $"edgeBuffer={RuntimeHelpers.GetHashCode(edgePositions)}",
+            DiagnosticsLog is null ? string.Empty : $"edgeBuffer={RuntimeHelpers.GetHashCode(edgePositions)}",
             localToWorld,
             rayOrigin,
             rayDirection,
@@ -96,7 +96,7 @@ public sealed class EdgeSnapService
 
         return TrySnapTargets(
             model.Targets,
-            $"edgeBuffer={RuntimeHelpers.GetHashCode(edgePositions)}",
+            DiagnosticsLog is null ? string.Empty : $"edgeBuffer={RuntimeHelpers.GetHashCode(edgePositions)}",
             localToWorld,
             rayOrigin,
             rayDirection,
