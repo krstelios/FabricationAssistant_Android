@@ -54,7 +54,7 @@ internal sealed class PropertiesPanelBinder : IDisposable
             return;
         }
 
-        node = ResolvePresentedNode(node);
+        node = AndroidModelSelectionResolver.ResolvePresentedOwner(node);
         _emptyState.Visibility = ViewStates.Gone;
         _scroll.Visibility = ViewStates.Visible;
 
@@ -407,54 +407,6 @@ internal sealed class PropertiesPanelBinder : IDisposable
         }
 
         return node.MeshId.HasValue ? "Geometry" : "Component";
-    }
-
-    private static SceneNode ResolvePresentedNode(SceneNode node)
-    {
-        SceneNode presented = node;
-        while (presented.Parent is { } parent)
-        {
-            if (!parent.Children.Contains(presented) || !ShouldHideFromExplorer(presented, parent))
-                break;
-
-            presented = parent;
-        }
-
-        return presented;
-    }
-
-    private static bool ShouldHideFromExplorer(SceneNode node, SceneNode visibleOwner)
-    {
-        if (node.Parent is null)
-            return false;
-
-        if (string.IsNullOrWhiteSpace(node.SourceNodeName)
-            && IsGeneratedNodeLabel(node.DisplayName))
-        {
-            return true;
-        }
-
-        string? ownerSourceKey = visibleOwner.Metadata?.SourceKey;
-        return !string.IsNullOrWhiteSpace(ownerSourceKey)
-               && SubtreeBelongsToSourceKey(node, ownerSourceKey);
-    }
-
-    private static bool SubtreeBelongsToSourceKey(SceneNode node, string ownerSourceKey)
-    {
-        string? nodeSourceKey = node.Metadata?.SourceKey;
-        if (!string.IsNullOrWhiteSpace(nodeSourceKey)
-            && !string.Equals(nodeSourceKey, ownerSourceKey, StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        foreach (SceneNode child in node.Children)
-        {
-            if (!SubtreeBelongsToSourceKey(child, ownerSourceKey))
-                return false;
-        }
-
-        return true;
     }
 
     private static string SanitizeGeneratedLabel(

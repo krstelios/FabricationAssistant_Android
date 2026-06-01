@@ -1,6 +1,7 @@
 using FabricationAssistant.Core.Math;
 using FabricationAssistant.Core.SceneGraph;
 using FabricationAssistant.Core.BodyMove;
+using FabricationAssistant.App.Android;
 
 namespace FabricationAssistant.App.Android.Tools;
 
@@ -31,9 +32,12 @@ internal static class AndroidViewportExplodeView
     private const double OverlapEpsilon = 1e-9;
 
     public static AndroidViewportExplodeLayout Build(Scene scene)
+        => Build(scene, AndroidModelSelectionMode.Part);
+
+    public static AndroidViewportExplodeLayout Build(Scene scene, AndroidModelSelectionMode selectionMode)
     {
-        List<ExplodeCandidate> candidates = EnumerateCandidates(scene)
-            .OrderBy(candidate => candidate.NodeId)
+        List<ExplodeCandidate> candidates = EnumerateCandidates(scene, selectionMode)
+            .OrderBy(candidate => candidate.LogicalNodeId)
             .ToList();
         if (candidates.Count == 0)
             return new AndroidViewportExplodeLayout(Array.Empty<AndroidViewportExplodeUnit>());
@@ -53,11 +57,13 @@ internal static class AndroidViewportExplodeView
         ResolveLayersAndOffsets(plans, sceneHalfExtents, sceneDiagonal);
 
         IReadOnlyList<AndroidViewportExplodeUnit> units = plans
-            .OrderBy(plan => plan.NodeId)
-            .Select(plan => new AndroidViewportExplodeUnit(
-                plan.NodeId,
-                plan.BaseTransientTransform,
-                plan.FullOffsetWorld))
+            .OrderBy(plan => plan.LogicalNodeId)
+            .SelectMany(plan => plan.Nodes
+                .OrderBy(node => node.NodeId)
+                .Select(node => new AndroidViewportExplodeUnit(
+                    node.NodeId,
+                    node.BaseTransientTransform,
+                    plan.FullOffsetWorld)))
             .ToArray();
 
         return new AndroidViewportExplodeLayout(units);
@@ -150,8 +156,9 @@ internal static class AndroidViewportExplodeView
         }
     }
 
-    private static IEnumerable<ExplodeCandidate> EnumerateCandidates(Scene scene)
+    private static IEnumerable<ExplodeCandidate> EnumerateCandidates(Scene scene, AndroidModelSelectionMode selectionMode)
     {
+        var builders = new Dictionary<int, ExplodeCandidateBuilder>();
         foreach (SceneNode node in scene.GetVisibleNodes())
         {
             if (node.MeshId is not int meshId)
@@ -165,7 +172,21 @@ internal static class AndroidViewportExplodeView
             if (!directBounds.IsValid)
                 continue;
 
-            yield return new ExplodeCandidate(node.Id, directBounds, node.TransientTransform);
+            int logicalNodeId = AndroidModelSelectionResolver.ResolveNodeId(scene, node, selectionMode);
+            if (!builders.TryGetValue(logicalNodeId, out ExplodeCandidateBuilder? builder))
+            {
+                builder = new ExplodeCandidateBuilder(logicalNodeId);
+                builders[logicalNodeId] = builder;
+            }
+
+            builder.Bounds = BoundingBox.Merge(builder.Bounds, directBounds);
+            builder.Nodes.Add(new ExplodeCandidateNode(node.Id, node.TransientTransform));
+        }
+
+        foreach (ExplodeCandidateBuilder builder in builders.Values)
+        {
+            if (builder.Bounds.IsValid && builder.Nodes.Count > 0)
+                yield return new ExplodeCandidate(builder.LogicalNodeId, builder.Bounds, builder.Nodes);
         }
     }
 
@@ -180,14 +201,14 @@ internal static class AndroidViewportExplodeView
 
     private static ExplodePartPlan BuildPlan(ExplodeCandidate candidate, Vector3d sceneCenter, Vector3d sceneHalfExtents)
     {
-        (ExplodeSector sector, Vector3d direction) = ClassifySector(candidate.Bounds, sceneCenter, sceneHalfExtents, candidate.NodeId);
+        (ExplodeSector sector, Vector3d direction) = ClassifySector(candidate.Bounds, sceneCenter, sceneHalfExtents, candidate.LogicalNodeId);
         double supportOwn = ComputeSupport(candidate.Bounds, sceneCenter, direction);
         double boundary = GetBoundaryAlongSector(sceneHalfExtents, sector);
         double gap = System.Math.Max(0.0, boundary - supportOwn);
         double thicknessAlongDirection = GetThicknessAlongSector(candidate.Bounds, sector);
         ProjectedRect footprint = ProjectFootprint(candidate.Bounds, sector);
 
-        return new ExplodePartPlan(candidate.NodeId, candidate.BaseTransientTransform, sector, direction, supportOwn, gap, thicknessAlongDirection, footprint);
+        return new ExplodePartPlan(candidate.LogicalNodeId, candidate.Nodes, sector, direction, supportOwn, gap, thicknessAlongDirection, footprint);
     }
 
     private static void ResolveLayersAndOffsets(IReadOnlyList<ExplodePartPlan> plans, Vector3d sceneHalfExtents, double sceneDiagonal)
@@ -224,7 +245,7 @@ internal static class AndroidViewportExplodeView
             int baseLayerComparison = left.BaseLayer.CompareTo(right.BaseLayer);
             if (baseLayerComparison != 0) return baseLayerComparison;
             int gapComparison = left.Gap.CompareTo(right.Gap);
-            return gapComparison != 0 ? gapComparison : left.NodeId.CompareTo(right.NodeId);
+            return gapComparison != 0 ? gapComparison : left.LogicalNodeId.CompareTo(right.LogicalNodeId);
         });
 
         var placedByLayer = new Dictionary<int, List<ProjectedRect>>();
@@ -378,14 +399,40 @@ internal static class AndroidViewportExplodeView
 
     private enum ExplodeSector { PositiveX, NegativeX, PositiveY, NegativeY, PositiveZ, NegativeZ }
 
-    private readonly record struct ExplodeCandidate(int NodeId, BoundingBox Bounds, Matrix4d BaseTransientTransform);
+    private sealed class ExplodeCandidateBuilder
+    {
+        public ExplodeCandidateBuilder(int logicalNodeId)
+        {
+            LogicalNodeId = logicalNodeId;
+        }
+
+        public int LogicalNodeId { get; }
+        public BoundingBox Bounds { get; set; } = BoundingBox.Empty;
+        public List<ExplodeCandidateNode> Nodes { get; } = new();
+    }
+
+    private sealed class ExplodeCandidate
+    {
+        public ExplodeCandidate(int logicalNodeId, BoundingBox bounds, IReadOnlyList<ExplodeCandidateNode> nodes)
+        {
+            LogicalNodeId = logicalNodeId;
+            Bounds = bounds;
+            Nodes = nodes;
+        }
+
+        public int LogicalNodeId { get; }
+        public BoundingBox Bounds { get; }
+        public IReadOnlyList<ExplodeCandidateNode> Nodes { get; }
+    }
+
+    private readonly record struct ExplodeCandidateNode(int NodeId, Matrix4d BaseTransientTransform);
 
     private sealed class ExplodePartPlan
     {
-        public ExplodePartPlan(int nodeId, Matrix4d baseTransientTransform, ExplodeSector sector, Vector3d direction, double supportOwn, double gap, double thicknessAlongDirection, ProjectedRect footprint)
+        public ExplodePartPlan(int logicalNodeId, IReadOnlyList<ExplodeCandidateNode> nodes, ExplodeSector sector, Vector3d direction, double supportOwn, double gap, double thicknessAlongDirection, ProjectedRect footprint)
         {
-            NodeId = nodeId;
-            BaseTransientTransform = baseTransientTransform;
+            LogicalNodeId = logicalNodeId;
+            Nodes = nodes;
             Sector = sector;
             Direction = direction;
             SupportOwn = supportOwn;
@@ -397,8 +444,8 @@ internal static class AndroidViewportExplodeView
             FullOffsetWorld = Vector3d.Zero;
         }
 
-        public int NodeId { get; }
-        public Matrix4d BaseTransientTransform { get; }
+        public int LogicalNodeId { get; }
+        public IReadOnlyList<ExplodeCandidateNode> Nodes { get; }
         public ExplodeSector Sector { get; }
         public Vector3d Direction { get; }
         public double SupportOwn { get; }

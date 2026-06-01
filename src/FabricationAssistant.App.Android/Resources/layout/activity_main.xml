@@ -372,6 +372,21 @@
             style="@style/FA.ViewportToolbarIconButton" />
 
         <com.google.android.material.button.MaterialButton
+            android:id="@+id/toolSelectionMode"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="@dimen/fa_space_xs"
+            android:contentDescription="@string/cd_tool_selection_mode_part"
+            app:icon="@drawable/ic_selection_mode_part"
+            app:iconTint="@null"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="@dimen/fa_viewport_toolbar_icon_size"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            style="@style/FA.ViewportToolbarIconButton" />
+
+        <com.google.android.material.button.MaterialButton
             android:id="@+id/toolMove"
             android:layout_width="40dp"
             android:layout_height="40dp"

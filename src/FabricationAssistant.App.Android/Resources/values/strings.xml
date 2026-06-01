@@ -17,6 +17,9 @@
     <string name="cd_nav_spen_palm_rejection_off">S Pen palm rejection off</string>
     <string name="cd_nav_settings">Settings</string>
     <string name="cd_tool_select">Select</string>
+    <string name="cd_tool_selection_mode_assembly">Selection mode: Assembly</string>
+    <string name="cd_tool_selection_mode_part">Selection mode: Part</string>
+    <string name="cd_tool_selection_mode_mesh">Selection mode: Mesh</string>
     <string name="cd_tool_move">Move</string>
     <string name="cd_tool_zoom_window">Zoom window</string>
     <string name="cd_tool_zoom_selected">Zoom selected</string>
@@ -89,6 +92,12 @@
     <string name="label_section_edges">Edges</string>
     <string name="label_section_curves">Show section curves</string>
     <string name="label_section_caps">Show Caps</string>
+    <string name="selection_mode_assembly">Assembly</string>
+    <string name="selection_mode_part">Part</string>
+    <string name="selection_mode_mesh">Mesh</string>
+    <string name="selection_mode_assembly_changed">Assembly selection mode</string>
+    <string name="selection_mode_part_changed">Part selection mode</string>
+    <string name="selection_mode_mesh_changed">Mesh selection mode</string>
     <string name="measure_select_body_first">Select a body first</string>
     <string name="measure_bounding_box_title">Bounding Box</string>
     <string name="measure_bounding_box_additive">Additive</string>

@@ -96,6 +96,9 @@ public sealed class GlesViewportRenderer : IDisposable
     private int _selectedMeshIndex;
     private IReadOnlyList<int> _selectedMeshIndices = Array.Empty<int>();
     private HashSet<int> _selectedMeshIndexLookup = new();
+    private int _hoveredMeshIndex;
+    private IReadOnlyList<int> _hoveredMeshIndices = Array.Empty<int>();
+    private HashSet<int> _hoveredMeshIndexLookup = new();
     private IReadOnlyList<int> _xrayOpaqueNodeIds = Array.Empty<int>();
     private IReadOnlyList<int> _xrayBackgroundNodeIds = Array.Empty<int>();
     private HashSet<int> _xrayOpaqueNodeIdLookup = new();
@@ -173,7 +176,39 @@ public sealed class GlesViewportRenderer : IDisposable
     /// 1-based mesh index under a hover-capable pointer such as Samsung S Pen,
     /// or 0 when no hover target is active.
     /// </summary>
-    public int HoveredMeshIndex { get; set; }
+    public int HoveredMeshIndex
+    {
+        get => _hoveredMeshIndex;
+        set
+        {
+            _hoveredMeshIndex = System.Math.Max(0, value);
+            HoveredMeshIndices = _hoveredMeshIndex > 0
+                ? new[] { _hoveredMeshIndex }
+                : Array.Empty<int>();
+        }
+    }
+
+    /// <summary>
+    /// 1-based mesh indices under the current logical hover target.
+    /// In Part selection mode this can contain every rendered mesh in a part.
+    /// </summary>
+    public IReadOnlyList<int> HoveredMeshIndices
+    {
+        get => _hoveredMeshIndices;
+        set
+        {
+            int[] snapshot = value is null
+                ? Array.Empty<int>()
+                : value.Where(index => index > 0).Distinct().OrderBy(index => index).ToArray();
+            _hoveredMeshIndices = snapshot;
+            _hoveredMeshIndexLookup = snapshot.ToHashSet();
+            _hoveredMeshIndex = snapshot.Length == 0
+                ? 0
+                : _hoveredMeshIndex > 0 && _hoveredMeshIndexLookup.Contains(_hoveredMeshIndex)
+                    ? _hoveredMeshIndex
+                    : snapshot[0];
+        }
+    }
 
     /// <summary>
     /// True while the UI thread is actively changing the camera from a touch
@@ -1117,12 +1152,12 @@ public sealed class GlesViewportRenderer : IDisposable
         if (!lightweightNavigationActive
             && a.OutlineEnabled
             && HighlightSelection
-            && HoveredMeshIndex > 0
-            && !IsSelectedMesh(HoveredMeshIndex)
+            && HoveredMeshIndices.Count > 0
+            && !HoveredMeshIndices.Any(IsSelectedMesh)
             && _outlineRenderer is not null)
         {
             _outlineRenderer.SectionPlanes = SectionPlanes;
-            _outlineRenderer.Render(Scene, camera, HoveredMeshIndex,
+            _outlineRenderer.Render(Scene, camera, HoveredMeshIndices,
                 a.HoverOutlineColor, a.HoverOutlineThicknessPx, _width, _height);
             ResetMainFramebufferState();
         }

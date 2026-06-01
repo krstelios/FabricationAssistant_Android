@@ -407,6 +407,15 @@ public static class AppSettings
     public static int MsaaSamples { get => ClampAndroidMsaaSamples(Get("msaa_samples", 4)); set => Put("msaa_samples", ClampAndroidMsaaSamples(value)); }
 
     // Selection
+    internal static AndroidModelSelectionMode ModelSelectionMode
+    {
+        get => (AndroidModelSelectionMode)GetIntInRange(
+            "model_selection_mode",
+            (int)AndroidModelSelectionMode.Part,
+            (int)AndroidModelSelectionMode.Part,
+            (int)AndroidModelSelectionMode.Assembly);
+        set => Put("model_selection_mode", System.Math.Clamp((int)value, (int)AndroidModelSelectionMode.Part, (int)AndroidModelSelectionMode.Assembly));
+    }
     public static bool ShowSelectionHighlight { get => Get("show_selection", true); set => Put("show_selection", value); }
     public static bool OutlineEnabled { get => Get("outline_enabled", true); set => Put("outline_enabled", value); }
     public static float OutlineR { get => Get("outline_r", 1.0f); set => Put("outline_r", Clamp01(value)); }

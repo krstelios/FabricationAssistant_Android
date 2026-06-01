@@ -49,7 +49,9 @@ public sealed class GlesRendererSourceGuards
         string mainActivity = File.ReadAllText(ResolveRepoPath(
             @"..\FabricationAssistant.App.Android\MainActivity.cs"));
         string selectionMethod = ExtractMethod(mainActivity, "private void OnPickResult");
-        Assert.Contains("TryGetSelectableNodeIdForMeshIndex", selectionMethod);
+        Assert.Contains("TryGetSourceNodeIdForMeshIndex", selectionMethod);
+        Assert.Contains("AndroidModelSelectionResolver.ResolveNodeIds", selectionMethod);
+        Assert.Contains("_selectionMode", selectionMethod);
     }
 
     [Fact]
@@ -59,9 +61,11 @@ public sealed class GlesRendererSourceGuards
             @"..\FabricationAssistant.App.Android\AndroidModelExplorerPanel.cs"));
 
         string hideMethod = ExtractMethod(explorer, "private static bool ShouldHideFromExplorer");
-        Assert.Contains("IsSplitMaterialPrimitiveShape(node, visibleOwner)", hideMethod);
+        Assert.Contains("AndroidModelSelectionResolver.ShouldCollapseIntoPresentedOwner(node, visibleOwner)", hideMethod);
 
-        string splitMethod = ExtractMethod(explorer, "private static bool IsSplitMaterialPrimitiveShape");
+        string resolver = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\AndroidModelSelectionResolver.cs"));
+        string splitMethod = ExtractMethod(resolver, "private static bool IsSplitMaterialPrimitiveShape");
         Assert.Contains("node.NodeType == SceneNodeType.Shape", splitMethod);
         Assert.Contains("visibleOwner.NodeType == SceneNodeType.Part", splitMethod);
         Assert.Contains("visibleOwner.MeshId is null", splitMethod);

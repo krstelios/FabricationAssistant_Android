@@ -1,3 +1,4 @@
+using FabricationAssistant.App.Android;
 using FabricationAssistant.App.Android.Tools;
 using FabricationAssistant.Core.BodyMove;
 using FabricationAssistant.Core.Math;
@@ -87,6 +88,26 @@ public sealed class AndroidViewportExplodeViewTests
         Assert.True(right.FullOffsetWorld.X > 0.0);
     }
 
+    [Fact]
+    public void BuildGroupsMultiMeshPartInPartMode()
+    {
+        Scene scene = CreateSceneWithPartMeshBounds(new[]
+        {
+            new PartMeshSpec(10, 11, new BoundingBox(new Vector3d(-11.0, -1.0, -0.5), new Vector3d(-10.0, 0.0, 0.5))),
+            new PartMeshSpec(10, 12, new BoundingBox(new Vector3d(-10.0, 0.0, -0.5), new Vector3d(-9.0, 1.0, 0.5))),
+            new PartMeshSpec(20, 21, new BoundingBox(new Vector3d(9.0, -0.5, -0.5), new Vector3d(11.0, 0.5, 0.5))),
+        });
+
+        AndroidViewportExplodeLayout layout = AndroidViewportExplodeView.Build(scene, AndroidModelSelectionMode.Part);
+
+        AndroidViewportExplodeUnit first = Assert.Single(layout.Units, unit => unit.NodeId == 11);
+        AndroidViewportExplodeUnit second = Assert.Single(layout.Units, unit => unit.NodeId == 12);
+        AndroidViewportExplodeUnit right = Assert.Single(layout.Units, unit => unit.NodeId == 21);
+        Assert.Equal(first.FullOffsetWorld, second.FullOffsetWorld);
+        Assert.True(first.FullOffsetWorld.X < 0.0);
+        Assert.True(right.FullOffsetWorld.X > 0.0);
+    }
+
     private static Scene CreateSceneWithNodes(params int[] nodeIds)
     {
         var document = new DocumentDto();
@@ -144,5 +165,49 @@ public sealed class AndroidViewportExplodeViewTests
         return Scene.FromDocument(document);
     }
 
+    private static Scene CreateSceneWithPartMeshBounds(IReadOnlyList<PartMeshSpec> meshSpecs)
+    {
+        var document = new DocumentDto();
+        document.Nodes.Add(new SceneNodeDto
+        {
+            Id = 0,
+            ParentId = -1,
+            DisplayName = "Root",
+            NodeType = SceneNodeType.Root,
+        });
+
+        foreach (int partId in meshSpecs.Select(spec => spec.PartNodeId).Distinct().OrderBy(id => id))
+        {
+            document.Nodes.Add(new SceneNodeDto
+            {
+                Id = partId,
+                ParentId = 0,
+                DisplayName = "Part " + partId,
+                NodeType = SceneNodeType.Part,
+            });
+        }
+
+        foreach (PartMeshSpec spec in meshSpecs)
+        {
+            document.Nodes.Add(new SceneNodeDto
+            {
+                Id = spec.MeshNodeId,
+                ParentId = spec.PartNodeId,
+                DisplayName = "Mesh " + spec.MeshNodeId,
+                NodeType = SceneNodeType.Shape,
+                MeshId = spec.MeshNodeId,
+            });
+            document.Meshes.Add(new MeshDto
+            {
+                MeshId = spec.MeshNodeId,
+                Bounds = spec.Bounds,
+            });
+        }
+
+        return Scene.FromDocument(document);
+    }
+
     private readonly record struct ExplodeNodeSpec(int NodeId, BoundingBox Bounds, bool Visible);
+
+    private readonly record struct PartMeshSpec(int PartNodeId, int MeshNodeId, BoundingBox Bounds);
 }

@@ -201,6 +201,7 @@ public sealed class MainActivity : AppCompatActivity
     private MaterialButton? _navSpenPalmButton;
     private MaterialButton? _navSettingsButton;
     private MaterialButton? _toolSelectButton;
+    private MaterialButton? _toolSelectionModeButton;
     private MaterialButton? _toolMoveButton;
     private MaterialButton? _toolZoomWindowButton;
     private MaterialButton? _toolZoomSelectedButton;
@@ -267,6 +268,7 @@ public sealed class MainActivity : AppCompatActivity
     private PropertiesPanelBinder? _propertiesPanelBinder;
     private BottomToolbarMode _bottomToolbarMode = BottomToolbarMode.Main;
     private AndroidModalTool _activeModalTool = AndroidModalTool.Select;
+    private AndroidModelSelectionMode _selectionMode = AndroidModelSelectionMode.Part;
     private bool _isInFixedView;
     private StandardView? _activeFixedView;
     private bool _isoIsPerspective = true;
@@ -446,6 +448,14 @@ public sealed class MainActivity : AppCompatActivity
         // created so the first renderer appearance can be hydrated from
         // persisted values.
         AppSettings.Initialize(ApplicationContext!);
+        // Mesh is an explicit detail/debug mode; never resume into it on launch.
+        // Part and Assembly persist across sessions.
+        AndroidModelSelectionMode persistedSelectionMode = AppSettings.ModelSelectionMode;
+        _selectionMode = persistedSelectionMode == AndroidModelSelectionMode.Mesh
+            ? AndroidModelSelectionMode.Part
+            : persistedSelectionMode;
+        if (_selectionMode != persistedSelectionMode)
+            AppSettings.ModelSelectionMode = _selectionMode;
         _lastInteractiveMeasureMode = MeasureModeFromSettings();
         global::Android.Util.Log.Info("FA.Cloud", "Using FA Cloud config: " + AppSettings.CloudServerConfigPath);
 #if DEBUG
@@ -3797,6 +3807,10 @@ public sealed class MainActivity : AppCompatActivity
             sceneNodeIds = _modelExplorerPanel.GetSceneNodeIdsForSelection(scene, node);
         }
 
+        sceneNodeIds = AndroidModelSelectionResolver.ResolveNodeIds(
+            scene,
+            sceneNodeIds,
+            _selectionMode);
         SelectSceneNodesFromModelExplorer(scene, sceneNodeIds, node.Id);
     }
 
@@ -4111,10 +4125,14 @@ public sealed class MainActivity : AppCompatActivity
             ActivateSelectTool("bom selection");
 
         ClearSelectedMeasurement("bom selection");
-        ReplaceSelectedNodeIds(scene, nodeIds, scrollModelExplorerToSelection: true);
+        int[] logicalNodeIds = AndroidModelSelectionResolver.ResolveNodeIds(
+            scene,
+            nodeIds,
+            _selectionMode);
+        ReplaceSelectedNodeIds(scene, logicalNodeIds, scrollModelExplorerToSelection: true);
 
         if (commitBoundingBoxSelection)
-            _ = CommitBoundingBoxForNodesAsync(nodeIds, _measureBoundingBoxSelectionVersion, "bom selection");
+            _ = CommitBoundingBoxForNodesAsync(logicalNodeIds, _measureBoundingBoxSelectionVersion, "bom selection");
     }
 
     private void SyncModelExplorerSelectionFromViewport(bool scrollToSelection)
@@ -4233,14 +4251,7 @@ public sealed class MainActivity : AppCompatActivity
             return;
         }
 
-        var meshIndices = new HashSet<int>();
-        foreach (int nodeId in EnumerateRenderableNodeIds(scene, _selectedNodeIds))
-        {
-            if (gpuScene.TryGetMeshIndexForSourceNodeId(nodeId, out int meshIndex) && meshIndex > 0)
-                meshIndices.Add(meshIndex);
-        }
-
-        SetRendererSelection(meshIndices.OrderBy(index => index).ToArray());
+        SetRendererSelection(GetRendererMeshIndicesForSelectionNodes(scene, _selectedNodeIds, gpuScene));
     }
 
     private void SetRendererSelection(IReadOnlyList<int> meshIndices)
@@ -4267,33 +4278,19 @@ public sealed class MainActivity : AppCompatActivity
         _viewport.Renderer.SelectedMeshIndices = Array.Empty<int>();
     }
 
-    private static IEnumerable<int> EnumerateRenderableNodeIds(Scene scene, IEnumerable<int> nodeIds)
+    private static int[] GetRendererMeshIndicesForSelectionNodes(
+        Scene scene,
+        IEnumerable<int> selectionNodeIds,
+        GpuScene gpuScene)
     {
-        var yielded = new HashSet<int>();
-        foreach (int nodeId in nodeIds)
+        var meshIndices = new HashSet<int>();
+        foreach (int nodeId in AndroidModelSelectionResolver.ResolveRenderableNodeIds(scene, selectionNodeIds))
         {
-            SceneNode? node = scene.GetNode(nodeId);
-            if (node is null)
-                continue;
-
-            foreach (int renderableId in EnumerateRenderableNodeIds(node))
-            {
-                if (yielded.Add(renderableId))
-                    yield return renderableId;
-            }
+            if (gpuScene.TryGetMeshIndexForSourceNodeId(nodeId, out int meshIndex) && meshIndex > 0)
+                meshIndices.Add(meshIndex);
         }
-    }
 
-    private static IEnumerable<int> EnumerateRenderableNodeIds(SceneNode node)
-    {
-        if (node.MeshId.HasValue)
-            yield return node.Id;
-
-        foreach (SceneNode child in node.Children)
-        {
-            foreach (int childId in EnumerateRenderableNodeIds(child))
-                yield return childId;
-        }
+        return meshIndices.OrderBy(index => index).ToArray();
     }
 
     private static bool SameText(string? left, string right)
@@ -4623,6 +4620,7 @@ public sealed class MainActivity : AppCompatActivity
     private IEnumerable<MaterialButton?> BottomToolbarButtons()
     {
         yield return _toolSelectButton;
+        yield return _toolSelectionModeButton;
         yield return _toolMoveButton;
         yield return _toolZoomWindowButton;
         yield return _toolZoomSelectedButton;
@@ -5067,6 +5065,7 @@ public sealed class MainActivity : AppCompatActivity
     private void BindBottomToolbar()
     {
         _toolSelectButton = FindViewById<MaterialButton>(Resource.Id.toolSelect);
+        _toolSelectionModeButton = FindViewById<MaterialButton>(Resource.Id.toolSelectionMode);
         _toolMoveButton = FindViewById<MaterialButton>(Resource.Id.toolMove);
         _toolZoomWindowButton = FindViewById<MaterialButton>(Resource.Id.toolZoomWindow);
         _toolZoomSelectedButton = FindViewById<MaterialButton>(Resource.Id.toolZoomSelected);
@@ -5136,6 +5135,8 @@ public sealed class MainActivity : AppCompatActivity
 
         if (_toolSelectButton is not null)
             _toolSelectButton.Click += OnToolSelectClicked;
+        if (_toolSelectionModeButton is not null)
+            _toolSelectionModeButton.Click += OnSelectionModeClicked;
         if (_toolMoveButton is not null)
             _toolMoveButton.Click += OnToolMoveClicked;
         if (_toolZoomWindowButton is not null)
@@ -5264,6 +5265,112 @@ public sealed class MainActivity : AppCompatActivity
     }
 
     private void OnToolSelectClicked(object? sender, EventArgs e) => ActivateSelectTool("select button");
+
+    private static readonly (AndroidModelSelectionMode Mode, int Icon, int Label)[] SelectionModeEntries =
+    {
+        (AndroidModelSelectionMode.Assembly, Resource.Drawable.ic_selection_mode_assembly, Resource.String.selection_mode_assembly),
+        (AndroidModelSelectionMode.Part, Resource.Drawable.ic_selection_mode_part, Resource.String.selection_mode_part),
+        (AndroidModelSelectionMode.Mesh, Resource.Drawable.ic_selection_mode_mesh, Resource.String.selection_mode_mesh),
+    };
+
+    private void OnSelectionModeClicked(object? sender, EventArgs e)
+    {
+        if (_toolSelectionModeButton is not null)
+            ShowSelectionModePopup(_toolSelectionModeButton);
+    }
+
+    // Custom anchored popup instead of the stock PopupMenu: a rounded surface card
+    // styled with the app palette, each row showing the mode icon + a compact label,
+    // with the active row highlighted in the accent colour.
+    private void ShowSelectionModePopup(View anchor)
+    {
+        float density = Resources?.DisplayMetrics?.Density ?? 1f;
+        int Dp(float value) => (int)(value * density + 0.5f);
+
+        var accent = new Color(GetColor(Resource.Color.fa_accent_500));
+        var textPrimary = new Color(GetColor(Resource.Color.fa_text_primary));
+        var textSecondary = new Color(GetColor(Resource.Color.fa_text_secondary));
+
+        var card = new Google.Android.Material.Card.MaterialCardView(this)
+        {
+            Radius = Dp(14),
+            CardElevation = Dp(12),
+            StrokeWidth = Dp(1),
+        };
+        card.SetCardBackgroundColor(new Color(GetColor(Resource.Color.fa_surface_background)));
+        card.StrokeColor = GetColor(Resource.Color.fa_border);
+
+        var list = new LinearLayout(this) { Orientation = Orientation.Vertical };
+        list.SetPadding(Dp(6), Dp(6), Dp(6), Dp(6));
+        card.AddView(list);
+
+        var popup = new PopupWindow((View)card, ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent, true)
+        {
+            Elevation = Dp(12),
+        };
+        popup.SetBackgroundDrawable(new ColorDrawable(Color.Transparent));
+
+        var rippleAttr = new TypedValue();
+        bool hasRipple = Theme?.ResolveAttribute(global::Android.Resource.Attribute.SelectableItemBackground, rippleAttr, true) == true;
+
+        foreach ((AndroidModelSelectionMode mode, int iconRes, int labelRes) in SelectionModeEntries)
+        {
+            bool selected = _selectionMode == mode;
+
+            var row = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+            row.SetGravity(GravityFlags.CenterVertical);
+            row.SetPadding(Dp(12), Dp(9), Dp(14), Dp(9));
+            if (selected)
+            {
+                var rowBackground = new GradientDrawable();
+                rowBackground.SetCornerRadius(Dp(9));
+                rowBackground.SetColor(Color.Argb(38, accent.R, accent.G, accent.B));
+                row.Background = rowBackground;
+            }
+            else if (hasRipple && rippleAttr.ResourceId != 0)
+            {
+                row.SetBackgroundResource(rippleAttr.ResourceId);
+            }
+
+            var icon = new ImageView(this)
+            {
+                LayoutParameters = new LinearLayout.LayoutParams(Dp(20), Dp(20)) { RightMargin = Dp(12) },
+            };
+            icon.SetImageResource(iconRes);
+            icon.ImageTintList = global::Android.Content.Res.ColorStateList.ValueOf(selected ? accent : textSecondary);
+            row.AddView(icon);
+
+            var label = new TextView(this)
+            {
+                Text = GetString(labelRes),
+                LayoutParameters = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent),
+            };
+            label.SetTextColor(selected ? textPrimary : textSecondary);
+            label.SetTextSize(ComplexUnitType.Sp, 13f);
+            label.SetTypeface(label.Typeface, selected ? TypefaceStyle.Bold : TypefaceStyle.Normal);
+            row.AddView(label);
+
+            AndroidModelSelectionMode capturedMode = mode;
+            row.Click += (_, _) =>
+            {
+                popup.Dismiss();
+                SetModelSelectionMode(capturedMode, showToast: true);
+            };
+
+            list.AddView(row, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent)
+            {
+                TopMargin = Dp(2),
+                BottomMargin = Dp(2),
+            });
+        }
+
+        card.Measure(
+            View.MeasureSpec.MakeMeasureSpec(0, MeasureSpecMode.Unspecified),
+            View.MeasureSpec.MakeMeasureSpec(0, MeasureSpecMode.Unspecified));
+        popup.ShowAsDropDown(anchor, 0, -(anchor.Height + card.MeasuredHeight), GravityFlags.Start);
+    }
 
     private void OnToolMoveClicked(object? sender, EventArgs e) => ToggleBodyMoveTool();
 
@@ -5653,6 +5760,7 @@ public sealed class MainActivity : AppCompatActivity
         ViewStates renderModeVisibility = _bottomToolbarMode == BottomToolbarMode.RenderMode ? ViewStates.Visible : ViewStates.Gone;
 
         SetVisibility(_toolSelectButton, mainVisibility);
+        SetVisibility(_toolSelectionModeButton, mainVisibility);
         SetVisibility(_toolMoveButton, mainVisibility);
         SetVisibility(_toolZoomWindowButton, mainVisibility);
         SetVisibility(_toolZoomSelectedButton, mainVisibility);
@@ -6031,13 +6139,16 @@ public sealed class MainActivity : AppCompatActivity
                 return;
             }
 
-            if (_viewport?.Renderer.Scene?.TryGetSelectableNodeIdForMeshIndex(hit.Value, out int nodeId) != true)
+            Scene? scene = _runtimeScene;
+            if (scene is null
+                || _viewport?.Renderer.Scene?.TryGetSourceNodeIdForMeshIndex(hit.Value, out int sourceNodeId) != true)
             {
                 ShowBoundingBoxSelectionHint();
                 return;
             }
 
-            _ = CommitBoundingBoxForNodesAsync([nodeId], selectionVersion, "bbox selection tap");
+            int[] nodeIds = AndroidModelSelectionResolver.ResolveNodeIds(scene, [sourceNodeId], _selectionMode);
+            _ = CommitBoundingBoxForNodesAsync(nodeIds, selectionVersion, "bbox selection tap");
         });
     }
 
@@ -6258,6 +6369,7 @@ public sealed class MainActivity : AppCompatActivity
         bool canExplode = CanUseExplodeView();
 
         SetSelected(_toolSelectButton, _activeModalTool == AndroidModalTool.Select);
+        UpdateSelectionModeButtonState();
         SetSelected(_toolMoveButton, _activeModalTool == AndroidModalTool.BodyMove);
         SetSelected(_toolZoomWindowButton, _activeModalTool == AndroidModalTool.ZoomWindow);
         SetSelected(_toolSectionsButton, _activeModalTool == AndroidModalTool.Section);
@@ -6265,6 +6377,7 @@ public sealed class MainActivity : AppCompatActivity
         SetSelected(_toolRenderModesButton, _bottomToolbarMode == BottomToolbarMode.RenderMode);
 
         SetEnabled(_toolMoveButton, hasScene);
+        SetEnabled(_toolSelectionModeButton, hasScene);
         SetEnabled(_toolZoomWindowButton, hasScene);
         SetEnabled(_toolZoomSelectedButton, hasScene && hasVisibleSelection);
         SetEnabled(_toolScanQrButton, hasScene);
@@ -6279,6 +6392,72 @@ public sealed class MainActivity : AppCompatActivity
         SetEnabled(_toolIsolateXrayButton, hasScene && hasVisibleSelection);
         SetEnabled(_toolRenderModesButton, hasScene && !_renderModeChangeInFlight);
     }
+
+    private void SetModelSelectionMode(AndroidModelSelectionMode mode, bool showToast)
+    {
+        if (_selectionMode == mode)
+            return;
+
+        _selectionMode = mode;
+        AppSettings.ModelSelectionMode = mode;
+        CancelHoverPick();
+        SetHoveredMesh(0);
+        if (_activeModalTool == AndroidModalTool.Explode)
+        {
+            ClearExplodeView("selection mode changed");
+            _explodeLayout = null;
+            _explodeLayoutScene = null;
+            SetExplodeAmount(0.0, "selection mode changed");
+        }
+
+        if (_runtimeScene is { } scene && _selectedNodeIds.Count > 0)
+        {
+            int[] nodeIds = AndroidModelSelectionResolver.ResolveNodeIds(scene, _selectedNodeIds, _selectionMode);
+            ReplaceSelectedNodeIds(scene, nodeIds, scrollModelExplorerToSelection: true);
+        }
+        else
+        {
+            UpdateSelectionModeButtonState();
+            UpdateMainToolButtonStates();
+        }
+
+        if (showToast)
+        {
+            int toastResId = _selectionMode switch
+            {
+                AndroidModelSelectionMode.Assembly => Resource.String.selection_mode_assembly_changed,
+                AndroidModelSelectionMode.Mesh => Resource.String.selection_mode_mesh_changed,
+                _ => Resource.String.selection_mode_part_changed,
+            };
+            Toast.MakeText(this, toastResId, ToastLength.Short)?.Show();
+        }
+
+        global::Android.Util.Log.Info("FA.Selection", $"Selection mode changed: {_selectionMode}.");
+    }
+
+    private void UpdateSelectionModeButtonState()
+    {
+        if (_toolSelectionModeButton is null)
+            return;
+
+        int iconResId = _selectionMode switch
+        {
+            AndroidModelSelectionMode.Assembly => Resource.Drawable.ic_selection_mode_assembly,
+            AndroidModelSelectionMode.Mesh => Resource.Drawable.ic_selection_mode_mesh,
+            _ => Resource.Drawable.ic_selection_mode_part,
+        };
+        int contentDescriptionResId = SelectionModeContentDescriptionResId();
+        _toolSelectionModeButton.SetIconResource(iconResId);
+        _toolSelectionModeButton.ContentDescription = GetString(contentDescriptionResId);
+        SetTooltip(_toolSelectionModeButton, contentDescriptionResId);
+    }
+
+    private int SelectionModeContentDescriptionResId() => _selectionMode switch
+    {
+        AndroidModelSelectionMode.Assembly => Resource.String.cd_tool_selection_mode_assembly,
+        AndroidModelSelectionMode.Mesh => Resource.String.cd_tool_selection_mode_mesh,
+        _ => Resource.String.cd_tool_selection_mode_part,
+    };
 
     private void UpdateSectionButtonStates()
     {
@@ -7305,7 +7484,12 @@ public sealed class MainActivity : AppCompatActivity
             .ToArray();
 
     private string[] GetSelectedVisibilityOccurrenceIds(Scene scene)
-        => AndroidScenePackageState.GetOccurrenceIdsForNodes(scene, _selectedNodeIds);
+    {
+        int[] renderableNodeIds = AndroidModelSelectionResolver.ResolveRenderableNodeIds(scene, _selectedNodeIds);
+        return AndroidScenePackageState.GetOccurrenceIdsForNodes(
+            scene,
+            _selectedNodeIds.Concat(renderableNodeIds));
+    }
 
     private void SyncPackageSelectionFromSelectedNodes(Scene scene)
     {
@@ -10270,8 +10454,37 @@ public sealed class MainActivity : AppCompatActivity
         SetExplodeAmount(0.0, "tool opened");
     }
 
+    private Scene? _visibleLogicalCountScene;
+    private long _visibleLogicalCountVisibilityVersion = -1;
+    private AndroidModelSelectionMode _visibleLogicalCountMode;
+    private int _visibleLogicalCountCache;
+
     private bool CanUseExplodeView()
-        => _runtimeScene is not null && _runtimeScene.GetVisibleNodes().Count > 1;
+        => _runtimeScene is { } scene
+           && CountVisibleLogicalNodesCached(scene, _selectionMode) > 1;
+
+    // CountVisibleLogicalNodes walks every visible mesh node; CanUseExplodeView
+    // runs on each tool-state refresh. Memoize per (scene, visibility version,
+    // mode) so large assemblies are not re-walked on every UI refresh. The visible
+    // logical-node count depends only on visibility + hierarchy + mode, so the
+    // scene's VisibilityVersion (bumped on every Visible toggle) is a complete key.
+    private int CountVisibleLogicalNodesCached(Scene scene, AndroidModelSelectionMode mode)
+    {
+        long version = scene.VisibilityVersion;
+        if (ReferenceEquals(_visibleLogicalCountScene, scene)
+            && _visibleLogicalCountVisibilityVersion == version
+            && _visibleLogicalCountMode == mode)
+        {
+            return _visibleLogicalCountCache;
+        }
+
+        int count = AndroidModelSelectionResolver.CountVisibleLogicalNodes(scene, mode);
+        _visibleLogicalCountScene = scene;
+        _visibleLogicalCountVisibilityVersion = version;
+        _visibleLogicalCountMode = mode;
+        _visibleLogicalCountCache = count;
+        return count;
+    }
 
     private void EnsureExplodeLayout()
     {
@@ -10282,7 +10495,7 @@ public sealed class MainActivity : AppCompatActivity
         if (ReferenceEquals(_explodeLayoutScene, scene) && _explodeLayout is not null)
             return;
 
-        _explodeLayout = AndroidViewportExplodeView.Build(scene);
+        _explodeLayout = AndroidViewportExplodeView.Build(scene, _selectionMode);
         _explodeLayoutScene = scene;
         global::Android.Util.Log.Info("FA.Explode", $"Layout built: units={_explodeLayout.Units.Count}, explodable={_explodeLayout.HasExplodableUnits}.");
     }
@@ -10646,6 +10859,7 @@ public sealed class MainActivity : AppCompatActivity
     private void ApplyMainTooltips()
     {
         SetTooltip(_toolSelectButton, Resource.String.cd_tool_select);
+        SetTooltip(_toolSelectionModeButton, SelectionModeContentDescriptionResId());
         SetTooltip(_toolMoveButton, Resource.String.cd_tool_move);
         SetTooltip(_toolZoomWindowButton, Resource.String.cd_tool_zoom_window);
         SetTooltip(_toolZoomSelectedButton, Resource.String.cd_tool_zoom_selected);
@@ -11464,18 +11678,22 @@ public sealed class MainActivity : AppCompatActivity
         string? selectionLabel = null;
         SceneNode? selectedNode = null;
         int[] selectedNodeIds = Array.Empty<int>();
+        Scene? scene = _runtimeScene;
         if (selected > 0
-            && _viewport.Renderer.Scene?.TryGetSelectableNodeIdForMeshIndex(selected, out int nodeId) == true)
+            && scene is not null
+            && _viewport.Renderer.Scene?.TryGetSourceNodeIdForMeshIndex(selected, out int sourceNodeId) == true)
         {
-            selectedNodeIds = [nodeId];
-            selectedNode = _runtimeScene?.GetNode(nodeId);
+            selectedNodeIds = AndroidModelSelectionResolver.ResolveNodeIds(scene, [sourceNodeId], _selectionMode);
+            selectedNode = selectedNodeIds.Length > 0
+                ? scene.GetNode(selectedNodeIds[0])
+                : scene.GetNode(sourceNodeId);
             selectionLabel = string.IsNullOrWhiteSpace(selectedNode?.DisplayName)
-                ? $"Node #{nodeId}"
+                ? $"Node #{sourceNodeId}"
                 : selectedNode!.DisplayName;
         }
 
         ReplaceSelectedNodeIds(
-            _runtimeScene,
+            scene,
             selectedNodeIds,
             scrollModelExplorerToSelection: true,
             fallbackRendererMeshIndices: selected > 0 ? [selected] : Array.Empty<int>());
@@ -11484,7 +11702,7 @@ public sealed class MainActivity : AppCompatActivity
             "FA.Measure",
             selected == 0
                 ? "Selection cleared."
-                : $"Selection picked: meshIndex={selected}, nodeIds=[{string.Join(",", _selectedNodeIds)}], label='{selectionLabel ?? "<mesh only>"}'.");
+                : $"Selection picked: mode={_selectionMode}, meshIndex={selected}, nodeIds=[{string.Join(",", _selectedNodeIds)}], label='{selectionLabel ?? "<mesh only>"}'.");
     }
 
     private void SelectNode(int nodeId)
@@ -11762,11 +11980,32 @@ public sealed class MainActivity : AppCompatActivity
     private void SetHoveredMesh(int meshIndex)
     {
         if (_viewport is null) return;
-        if (_viewport.Renderer.HoveredMeshIndex == meshIndex)
+
+        IReadOnlyList<int> hoverMeshIndices = ResolveHoverMeshIndices(meshIndex);
+        if (_viewport.Renderer.HoveredMeshIndices.SequenceEqual(hoverMeshIndices))
             return;
 
-        _viewport.Renderer.HoveredMeshIndex = meshIndex;
+        _viewport.Renderer.HoveredMeshIndices = hoverMeshIndices;
         _viewport.RequestRender();
+    }
+
+    private IReadOnlyList<int> ResolveHoverMeshIndices(int meshIndex)
+    {
+        if (meshIndex <= 0)
+            return Array.Empty<int>();
+
+        Scene? scene = _runtimeScene;
+        GpuScene? gpuScene = _viewport?.Renderer.Scene;
+        if (scene is null
+            || gpuScene is null
+            || !gpuScene.TryGetSourceNodeIdForMeshIndex(meshIndex, out int sourceNodeId))
+        {
+            return [meshIndex];
+        }
+
+        int[] logicalNodeIds = AndroidModelSelectionResolver.ResolveNodeIds(scene, [sourceNodeId], _selectionMode);
+        int[] hoverMeshIndices = GetRendererMeshIndicesForSelectionNodes(scene, logicalNodeIds, gpuScene);
+        return hoverMeshIndices.Length == 0 ? [meshIndex] : hoverMeshIndices;
     }
 
     private static bool IsStylusHoverEvent(MotionEvent motionEvent)
@@ -12509,6 +12748,7 @@ public sealed class MainActivity : AppCompatActivity
         if (nodeIds.Length == 0)
             return;
 
+        nodeIds = AndroidModelSelectionResolver.ResolveNodeIds(scene, nodeIds, _selectionMode);
         ReplaceSelectedNodeIds(scene, nodeIds, scrollModelExplorerToSelection: true);
         global::Android.Util.Log.Info("FA.Selection", $"Restored selection after activity recreation: nodes=[{string.Join(",", _selectedNodeIds)}].");
     }
@@ -12649,6 +12889,7 @@ public sealed class MainActivity : AppCompatActivity
         int[] selectedNodeIds = selected.Length == 0
             ? Array.Empty<int>()
             : AndroidScenePackageState.GetNodeIdsForOccurrences(scene, selected);
+        selectedNodeIds = AndroidModelSelectionResolver.ResolveNodeIds(scene, selectedNodeIds, _selectionMode);
         ReplaceSelectedNodeIds(scene, selectedNodeIds, scrollModelExplorerToSelection: true, requestRender: false);
     }
 
@@ -15467,6 +15708,7 @@ public sealed class MainActivity : AppCompatActivity
             button?.SetOnGenericMotionListener(null);
         }
         DetachClick(_toolSelectButton, OnToolSelectClicked);
+        DetachClick(_toolSelectionModeButton, OnSelectionModeClicked);
         DetachClick(_toolMoveButton, OnToolMoveClicked);
         DetachClick(_toolZoomWindowButton, OnToolZoomWindowClicked);
         DetachClick(_toolZoomSelectedButton, OnToolZoomSelectedClicked);
