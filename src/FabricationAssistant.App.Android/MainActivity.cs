@@ -3870,10 +3870,20 @@ public sealed class MainActivity : AppCompatActivity
             else
                 hiddenOccurrenceIds.UnionWith(occurrenceIds);
 
+            // Hierarchical scene visibility prunes any node whose ancestor assembly is
+            // hidden, so showing a single part must also reveal its container assemblies
+            // — otherwise a hidden parent keeps the part invisible ("the assembly
+            // visibility affects the children"). Re-reveal the ancestors of every
+            // still-visible part. Hiding a whole assembly is unaffected: a fully-hidden
+            // subtree has no visible geometry, so its container is not protected and
+            // stays hidden.
+            IReadOnlySet<string> resolvedHidden = BomFilterVisibilityPlanner.RetainVisibleContainers(
+                hiddenOccurrenceIds, EnumerateOccurrenceTree(scene));
+
             bool stateChanged = AndroidScenePackageState.ApplyVisibilityState(
                 scene,
                 _packageSession,
-                hiddenOccurrenceIds,
+                resolvedHidden,
                 _packageSession.IsolatedOccurrenceIds);
             if (!stateChanged && !hadXray)
             {
@@ -3881,6 +3891,26 @@ public sealed class MainActivity : AppCompatActivity
                 return;
             }
             changedCount = occurrenceIds.Length;
+
+            // FA.Vis closed-loop diagnostic: when SHOWING a node, report whether any
+            // ancestor assembly is still hidden (hierarchical scene visibility prunes
+            // a node whose ancestor is hidden) and how many of this node's geometry
+            // nodes are actually effectively visible afterwards.
+            if (isVisible)
+            {
+                HashSet<string> hiddenNow = _packageSession.HiddenOccurrenceIds;
+                int[] shownNodeIds = _modelExplorerPanel.GetSceneNodeIdsForVisibility(scene, node);
+                var ancestorOcc = new HashSet<string>(StringComparer.Ordinal);
+                foreach (int shownNodeId in shownNodeIds)
+                    for (SceneNode? ancestor = scene.GetNode(shownNodeId)?.Parent; ancestor is not null; ancestor = ancestor.Parent)
+                        if (AndroidScenePackageState.TryGetOccurrenceId(scene, ancestor, out string ancestorOccurrenceId))
+                            ancestorOcc.Add(ancestorOccurrenceId);
+                int hiddenAncestors = ancestorOcc.Count(hiddenNow.Contains);
+                HashSet<int> visibleSet = scene.GetVisibleNodes().Select(n => n.Id).ToHashSet();
+                int effectivelyVisible = shownNodeIds.Count(visibleSet.Contains);
+                global::Android.Util.Log.Info("FA.Vis",
+                    $"SHOW '{node.DisplayName}': shownNodes={shownNodeIds.Length}, effectivelyVisible={effectivelyVisible}, hiddenAncestors={hiddenAncestors}/{ancestorOcc.Count}, totalVisible={visibleSet.Count}.");
+            }
         }
         else
         {
@@ -7524,9 +7554,11 @@ public sealed class MainActivity : AppCompatActivity
 
         global::Android.Util.Log.Info("FA.BOM", $"Filter apply requested: dirty={_bomFilterVisibilityDirty}.");
 
-        if (_bomFilterVisibilityDirty)
+        int hiddenNow = _packageSession.HiddenOccurrenceIds.Count + _packageSession.IsolatedOccurrenceIds.Count;
+        // Only warn when parts are actually hidden — if everything is already
+        // visible there is nothing to "show all" first, so apply silently.
+        if (_bomFilterVisibilityDirty && hiddenNow > 0)
         {
-            int hiddenNow = _packageSession.HiddenOccurrenceIds.Count + _packageSession.IsolatedOccurrenceIds.Count;
             new global::Android.App.AlertDialog.Builder(this)
                 .SetTitle("Show all parts?")
                 ?.SetMessage($"{hiddenNow} part(s) are hidden. Applying a filter will make all parts visible first.")
@@ -7547,16 +7579,56 @@ public sealed class MainActivity : AppCompatActivity
         panel.RefreshAfterFilter(this);  // recompute table rows + headers from the engine
 
         var passing = panel.PassingPartKeys().ToHashSet(StringComparer.Ordinal);
-        IReadOnlySet<string> hidden = BomFilterVisibilityPlanner.HiddenOccurrenceIds(
+        IReadOnlySet<string> candidateHidden = BomFilterVisibilityPlanner.HiddenOccurrenceIds(
             panel.AllPartKeys, passing, partKey => OccurrenceIdsForPartKey(scene, partKey));
+        // Scene visibility is hierarchical (Scene.CollectVisible prunes a hidden
+        // node's whole subtree), so a non-passing container assembly would prune a
+        // passing part nested beneath it — you could never view a leaf without
+        // showing its whole parent assembly. Keep every ancestor of a still-visible
+        // part out of the hidden set; the non-passing sibling leaves stay hidden.
+        var occTree = EnumerateOccurrenceTree(scene).ToList();
+        int visibleGeometryNodes = occTree.Count(n => n.HasGeometry && !candidateHidden.Contains(n.OccurrenceId));
+        IReadOnlySet<string> hidden = BomFilterVisibilityPlanner.RetainVisibleContainers(candidateHidden, occTree);
 
+        // FA.BOM closed-loop diagnostic: how much the ancestor-retain reduced the
+        // hidden set, and whether the passing parts actually carry geometry (self vs
+        // only-in-descendants). If visibleGeometryNodes is ~0 the passing rows have
+        // no own geometry — their meshes live in non-passing child parts.
+        int passingNodes = 0, passingSelfMesh = 0, passingDescMesh = 0;
+        foreach (string pk in passing)
+            foreach (SceneNode pn in scene.NodesById.Values.Where(n => SameTextIgnoreCase(n.Metadata?.SourceKey, pk)))
+            {
+                passingNodes++;
+                if (pn.MeshId.HasValue) passingSelfMesh++;
+                if (HasDescendantMesh(pn)) passingDescMesh++;
+            }
         global::Android.Util.Log.Info("FA.BOM",
-            $"Filter commit: allParts={panel.AllPartKeys.Count}, passing={passing.Count}, hiddenOccurrences={hidden.Count}.");
+            $"Filter commit: allParts={panel.AllPartKeys.Count}, passing={passing.Count}, passKeys=[{string.Join(";", passing)}], candidateHidden={candidateHidden.Count}, resolvedHidden={hidden.Count}, treeNodes={occTree.Count}, visibleGeometryNodes={visibleGeometryNodes}, passingNodes={passingNodes}, passingSelfMesh={passingSelfMesh}, passingDescMesh={passingDescMesh}.");
 
         using (SuppressBomDirty())
         {
             ClearXrayIsolationState();
-            AndroidScenePackageState.ApplyVisibilityState(scene, _packageSession, hidden, System.Array.Empty<string>());
+            long verBefore = scene.VisibilityVersion;
+            bool changed = AndroidScenePackageState.ApplyVisibilityState(scene, _packageSession, hidden, System.Array.Empty<string>());
+            global::Android.Util.Log.Info("FA.BOM",
+                $"apply-visibility: changed={changed}, verBefore={verBefore}, verAfter={scene.VisibilityVersion}, sessionHidden={_packageSession.HiddenOccurrenceIds.Count}, visibleNodes={scene.GetVisibleNodes().Count}.");
+
+            // Deep probe: walk the RUNTIME scene-parent chain of one passing IGU mesh
+            // node, logging each ancestor's type/SourceKey/occ-hidden/Visible so we can
+            // see why the ancestor-retain didn't reach the hidden container.
+            SceneNode? probe = scene.NodesById.Values.FirstOrDefault(
+                n => n.MeshId.HasValue && passing.Any(pk => SameTextIgnoreCase(n.Metadata?.SourceKey, pk)));
+            if (probe is not null)
+            {
+                var sb = new System.Text.StringBuilder();
+                for (SceneNode? a = probe; a is not null; a = a.Parent)
+                {
+                    AndroidScenePackageState.TryGetOccurrenceId(scene, a, out string ao);
+                    sb.Append($"[{a.Id} {a.NodeType} sk='{a.Metadata?.SourceKey}' hid={_packageSession.HiddenOccurrenceIds.Contains(ao)} vis={a.Visible}] <- ");
+                }
+                global::Android.Util.Log.Info("FA.BOM", $"probe[{probe.Id}] chain: {sb}");
+            }
+
             _bomFilterVisibilityDirty = false;
             FinalizeVisibilityMutation("bom-filter", hidden.Count);
         }
@@ -7574,6 +7646,32 @@ public sealed class MainActivity : AppCompatActivity
                         || SameTextIgnoreCase(node.Metadata?.SourceFullPath, partKey))
             .Select(node => node.Id).ToArray();
         return AndroidScenePackageState.GetOccurrenceIdsForNodes(scene, nodeIds);
+    }
+
+    // Projects every occurrence-bearing scene node to (occurrenceId, parentOccurrenceId,
+    // hasGeometry) so RetainVisibleContainers can keep the ancestor containers of any
+    // still-visible part out of the hidden set. Uses the same occurrence-id derivation
+    // as the hidden-set computation, so the id spaces line up exactly.
+    private static IEnumerable<BomFilterVisibilityPlanner.OccurrenceTreeNode> EnumerateOccurrenceTree(Scene scene)
+    {
+        // Emit EVERY node (keyed by unique node id) so the parent chain stays
+        // unbroken even past nodes without an occurrence id; occ-less nodes carry
+        // an empty occurrence id and are simply never protected.
+        foreach (SceneNode node in scene.NodesById.Values)
+        {
+            AndroidScenePackageState.TryGetOccurrenceId(scene, node, out string occurrenceId);
+            yield return new BomFilterVisibilityPlanner.OccurrenceTreeNode(
+                node.Id, node.Parent?.Id ?? -1, occurrenceId ?? string.Empty, node.MeshId.HasValue);
+        }
+    }
+
+    // Diagnostic helper: does any descendant of this node carry mesh geometry?
+    private static bool HasDescendantMesh(SceneNode node)
+    {
+        foreach (SceneNode child in node.Children)
+            if (child.MeshId.HasValue || HasDescendantMesh(child))
+                return true;
+        return false;
     }
 
     private void ClearSelectionAfterVisibilityMutation(Scene scene)
@@ -7722,6 +7820,8 @@ public sealed class MainActivity : AppCompatActivity
                 return;
             }
 
+            global::Android.Util.Log.Info("FA.Visibility",
+                $"sync-cmd run: reason={reason}, ver={scene.VisibilityVersion}, hasGpuScene={viewport.Renderer.Scene is not null}.");
             var renderer = viewport.Renderer;
             renderer.Scene?.SyncNodeVisibility(scene);
             renderer.XrayIsolationOpacity = opacity;

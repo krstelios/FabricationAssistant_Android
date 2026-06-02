@@ -590,6 +590,42 @@ internal sealed class AndroidBomPanel : IDisposable
         IReadOnlyDictionary<string, string> revNames = _queryService.GetDefinitionAttribute(scene.PackageInfo!, "rev_name");
         IReadOnlyDictionary<string, string> categories = _queryService.GetDefinitionAttribute(scene.PackageInfo!, "model_category");
 
+        // The NX flatten (Bom_Flatten.json) lists an assembly's components but omits
+        // the top-level/master assembly itself, so it is absent from the flat rows
+        // above. Recover it from the hierarchy root(s) and surface it first, so the
+        // consolidated table shows the master alongside its sub-assemblies (occurrence
+        // count 1 — the master occurs once).
+        var flatKeys = rows.Select(r => r.PartKey).ToHashSet(StringComparer.Ordinal);
+        foreach (FaBomNodeRowResult master in BomConsolidatedMasterRow.MissingRoots(
+                     _queryService.GetBomHierarchy(scene.PackageInfo!),
+                     node => node.ParentOccurrencePath,
+                     node => node.PartKey,
+                     flatKeys))
+        {
+            string masterPartNumber = FirstNonEmpty(master.DisplayName, master.ComponentName, master.PartName, master.PartKey);
+            names.TryGetValue(master.PartKey, out string? masterName);
+            revNames.TryGetValue(master.PartKey, out string? masterRevName);
+            categories.TryGetValue(master.PartKey, out string? masterCategory);
+
+            _allRows.Add(new BomPanelRow(
+                Kind: AndroidBomPanelKind.Consolidated,
+                Key: master.PartKey,
+                PartKey: master.PartKey,
+                Level: 0,
+                PartNumber: masterPartNumber,
+                Name: masterName ?? string.Empty,
+                RevName: masterRevName ?? string.Empty,
+                ModelCategory: masterCategory ?? string.Empty,
+                RevisionId: master.RevisionId,
+                Quantity: string.Empty,
+                OccurrenceCount: "1",
+                TotalQuantity: string.Empty,
+                Units: master.QuantityUnits,
+                QuantityTypes: master.QuantityType,
+                ReferenceSets: master.ReferenceSet,
+                SourceType: master.SourceType));
+        }
+
         foreach (FaBomFlatRowResult row in rows)
         {
             string partNumber = FirstNonEmpty(row.DisplayName, row.PartName, row.PartKey);
