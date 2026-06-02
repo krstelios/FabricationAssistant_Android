@@ -152,6 +152,9 @@
              LinkBase="Linked\Android" />
     <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\AndroidModelSelectionResolver.cs"
              LinkBase="Linked\Android" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\Bom\SortDirection.cs" LinkBase="Linked\Bom" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\Bom\BomColumnFilterValue.cs" LinkBase="Linked\Bom" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\Bom\BomColumnFilterModel.cs" LinkBase="Linked\Bom" />
     <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\CloudModels.cs"
              LinkBase="Linked\Android" />
     <Compile Include="$(MSBuildThisFileDirectory)..\FabricationAssistant.App.Android\CloudPasswordResetFlow.cs"
