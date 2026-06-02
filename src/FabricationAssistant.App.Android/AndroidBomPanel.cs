@@ -1014,10 +1014,7 @@ internal sealed class AndroidBomPanel : IDisposable
                 new(ColumnKeyModelCategory, "Model Category", TinyColumnMinWidthDp, 150),
                 new(ColumnKeyRevision, "Rev", TinyColumnMinWidthDp, 58),
                 new(ColumnKeyOccurrenceCount, "Qty", TinyColumnMinWidthDp, 58),
-                new(ColumnKeyTotalQuantity, "Total", TinyColumnMinWidthDp, 76),
                 new(ColumnKeyUnits, "Units", TinyColumnMinWidthDp, 86),
-                new(ColumnKeyQuantityTypes, "Quantity Types", TinyColumnMinWidthDp, 150),
-                new(ColumnKeyReferenceSets, "Reference Sets", TinyColumnMinWidthDp, 160),
                 new(ColumnKeySource, "Source", TinyColumnMinWidthDp, 96),
             ];
 
@@ -1297,11 +1294,8 @@ internal sealed class AndroidBomPanel : IDisposable
             root.AddView(CreateCell(_ctx, row.ModelCategory, WidthAt(widths, 3)));
             root.AddView(CreateCell(_ctx, row.RevisionId, WidthAt(widths, 4)));
             root.AddView(CreateCell(_ctx, row.OccurrenceCount, WidthAt(widths, 5)));
-            root.AddView(CreateCell(_ctx, row.TotalQuantity, WidthAt(widths, 6)));
-            root.AddView(CreateCell(_ctx, row.Units, WidthAt(widths, 7)));
-            root.AddView(CreateCell(_ctx, row.QuantityTypes, WidthAt(widths, 8)));
-            root.AddView(CreateCell(_ctx, row.ReferenceSets, WidthAt(widths, 9)));
-            root.AddView(CreateCell(_ctx, row.SourceType, WidthAt(widths, 10)));
+            root.AddView(CreateCell(_ctx, row.Units, WidthAt(widths, 6)));
+            root.AddView(CreateCell(_ctx, row.SourceType, WidthAt(widths, 7)));
         }
 
         private View CreateHierarchyPartCell(BomPanelRow row, int widthPx)
