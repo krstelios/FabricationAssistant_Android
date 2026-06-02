@@ -409,7 +409,7 @@ internal sealed class AndroidBomPanel : IDisposable
     {
         if (_filterEngine is null) return;
         ColumnSpec spec = _columns[columnIndex];
-        global::Android.Util.Log.Info("FA.BOM", $"Column filter opened: {spec.Key}.");
+        global::Android.Util.Log.Info("FA.BOM", $"Column filter opened: {spec.Key}. col={columnIndex}, anchor={anchor.GetHashCode()}.");
         var popup = new BomColumnFilterPopup(
             ctx,
             _filterEngine.Column(spec.Key),

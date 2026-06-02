@@ -7604,6 +7604,8 @@ public sealed class MainActivity : AppCompatActivity
             }
         global::Android.Util.Log.Info("FA.BOM",
             $"Filter commit: allParts={panel.AllPartKeys.Count}, passing={passing.Count}, passKeys=[{string.Join(";", passing)}], candidateHidden={candidateHidden.Count}, resolvedHidden={hidden.Count}, treeNodes={occTree.Count}, visibleGeometryNodes={visibleGeometryNodes}, passingNodes={passingNodes}, passingSelfMesh={passingSelfMesh}, passingDescMesh={passingDescMesh}.");
+        global::Android.Util.Log.Info("FA.BOM",
+            $"engine unchecked: {string.Join(" | ", panel.SnapshotEngineUnchecked().Where(kv => kv.Value.Count > 0).Select(kv => $"{kv.Key}#{kv.Value.Count}=[{string.Join(",", kv.Value.Take(4))}]"))}");
 
         using (SuppressBomDirty())
         {
