@@ -910,6 +910,27 @@ public sealed class GlesRendererSourceGuards
         }
     }
 
+    [Fact]
+    public void MeasureIntegration_WiresNodePoseLookup_SoDimensionsFollowBodies()
+    {
+        string src = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\Measurement\AndroidMeasureIntegration.cs"));
+
+        // Lookup resolves each node's live effective transform.
+        Assert.Contains("_nodePoseLookup", src);
+        Assert.Contains("EffectiveWorldTransform", src);
+
+        // Passed to the session (capture at commit) and the presenter (follow at render).
+        Assert.Contains(
+            "new MeasurementSession(_store, _units, MeasurementTolerances.Default, undoService, _nodePoseLookup)",
+            src);
+        Assert.Contains("_nodePoseLookup);", src); // last arg of _presenter.Build(...)
+
+        // Bounding box anchors to the primary movable (leaf) node.
+        Assert.Contains("BodyMoveSelection.ResolveMovableNodes", src);
+        Assert.Contains("_tool.CommitComputedBoundingBox(boundingBox, primaryNodeId)", src);
+    }
+
     private static string ResolveRepoPath(string relativeToTestProject, [CallerFilePath] string caller = "")
         => Path.GetFullPath(Path.Combine(Path.GetDirectoryName(caller)!, relativeToTestProject));
 

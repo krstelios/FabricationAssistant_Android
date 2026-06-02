@@ -1,4 +1,5 @@
 using Android.Util;
+using FabricationAssistant.Core.BodyMove;
 using FabricationAssistant.Core.Math;
 using FabricationAssistant.Core.Measurement.Domain;
 using FabricationAssistant.Core.Measurement.Engine;
@@ -19,6 +20,7 @@ internal sealed class AndroidMeasureIntegration : IDisposable
     private readonly Action _invalidate;
     private readonly MeasurementStore _store = new();
     private readonly SceneUnitSystemService _units = new();
+    private readonly Func<int, Matrix4d?> _nodePoseLookup;
     private readonly MeasurementSession _session;
     private readonly AndroidMeasureRaycaster _raycaster;
     private readonly MeasureTool _tool;
@@ -49,7 +51,14 @@ internal sealed class AndroidMeasureIntegration : IDisposable
         _sceneAccessor = sceneAccessor ?? throw new ArgumentNullException(nameof(sceneAccessor));
         _invalidate = invalidate ?? throw new ArgumentNullException(nameof(invalidate));
 
-        _session = new MeasurementSession(_store, _units, MeasurementTolerances.Default, undoService);
+        _nodePoseLookup = nodeId =>
+        {
+            Scene? scene = _sceneAccessor();
+            return scene?.GetNode(nodeId) is SceneNode node
+                ? node.EffectiveWorldTransform
+                : (Matrix4d?)null;
+        };
+        _session = new MeasurementSession(_store, _units, MeasurementTolerances.Default, undoService, _nodePoseLookup);
         _raycaster = new AndroidMeasureRaycaster(sceneAccessor, sectionPlanesAccessor);
         _snapVisibilityFilter = IsSnapTargetVisible;
         _snapDiagnosticsLog = message => Log.Debug("FA.MeasureSnap", message);
@@ -519,7 +528,15 @@ internal sealed class AndroidMeasureIntegration : IDisposable
                 return null;
             }
 
-            _tool.CommitComputedBoundingBox(boundingBox);
+            IReadOnlySet<int> selectionSet = selectedNodeIds as IReadOnlySet<int>
+                ?? new HashSet<int>(selectedNodeIds);
+            IReadOnlyList<SceneNode> movableNodes =
+                BodyMoveSelection.ResolveMovableNodes(sceneAtStart, selectionSet);
+            int? primaryNodeId = movableNodes.Count > 0
+                ? movableNodes.Min(node => node.Id)
+                : (int?)null;
+
+            _tool.CommitComputedBoundingBox(boundingBox, primaryNodeId);
             int afterCount = _store.Snapshot().Count;
             EnforceSingleMeasurementIfNeeded(beforeCount, afterCount, "bbox");
             IReadOnlyList<MeasurementResult> afterSnapshot = _store.Snapshot();
@@ -553,7 +570,8 @@ internal sealed class AndroidMeasureIntegration : IDisposable
             _session.ActiveTool,
             _session.HoverPoint,
             _store.HoveredId,
-            _showDeltaBreakdown);
+            _showDeltaBreakdown,
+            _nodePoseLookup);
         LogPresentation(snapshots);
         return snapshots;
     }
