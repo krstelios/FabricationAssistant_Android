@@ -14,6 +14,7 @@ using Android.Widget;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text.RegularExpressions;
+using FabricationAssistant.App.Android.Bom;
 using FabricationAssistant.App.Android.Measurement;
 using FabricationAssistant.App.Android.Tools;
 using AndroidX.AppCompat.App;
@@ -131,6 +132,10 @@ public sealed class MainActivity : AppCompatActivity
     private SelectionState? _undoSelectionState;
     private AndroidVisibilityStateAccess? _visibilityStateAccess;
     private AndroidMeasurementStoreAccess? _measurementStoreAccess;
+    private bool _bomFilterVisibilityDirty = true;     // true until a filter establishes a consistent state
+    private bool _suppressBomDirty;                     // set while filter-driven visibility mutations run
+    private AndroidBomPanel? _consolidatedBomPanel;     // the open consolidated panel, if any
+    private AndroidBomFilterStateAccess? _bomFilterStateAccess;
     private bool _syncingUndoSelectionState;
     private PackageSessionState? _packageSession;
     private AndroidMeasureIntegration? _measure;
@@ -485,13 +490,26 @@ public sealed class MainActivity : AppCompatActivity
         _undoSelectionState.SelectionChanged += OnUndoSelectionChanged;
         _visibilityStateAccess = new AndroidVisibilityStateAccess(this);
         _measurementStoreAccess = new AndroidMeasurementStoreAccess(this);
+        _bomFilterStateAccess = new AndroidBomFilterStateAccess(
+            snapshot: () => new FabricationAssistant.Core.UndoRedo.BomFilterStateSnapshot(
+                _consolidatedBomPanel?.SnapshotEngineUnchecked()
+                    ?? new Dictionary<string, IReadOnlyList<string>>(),
+                _consolidatedBomPanel?.SortColumnKey,
+                _consolidatedBomPanel?.SortDescending ?? false,
+                _bomFilterVisibilityDirty),
+            restore: s =>
+            {
+                _bomFilterVisibilityDirty = s.Dirty;
+                _consolidatedBomPanel?.RestoreEngineState(s.UncheckedValuesByColumn, s.SortColumnKey, s.SortDescending);
+            });
         _undoService = new UndoService(new SceneContext(
             () => _runtimeScene,
             _undoSelectionState,
             _visibilityStateAccess,
             _sections,
             _bodyMove,
-            _measurementStoreAccess));
+            _measurementStoreAccess,
+            _bomFilterStateAccess));
         _undoService.HistoryChanged += OnUndoHistoryChanged;
         _undoService.UndoFailed += OnUndoFailed;
         CaptureSavedViewerState(savedInstanceState);
@@ -3893,6 +3911,7 @@ public sealed class MainActivity : AppCompatActivity
         _modelExplorerPanel.RefreshVisibility();
         AddVisibilityUndo(undo, before, isVisible ? "Show model node" : "Hide model node");
         FinalizeVisibilityMutation(isVisible ? "model-explorer-show" : "model-explorer-hide", changedCount);
+        if (!_suppressBomDirty) _bomFilterVisibilityDirty = true;
     }
 
     private void ToggleBomPanel(AndroidBomPanelKind bomKind)
@@ -3900,11 +3919,14 @@ public sealed class MainActivity : AppCompatActivity
         if (IsImportUiBusy() || !HasScene())
             return;
 
+        _consolidatedBomPanel = null;
+
         LeftToolPanelKind panelKind = bomKind == AndroidBomPanelKind.Hierarchy
             ? LeftToolPanelKind.Bom
             : LeftToolPanelKind.BomFlat;
         if (_leftToolPanelKind == panelKind)
         {
+            _consolidatedBomPanel = null;
             SetLeftToolPanelExpanded(false, animate: true);
             return;
         }
@@ -3916,6 +3938,11 @@ public sealed class MainActivity : AppCompatActivity
         {
             ActionRequested = HandleBomPanelAction,
         };
+        if (bomKind == AndroidBomPanelKind.Consolidated)
+        {
+            _consolidatedBomPanel = panel;
+            panel.ApplyFilterRequested = () => ApplyBomFilter(panel);
+        }
         ShowLeftToolPanel(panelKind, panel.CreateView(this), panel);
     }
 
@@ -3923,6 +3950,8 @@ public sealed class MainActivity : AppCompatActivity
     {
         if (IsImportUiBusy())
             return;
+
+        _consolidatedBomPanel = null;
 
         if (_leftToolPanelKind == LeftToolPanelKind.Settings)
         {
@@ -7278,6 +7307,7 @@ public sealed class MainActivity : AppCompatActivity
             ClearSelectionAfterVisibilityMutation(scene);
             AddVisibilityUndo(faUndo, faBefore, "Hide selection");
             FinalizeVisibilityMutation("hide-fa", selectedOccurrenceIds.Length);
+            if (!_suppressBomDirty) _bomFilterVisibilityDirty = true;
             return;
         }
 
@@ -7300,6 +7330,7 @@ public sealed class MainActivity : AppCompatActivity
         ClearSelectionAfterVisibilityMutation(scene);
         AddVisibilityUndo(undo, before, "Hide selection");
         FinalizeVisibilityMutation("hide", targetNodeIds.Length);
+        if (!_suppressBomDirty) _bomFilterVisibilityDirty = true;
     }
 
     private void ShowAlreadyHiddenFeedback()
@@ -7331,6 +7362,7 @@ public sealed class MainActivity : AppCompatActivity
             else
                 undo?.Abort();
             FinalizeVisibilityMutation("show-all-fa", changedCount);
+            if (!_suppressBomDirty) _bomFilterVisibilityDirty = true;
             return;
         }
 
@@ -7348,6 +7380,7 @@ public sealed class MainActivity : AppCompatActivity
         else
             undo?.Abort();
         FinalizeVisibilityMutation("show-all", changed);
+        if (!_suppressBomDirty) _bomFilterVisibilityDirty = true;
     }
 
     private void IsolateSelectedNodes()
@@ -7373,6 +7406,7 @@ public sealed class MainActivity : AppCompatActivity
             ClearSelectionAfterVisibilityMutation(scene);
             AddVisibilityUndo(faUndo, faBefore, "Isolate selection");
             FinalizeVisibilityMutation("isolate-fa", selectedOccurrenceIds.Length);
+            if (!_suppressBomDirty) _bomFilterVisibilityDirty = true;
             return;
         }
 
@@ -7388,6 +7422,7 @@ public sealed class MainActivity : AppCompatActivity
         ClearSelectionAfterVisibilityMutation(scene);
         AddVisibilityUndo(undo, before, "Isolate selection");
         FinalizeVisibilityMutation("isolate", visibleNodeIds.Count);
+        if (!_suppressBomDirty) _bomFilterVisibilityDirty = true;
     }
 
     private void IsolateXraySelectedNodes()
@@ -7439,6 +7474,7 @@ public sealed class MainActivity : AppCompatActivity
             ClearSelectionAfterVisibilityMutation(scene);
             AddVisibilityUndo(faUndo, faBefore, "Isolate (x-ray)");
             FinalizeVisibilityMutation("isolate-xray-fa", opaqueNodeIdsForOccurrences.Count);
+            if (!_suppressBomDirty) _bomFilterVisibilityDirty = true;
             return;
         }
 
@@ -7469,6 +7505,70 @@ public sealed class MainActivity : AppCompatActivity
         ClearSelectionAfterVisibilityMutation(scene);
         AddVisibilityUndo(undo, before, "Isolate (x-ray)");
         FinalizeVisibilityMutation("isolate-xray", opaqueNodeIds.Count);
+        if (!_suppressBomDirty) _bomFilterVisibilityDirty = true;
+    }
+
+    private readonly struct BomDirtySuppressor : IDisposable
+    {
+        private readonly MainActivity _a;
+        public BomDirtySuppressor(MainActivity a) { _a = a; _a._suppressBomDirty = true; }
+        public void Dispose() => _a._suppressBomDirty = false;
+    }
+
+    private BomDirtySuppressor SuppressBomDirty() => new(this);
+
+    private void ApplyBomFilter(AndroidBomPanel panel)
+    {
+        Scene? scene = _runtimeScene;
+        if (scene is null || _packageSession is null) return;
+
+        if (_bomFilterVisibilityDirty)
+        {
+            int hiddenNow = _packageSession.HiddenOccurrenceIds.Count + _packageSession.IsolatedOccurrenceIds.Count;
+            new global::Android.App.AlertDialog.Builder(this)
+                .SetTitle("Show all parts?")
+                ?.SetMessage($"{hiddenNow} part(s) are hidden. Applying a filter will make all parts visible first.")
+                ?.SetPositiveButton("Continue", (_, _) => CommitBomFilter(panel, scene))
+                ?.SetNegativeButton("Cancel", (_, _) => { })
+                ?.Show();
+            return;
+        }
+        CommitBomFilter(panel, scene);
+    }
+
+    private void CommitBomFilter(AndroidBomPanel panel, Scene scene)
+    {
+        if (_packageSession is null) return;
+        var filterBefore = _bomFilterStateAccess!.Snapshot();
+        VisibilityStateSnapshot visBefore = CaptureVisibilitySnapshot();
+
+        panel.RefreshAfterFilter(this);  // recompute table rows + headers from the engine
+
+        var passing = panel.PassingPartKeys().ToHashSet(StringComparer.Ordinal);
+        IReadOnlySet<string> hidden = BomFilterVisibilityPlanner.HiddenOccurrenceIds(
+            panel.AllPartKeys, passing, partKey => OccurrenceIdsForPartKey(scene, partKey));
+
+        using (SuppressBomDirty())
+        {
+            ClearXrayIsolationState();
+            AndroidScenePackageState.ApplyVisibilityState(scene, _packageSession, hidden, System.Array.Empty<string>());
+            _bomFilterVisibilityDirty = false;
+            FinalizeVisibilityMutation("bom-filter", hidden.Count);
+        }
+
+        var filterAfter = _bomFilterStateAccess!.Snapshot();
+        VisibilityStateSnapshot visAfter = CaptureVisibilitySnapshot();
+        using IUndoTransaction? undo = _undoService?.Begin("BOM filter");
+        undo?.Add(new FabricationAssistant.Core.UndoRedo.BomFilterChange(filterBefore, filterAfter, visBefore, visAfter, "BOM filter"));
+    }
+
+    private string[] OccurrenceIdsForPartKey(Scene scene, string partKey)
+    {
+        int[] nodeIds = scene.NodesById.Values
+            .Where(node => SameTextIgnoreCase(node.Metadata?.SourceKey, partKey)
+                        || SameTextIgnoreCase(node.Metadata?.SourceFullPath, partKey))
+            .Select(node => node.Id).ToArray();
+        return AndroidScenePackageState.GetOccurrenceIdsForNodes(scene, nodeIds);
     }
 
     private void ClearSelectionAfterVisibilityMutation(Scene scene)
