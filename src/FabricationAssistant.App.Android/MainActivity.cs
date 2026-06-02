@@ -7522,6 +7522,8 @@ public sealed class MainActivity : AppCompatActivity
         Scene? scene = _runtimeScene;
         if (scene is null || _packageSession is null) return;
 
+        global::Android.Util.Log.Info("FA.BOM", $"Filter apply requested: dirty={_bomFilterVisibilityDirty}.");
+
         if (_bomFilterVisibilityDirty)
         {
             int hiddenNow = _packageSession.HiddenOccurrenceIds.Count + _packageSession.IsolatedOccurrenceIds.Count;
@@ -7547,6 +7549,9 @@ public sealed class MainActivity : AppCompatActivity
         var passing = panel.PassingPartKeys().ToHashSet(StringComparer.Ordinal);
         IReadOnlySet<string> hidden = BomFilterVisibilityPlanner.HiddenOccurrenceIds(
             panel.AllPartKeys, passing, partKey => OccurrenceIdsForPartKey(scene, partKey));
+
+        global::Android.Util.Log.Info("FA.BOM",
+            $"Filter commit: allParts={panel.AllPartKeys.Count}, passing={passing.Count}, hiddenOccurrences={hidden.Count}.");
 
         using (SuppressBomDirty())
         {

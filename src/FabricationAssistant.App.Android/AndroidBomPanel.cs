@@ -336,6 +336,7 @@ internal sealed class AndroidBomPanel : IDisposable
             int columnIndex = i;
             TextView cell = CreateCell(ctx, HeaderTitle(i), GetColumnWidth(i), bold: true);
             cell.SetTextColor(ColorRes(ctx, Resource.Color.fa_text_secondary));
+            ApplyHeaderChevron(cell, columnIndex);
             if (_kind == AndroidBomPanelKind.Consolidated)
             {
                 cell.Clickable = true;
@@ -359,6 +360,7 @@ internal sealed class AndroidBomPanel : IDisposable
             int columnIndex = i;
             TextView cell = CreateCell(ctx, HeaderTitle(i), GetColumnWidth(i), bold: true);
             cell.SetTextColor(ColorRes(ctx, Resource.Color.fa_text_secondary));
+            ApplyHeaderChevron(cell, columnIndex);
             if (_kind == AndroidBomPanelKind.Consolidated)
             {
                 cell.Clickable = true;
@@ -377,14 +379,37 @@ internal sealed class AndroidBomPanel : IDisposable
         bool active = _filterEngine.Column(spec.Key).IsActive;
         bool sorted = string.Equals(_filterEngine.SortColumnKey, spec.Key, StringComparison.Ordinal);
         string arrow = sorted ? (_filterEngine.SortDescending ? " ▼" : " ▲") : string.Empty;
-        string dot = active ? " •" : string.Empty;
-        return spec.Title + arrow + dot;
+        // Persistent filter affordance on EVERY consolidated header (Excel-style),
+        // so every column visibly reads as filterable/sortable. The dot marks an
+        // active filter; the arrow marks the (single) sort column.
+        string filterGlyph = active ? " ●▾" : " ▾";
+        return spec.Title + arrow + filterGlyph;
+    }
+
+    // Enlarges the filter/sort glyph (everything after the column title) so the
+    // affordance reads clearly at a glance. Consolidated headers only.
+    private void ApplyHeaderChevron(TextView cell, int columnIndex)
+    {
+        if (_kind != AndroidBomPanelKind.Consolidated || _filterEngine is null)
+            return;
+        string full = HeaderTitle(columnIndex);
+        int titleLen = _columns[columnIndex].Title.Length;
+        if (full.Length <= titleLen)
+            return;
+        var span = new global::Android.Text.SpannableString(full);
+        span.SetSpan(
+            new global::Android.Text.Style.RelativeSizeSpan(1.6f),
+            titleLen,
+            full.Length,
+            global::Android.Text.SpanTypes.ExclusiveExclusive);
+        cell.TextFormatted = span;
     }
 
     private void OpenColumnFilter(Context ctx, int columnIndex, View anchor)
     {
         if (_filterEngine is null) return;
         ColumnSpec spec = _columns[columnIndex];
+        global::Android.Util.Log.Info("FA.BOM", $"Column filter opened: {spec.Key}.");
         var popup = new BomColumnFilterPopup(
             ctx,
             _filterEngine.Column(spec.Key),
@@ -512,6 +537,7 @@ internal sealed class AndroidBomPanel : IDisposable
         IReadOnlyList<FaBomNodeRowResult> rows = _queryService.GetBomHierarchy(scene.PackageInfo!);
         IReadOnlyDictionary<string, string> names = _queryService.GetDefinitionAttribute(scene.PackageInfo!, "db_part_name");
         IReadOnlyDictionary<string, string> revNames = _queryService.GetDefinitionAttribute(scene.PackageInfo!, "rev_name");
+        IReadOnlyDictionary<string, string> categories = _queryService.GetDefinitionAttribute(scene.PackageInfo!, "model_category");
 
         var byPath = new Dictionary<string, BomPanelRow>(rows.Count, StringComparer.Ordinal);
         foreach (FaBomNodeRowResult row in rows)
@@ -519,6 +545,7 @@ internal sealed class AndroidBomPanel : IDisposable
             string partNumber = FirstNonEmpty(row.DisplayName, row.ComponentName, row.PartName, row.PartKey);
             names.TryGetValue(row.PartKey, out string? name);
             revNames.TryGetValue(row.PartKey, out string? revName);
+            categories.TryGetValue(row.PartKey, out string? category);
 
             byPath[row.OccurrencePath] = new BomPanelRow(
                 Kind: AndroidBomPanelKind.Hierarchy,
@@ -528,6 +555,7 @@ internal sealed class AndroidBomPanel : IDisposable
                 PartNumber: partNumber,
                 Name: name ?? string.Empty,
                 RevName: revName ?? string.Empty,
+                ModelCategory: category ?? string.Empty,
                 RevisionId: row.RevisionId,
                 Quantity: FormatQuantity(row.QuantityValueText, row.QuantityUnits),
                 OccurrenceCount: string.Empty,
@@ -560,12 +588,14 @@ internal sealed class AndroidBomPanel : IDisposable
         IReadOnlyList<FaBomFlatRowResult> rows = _queryService.GetBomFlat(scene.PackageInfo!);
         IReadOnlyDictionary<string, string> names = _queryService.GetDefinitionAttribute(scene.PackageInfo!, "db_part_name");
         IReadOnlyDictionary<string, string> revNames = _queryService.GetDefinitionAttribute(scene.PackageInfo!, "rev_name");
+        IReadOnlyDictionary<string, string> categories = _queryService.GetDefinitionAttribute(scene.PackageInfo!, "model_category");
 
         foreach (FaBomFlatRowResult row in rows)
         {
             string partNumber = FirstNonEmpty(row.DisplayName, row.PartName, row.PartKey);
             names.TryGetValue(row.PartKey, out string? name);
             revNames.TryGetValue(row.PartKey, out string? revName);
+            categories.TryGetValue(row.PartKey, out string? category);
 
             _allRows.Add(new BomPanelRow(
                 Kind: AndroidBomPanelKind.Consolidated,
@@ -575,6 +605,7 @@ internal sealed class AndroidBomPanel : IDisposable
                 PartNumber: partNumber,
                 Name: name ?? string.Empty,
                 RevName: revName ?? string.Empty,
+                ModelCategory: category ?? string.Empty,
                 RevisionId: row.RevisionId,
                 Quantity: string.Empty,
                 OccurrenceCount: row.OccurrenceCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
@@ -613,6 +644,8 @@ internal sealed class AndroidBomPanel : IDisposable
             foreach (BomPanelRow row in rows)
                 if (filter.Length == 0 || row.Matches(filter))
                     _visibleRows.Add(row);
+            global::Android.Util.Log.Info("FA.BOM",
+                $"Consolidated filter: {_visibleRows.Count}/{_allRows.Count} rows, sort={_filterEngine?.SortColumnKey ?? "none"}/{((_filterEngine?.SortDescending ?? false) ? "desc" : "asc")}, anyActive={_filterEngine?.AnyActive ?? false}.");
         }
 
         _selectedRow = ResolveSelectedRow();
@@ -967,6 +1000,7 @@ internal sealed class AndroidBomPanel : IDisposable
                 new(ColumnKeyPart, "Part", TinyColumnMinWidthDp, 260),
                 new(ColumnKeyName, "Name", TinyColumnMinWidthDp, 260),
                 new(ColumnKeyRevName, "Rev Name", TinyColumnMinWidthDp, 240),
+                new(ColumnKeyModelCategory, "Model Category", TinyColumnMinWidthDp, 150),
                 new(ColumnKeyRevision, "Rev", TinyColumnMinWidthDp, 58),
                 new(ColumnKeyQuantity, "Quantity", TinyColumnMinWidthDp, 86),
                 new(ColumnKeyReferenceSets, "Reference Set", TinyColumnMinWidthDp, 150),
@@ -977,6 +1011,7 @@ internal sealed class AndroidBomPanel : IDisposable
                 new(ColumnKeyPart, "Part", TinyColumnMinWidthDp, 230),
                 new(ColumnKeyName, "Name", TinyColumnMinWidthDp, 260),
                 new(ColumnKeyRevName, "Rev Name", TinyColumnMinWidthDp, 240),
+                new(ColumnKeyModelCategory, "Model Category", TinyColumnMinWidthDp, 150),
                 new(ColumnKeyRevision, "Rev", TinyColumnMinWidthDp, 58),
                 new(ColumnKeyOccurrenceCount, "Qty", TinyColumnMinWidthDp, 58),
                 new(ColumnKeyTotalQuantity, "Total", TinyColumnMinWidthDp, 76),
@@ -993,6 +1028,7 @@ internal sealed class AndroidBomPanel : IDisposable
             ColumnKeyPart => row.PartNumber,
             ColumnKeyName => row.Name,
             ColumnKeyRevName => row.RevName,
+            ColumnKeyModelCategory => row.ModelCategory,
             ColumnKeyRevision => row.RevisionId,
             ColumnKeyQuantity => row.Quantity,
             ColumnKeyOccurrenceCount => row.OccurrenceCount,
@@ -1008,6 +1044,7 @@ internal sealed class AndroidBomPanel : IDisposable
     private const string ColumnKeyPart = "part";
     private const string ColumnKeyName = "name";
     private const string ColumnKeyRevName = "revName";
+    private const string ColumnKeyModelCategory = "modelCategory";
     private const string ColumnKeyRevision = "revision";
     private const string ColumnKeyQuantity = "quantity";
     private const string ColumnKeyOccurrenceCount = "occurrenceCount";
@@ -1102,6 +1139,7 @@ internal sealed class AndroidBomPanel : IDisposable
             string PartNumber,
             string Name,
             string RevName,
+            string ModelCategory,
             string RevisionId,
             string Quantity,
             string OccurrenceCount,
@@ -1118,6 +1156,7 @@ internal sealed class AndroidBomPanel : IDisposable
             this.PartNumber = PartNumber;
             this.Name = Name;
             this.RevName = RevName;
+            this.ModelCategory = ModelCategory;
             this.RevisionId = RevisionId;
             this.Quantity = Quantity;
             this.OccurrenceCount = OccurrenceCount;
@@ -1135,6 +1174,7 @@ internal sealed class AndroidBomPanel : IDisposable
         public string PartNumber { get; }
         public string Name { get; }
         public string RevName { get; }
+        public string ModelCategory { get; }
         public string RevisionId { get; }
         public string Quantity { get; }
         public string OccurrenceCount { get; }
@@ -1151,6 +1191,7 @@ internal sealed class AndroidBomPanel : IDisposable
             => Contains(PartNumber, filter)
                || Contains(Name, filter)
                || Contains(RevName, filter)
+               || Contains(ModelCategory, filter)
                || Contains(RevisionId, filter)
                || Contains(Quantity, filter)
                || Contains(OccurrenceCount, filter)
@@ -1240,10 +1281,11 @@ internal sealed class AndroidBomPanel : IDisposable
             root.AddView(CreateHierarchyPartCell(row, WidthAt(widths, 1)));
             root.AddView(CreateCell(_ctx, row.Name, WidthAt(widths, 2)));
             root.AddView(CreateCell(_ctx, row.RevName, WidthAt(widths, 3)));
-            root.AddView(CreateCell(_ctx, row.RevisionId, WidthAt(widths, 4)));
-            root.AddView(CreateCell(_ctx, row.Quantity, WidthAt(widths, 5)));
-            root.AddView(CreateCell(_ctx, row.ReferenceSets, WidthAt(widths, 6)));
-            root.AddView(CreateCell(_ctx, row.SourceType, WidthAt(widths, 7)));
+            root.AddView(CreateCell(_ctx, row.ModelCategory, WidthAt(widths, 4)));
+            root.AddView(CreateCell(_ctx, row.RevisionId, WidthAt(widths, 5)));
+            root.AddView(CreateCell(_ctx, row.Quantity, WidthAt(widths, 6)));
+            root.AddView(CreateCell(_ctx, row.ReferenceSets, WidthAt(widths, 7)));
+            root.AddView(CreateCell(_ctx, row.SourceType, WidthAt(widths, 8)));
         }
 
         private void AddConsolidatedCells(LinearLayout root, BomPanelRow row)
@@ -1252,13 +1294,14 @@ internal sealed class AndroidBomPanel : IDisposable
             root.AddView(CreateCell(_ctx, row.PartNumber, WidthAt(widths, 0)));
             root.AddView(CreateCell(_ctx, row.Name, WidthAt(widths, 1)));
             root.AddView(CreateCell(_ctx, row.RevName, WidthAt(widths, 2)));
-            root.AddView(CreateCell(_ctx, row.RevisionId, WidthAt(widths, 3)));
-            root.AddView(CreateCell(_ctx, row.OccurrenceCount, WidthAt(widths, 4)));
-            root.AddView(CreateCell(_ctx, row.TotalQuantity, WidthAt(widths, 5)));
-            root.AddView(CreateCell(_ctx, row.Units, WidthAt(widths, 6)));
-            root.AddView(CreateCell(_ctx, row.QuantityTypes, WidthAt(widths, 7)));
-            root.AddView(CreateCell(_ctx, row.ReferenceSets, WidthAt(widths, 8)));
-            root.AddView(CreateCell(_ctx, row.SourceType, WidthAt(widths, 9)));
+            root.AddView(CreateCell(_ctx, row.ModelCategory, WidthAt(widths, 3)));
+            root.AddView(CreateCell(_ctx, row.RevisionId, WidthAt(widths, 4)));
+            root.AddView(CreateCell(_ctx, row.OccurrenceCount, WidthAt(widths, 5)));
+            root.AddView(CreateCell(_ctx, row.TotalQuantity, WidthAt(widths, 6)));
+            root.AddView(CreateCell(_ctx, row.Units, WidthAt(widths, 7)));
+            root.AddView(CreateCell(_ctx, row.QuantityTypes, WidthAt(widths, 8)));
+            root.AddView(CreateCell(_ctx, row.ReferenceSets, WidthAt(widths, 9)));
+            root.AddView(CreateCell(_ctx, row.SourceType, WidthAt(widths, 10)));
         }
 
         private View CreateHierarchyPartCell(BomPanelRow row, int widthPx)
