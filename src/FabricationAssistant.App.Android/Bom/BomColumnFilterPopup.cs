@@ -16,7 +16,7 @@ internal sealed class BomColumnFilterPopup
     private readonly BomColumnFilterModel _model;
     private readonly Action<SortDirection> _onSort;
     private readonly Action _onApply;      // called on Done / Sort (commit current checks)
-    private readonly Action _onChanged;    // called after Select all/Clear to refresh the list
+    private readonly Action _onChanged;    // notifies the owner that the model changed without committing (Select all/Clear)
     private PopupWindow? _popup;
     private LinearLayout? _listContainer;
     private string _search = string.Empty;
@@ -32,6 +32,10 @@ internal sealed class BomColumnFilterPopup
 
     public void Show(View anchor)
     {
+        // Dismiss any popup still open from a prior tap so a double-tap on the
+        // header can't leak a PopupWindow (and orphan the stale dismiss wiring).
+        _popup?.Dismiss();
+
         var card = new MaterialCardView(_ctx)
         {
             Radius = Dp(12),
