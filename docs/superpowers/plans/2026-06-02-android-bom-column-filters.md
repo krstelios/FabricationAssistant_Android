@@ -64,13 +64,10 @@ Commands:
 Create `src/FabricationAssistant.App.Tests/UndoRedo/BomFilterChangeTests.cs`:
 
 ```csharp
+using System;
 using System.Collections.Generic;
-using FabricationAssistant.Core.SceneGraph;
-using FabricationAssistant.Core.Selection;
+using System.Linq;
 using FabricationAssistant.Core.UndoRedo;
-using FabricationAssistant.Core.Measurement.Engine;
-using FabricationAssistant.Core.Sections;
-using FabricationAssistant.Core.BodyMove;
 using Xunit;
 
 namespace FabricationAssistant.App.Tests.UndoRedo;
@@ -84,12 +81,21 @@ public class BomFilterChangeTests
         public void RestoreSnapshot(BomFilterStateSnapshot snapshot) => Current = snapshot;
     }
 
+    // Full IVisibilityStateAccess fake. Only SnapshotAll/RestoreSnapshot matter for this test;
+    // the rest satisfy the interface. (Members verified against IVisibilityStateAccess.cs.)
     private sealed class FakeVisibility : IVisibilityStateAccess
     {
         public VisibilityStateSnapshot Current = VisibilityStateSnapshot.Empty;
         public bool GetVisible(int nodeId) => true;
         public void SetVisible(int nodeId, bool visible) { }
-        public void SetVisibleRange(IEnumerable<int> nodeIds, bool visible) { }
+        public IReadOnlySet<string> FaHiddenOccurrenceIds => Current.FaHiddenOccurrenceIds;
+        public IReadOnlySet<string> FaIsolatedOccurrenceIds => Current.FaIsolatedOccurrenceIds;
+        public void SetFaVisibilityState(IReadOnlyCollection<string> hidden, IReadOnlyCollection<string> isolated) { }
+        public IReadOnlySet<int> XrayOpaqueIds => Current.XrayOpaqueIds;
+        public IReadOnlyList<int> XrayBackgroundIds => Current.XrayBackgroundIds;
+        public double XrayOpacity => Current.XrayOpacity;
+        public void SetXrayIsolationState(IEnumerable<int> opaqueIds, IEnumerable<int> backgroundIds, double opacity) { }
+        public void ClearXrayIsolation() { }
         public VisibilityStateSnapshot SnapshotFor(IEnumerable<int> nodeIds) => Current;
         public VisibilityStateSnapshot SnapshotAll() => Current;
         public void RestoreSnapshot(VisibilityStateSnapshot snapshot) => Current = snapshot;
@@ -99,15 +105,24 @@ public class BomFilterChangeTests
         new(new Dictionary<string, IReadOnlyList<string>> { ["name"] = new[] { "A" } }, sortCol, false, dirty);
 
     private static VisibilityStateSnapshot Vis(params string[] hidden) =>
-        new(new Dictionary<int, bool>(), new HashSet<string>(hidden), new HashSet<string>(), false, 0.5);
+        new(new Dictionary<int, bool>(), new HashSet<string>(hidden), new HashSet<string>(),
+            new HashSet<int>(), Array.Empty<int>(), 0.18d);
 
     [Fact]
     public void ApplyBefore_And_ApplyAfter_RestoreFilterAndVisibility()
     {
         var bom = new FakeBomFilter();
         var vis = new FakeVisibility();
-        var ctx = new SceneContext(() => null, new SelectionState(), vis,
-            new SectionService(), new BodyMoveService(() => null), new MeasurementStore(), bom);
+        // Only Visibility + BomFilter are exercised by BomFilterChange; the other
+        // SceneContext subsystems are never dereferenced here, so pass null!.
+        var ctx = new SceneContext(
+            () => null,
+            selection: null!,
+            visibility: vis,
+            sections: null!,
+            bodyMove: null!,
+            measurements: null!,
+            bomFilter: bom);
 
         var change = new BomFilterChange(
             filterBefore: Filter(dirty: true, sortCol: null),
@@ -132,7 +147,7 @@ public class BomFilterChangeTests
 }
 ```
 
-> Note: `SectionService`, `BodyMoveService`, `MeasurementStore`, `SelectionState`, `VisibilityStateSnapshot` ctor shape are existing Core types. If a ctor arg differs, adjust the test's fakes to match the real interfaces — do not change production behaviour. (`VisibilityStateSnapshot` = `(IReadOnlyDictionary<int,bool> NodeVisibility, IReadOnlySet<string> FaHiddenOccurrenceIds, IReadOnlySet<string> FaIsolatedOccurrenceIds, bool XrayActive, double XrayOpacity)` — confirm field order in `VisibilityStateSnapshot.cs` and match it.)
+> Note: `SectionService`, `BodyMoveService`, `MeasurementStore`, `SelectionState` are existing Core types — if a ctor arg differs, adjust the test fakes to match the real interfaces (do not change production behaviour). `VisibilityStateSnapshot`'s 6-arg ctor is verified: `(IReadOnlyDictionary<int,bool> NodeVisibility, IReadOnlySet<string> FaHiddenOccurrenceIds, IReadOnlySet<string> FaIsolatedOccurrenceIds, IReadOnlySet<int> XrayOpaqueIds, IReadOnlyList<int> XrayBackgroundIds, double XrayOpacity)`. `IVisibilityStateAccess` members are verified: `GetVisible(int)`, `SetVisible(int,bool)`, `SnapshotFor(IEnumerable<int>)`, `SnapshotAll()`, `RestoreSnapshot(VisibilityStateSnapshot)` — note there is **no** `SetVisibleRange`; remove that line from the `FakeVisibility` if the real interface lacks it (confirm against `IVisibilityStateAccess.cs`).
 
 - [ ] **Step 2: Run test — expect FAIL (types don't exist)**
 
