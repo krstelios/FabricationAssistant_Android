@@ -27,11 +27,12 @@ Every column header of the consolidated BOM gets an Excel-style filter+sort drop
 - Columns built in `Columns()` as `ColumnSpec(Key, Title, MinWidthDp, MaxWidthDp)`: Part, Name, Rev Name, Rev, Qty (occurrence count), Total, Units, Quantity Types, Reference Sets, Source. Header row built in `CreateHeaderRow()` (header `LinearLayout` of `TextView`).
 - `BomPanelRow` exposes PartKey/Key, PartNumber, Name, RevName, RevisionId, OccurrenceCount, TotalQuantity, Units, QuantityTypes, ReferenceSets, SourceType.
 
-**Visibility + scene mapping** (`MainActivity.cs`)
-- Source of truth: `SceneNode.Visible`. `AndroidVisibilityStateAccess : IVisibilityStateAccess` (`~16218`) with `SnapshotAll()`, `SnapshotFor(ids)`, `RestoreSnapshot(VisibilityStateSnapshot)`, `GetVisible`/`SetVisible`.
-- Mutations capture `CaptureVisibilitySnapshot()` (= `SnapshotAll`) before, mutate, then `FinalizeVisibilityMutation(reason)` (renderer sync + `_modelExplorerPanel.RefreshVisibility()` + overlays + render) and `AddVisibilityUndo(txn, before, description)` → `new VisibilityChange(before, after, desc)`.
-- BOM row → node ids: `ResolveBomTargetNodeIds()` (`~3970`) matches `node.Metadata.SourceKey` / `SourceFullPath` against the consolidated part key.
-- Manual model-explorer toggle handler: `SetModelExplorerNodeVisibility` (wired via `AndroidModelExplorerPanel.VisibilityChanged`, `~3776`). Isolate/hide live at `~7269–7451`.
+**Visibility + scene mapping** (`MainActivity.cs`) — **FA-package path is what matters here.** The consolidated BOM only loads for FA packages (`LoadRows` bails unless `PackageInfo.SourceFormat == "fa"`), and FA visibility is **occurrence-id based**, not raw `SceneNode.Visible`:
+- FA visibility is held in `PackageSessionState` (`_packageSession.HiddenOccurrenceIds` / `IsolatedOccurrenceIds`) and applied by `AndroidScenePackageState.ApplyVisibilityState(scene, packageSession, hiddenOccurrenceIds, isolatedOccurrenceIds)` (returns true if it changed). **Show All** = `ApplyVisibilityState(scene, session, [], [])`. (Non-FA fallback toggles `SceneNode.Visible` directly, but the consolidated BOM is FA-only.)
+- Node→occurrence id: `AndroidScenePackageState.TryGetOccurrenceId(scene, node, out id)`; bulk: `AndroidScenePackageState.GetOccurrenceIdsForNodes(scene, nodeIds)`.
+- BOM row → node ids: `ResolveBomTargetNodeIds()` (`~3970`) matches `node.Metadata.SourceKey` / `SourceFullPath` against the consolidated part key. So **part key → node ids → occurrence ids** is the chain the filter uses to hide failing parts.
+- Undo of FA visibility already works: `AndroidVisibilityStateAccess : IVisibilityStateAccess` (`~16218`) snapshots/restores both `NodeVisibility` **and** `FaHiddenOccurrenceIds` in `VisibilityStateSnapshot`. `CaptureVisibilitySnapshot()` (= `SnapshotAll`), `AddVisibilityUndo(txn, before, desc)` → `new VisibilityChange(before, after, desc)`, and `FinalizeVisibilityMutation(action, count)` (renderer sync + `_modelExplorerPanel.RefreshVisibility()` + overlays + render).
+- Manual model-explorer toggle handler: `SetModelExplorerNodeVisibility` (`~3831`; FA branch edits `_packageSession` hidden set + `ApplyVisibilityState`). `ShowAllNodes` (`~7308`). Isolate/hide nearby. These are the manual mutations that set the dirty flag.
 - Popup pattern to reuse: `MaterialCardView` + `PopupWindow` anchored dropdown (`MainActivity ~5282`), dark theme in `Resources/values/colors.xml`.
 
 **Undo framework** (`FabricationAssistant.Core/UndoRedo`, used by Android via `MainActivity.cs:488` `new UndoService(new SceneContext(...))`)
@@ -58,27 +59,28 @@ Every column header of the consolidated BOM gets an Excel-style filter+sort drop
 - `bool AnyActive` (any column filtering).
 - `RebuildValueLists(allRows)` calls each model's `SetValues` from the full dataset.
 
-Both classes live in `src/FabricationAssistant.App.Android/Bom/` and are **linked into** `FabricationAssistant.App.Android.Tests` (the same `<Compile Include>` linking pattern used for `AndroidModelSelectionResolver`) so they unit-test on the net8.0 host.
+These classes (plus `BomFilterVisibilityPlanner`, §2) live in `src/FabricationAssistant.App.Android/Bom/`, contain no Android refs, and are **linked into** `FabricationAssistant.App.Android.Tests` (the same `<Compile Include>` linking pattern used for `AndroidModelSelectionResolver`) so they unit-test on the net8.0 host.
 
-### 2. Visibility coordination + dirty flag
+### 2. Visibility application (FA occurrence-ids) + dirty flag
 
-**`BomFilterVisibilityCoordinator`** — pure decision logic (host-testable):
-- Inputs: passing part-key set, a `partKey → nodeIds` map, current `node.Visible` snapshot.
-- `bool RequiresShowAllWarning(bool dirty)` → `dirty` (warn iff visibility was manually changed since the filter last owned it).
-- `IReadOnlyDictionary<int,bool> TargetVisibility(...)` → for each BOM-part node: visible iff its part passes; leaves non-BOM nodes (assemblies/containers) untouched/visible so passing descendants render.
-- Owns no Android types; the MainActivity glue calls it and then applies via `AndroidVisibilityStateAccess` + `FinalizeVisibilityMutation`.
+**`BomFilterVisibilityPlanner`** — the one pure, host-testable seam:
+- `IReadOnlySet<string> HiddenOccurrenceIds(IEnumerable<string> allPartKeys, IReadOnlySet<string> passingPartKeys, Func<string, IEnumerable<string>> occurrenceIdsForPart)` → the union of occurrence ids of the **failing** parts (`allPartKeys \ passingPartKeys`). The `occurrenceIdsForPart` resolver is injected, so the planner is pure and testable with a fake map; the MainActivity glue supplies the real resolver (part key → node ids via the `ResolveBomTargetNodeIds` matching → `GetOccurrenceIdsForNodes`).
+- Note: hiding the *failing* set (rather than isolating the *passing* set) means the filter's hidden set fully replaces `_packageSession.HiddenOccurrenceIds`, so the filter cleanly "owns" visibility. Non-BOM nodes (assemblies/containers without a part row) are never in any part's occurrence set, so they stay visible and passing descendants render.
+
+**Application (MainActivity glue, FA path).** `ApplyBomFilterVisibility(IReadOnlySet<string> hiddenOccurrenceIds)`:
+- `AndroidScenePackageState.ApplyVisibilityState(scene, _packageSession, hiddenOccurrenceIds, Array.Empty<string>())`, then `FinalizeVisibilityMutation("bom-filter", count)`. **Show All** is the same call with an empty hidden set.
 
 **Dirty flag.** A single `bool _bomFilterVisibilityDirty` in MainActivity:
-- Set **true** by every visibility mutation **not** tagged as filter-driven: `SetModelExplorerNodeVisibility`, isolate, hide, show-all button, and `VisibilityChange` undo/redo.
+- Set **true** by every visibility mutation **not** tagged as filter-driven: `SetModelExplorerNodeVisibility`, isolate, hide, `ShowAllNodes`, and `VisibilityChange` undo/redo of those.
 - Set **false** immediately after a filter-driven apply establishes a consistent state.
-- Filter-driven mutations run inside a `using (SuppressDirty())` guard so they don't re-set the flag.
+- Filter-driven mutations run inside a `using (SuppressBomDirty())` guard so they don't re-set the flag.
 - Initial state (parts hidden on load, or after any of the above) ⇒ dirty.
 
-**Apply sequence** (a column dropdown OK / sort / clear-all that changes the passing set):
+**Apply sequence** (a column dropdown Done / sort / clear-all that changes the passing set):
 1. Capture `filterBefore = BomFilter.Snapshot()` and `visBefore = CaptureVisibilitySnapshot()`.
-2. If `RequiresShowAllWarning(dirty)` → show `AlertDialog` ("N parts are hidden. Applying a filter will make all parts visible first. Continue / Cancel"). Cancel → revert the dropdown change, abort.
-3. (continue) Apply the new filter/sort to the engine; rebuild `_visibleRows`; refresh table + headers.
-4. Compute `TargetVisibility`; under `SuppressDirty()` set `node.Visible`, run `FinalizeVisibilityMutation("bom filter")`; set `dirty = false`.
+2. If `dirty` → show `AlertDialog` ("N parts are hidden. Applying a filter will make all parts visible first. Continue / Cancel"). Cancel → revert the dropdown change, abort (no undo entry).
+3. Apply the new filter/sort to the engine; rebuild `_visibleRows`; refresh table + headers.
+4. Under `SuppressBomDirty()`: if it was dirty, first Show All; then compute the planner's hidden occurrence-id set and `ApplyBomFilterVisibility(...)`; set `dirty = false`. (The Show All and the apply collapse into the one mutation, captured by the single undo `after` snapshot.)
 5. Push one undo entry (below) with before/after of filter-state + visibility.
 
 ### 3. Undo integration (additive Core + Android)
@@ -111,7 +113,8 @@ Both classes live in `src/FabricationAssistant.App.Android/Bom/` and are **linke
 
 ## Edge cases
 
-- A consolidated part = several occurrence nodes → all toggled together by pass/fail.
+- **FA packages only.** The consolidated BOM (and therefore these filters) only loads for FA packages; visibility goes through `_packageSession` occurrence ids. No behaviour is added for non-FA scenes (they have no consolidated BOM).
+- A consolidated part = several occurrence nodes → all of its occurrence ids hide/show together by pass/fail.
 - Dropdown value lists come from the full consolidated dataset, independent of current visibility/other filters.
 - Clearing all filters = all values checked = passing set is everything = Show All.
 - Non-BOM nodes (assemblies/containers, geometry without a BOM row) are never hidden by the filter.
@@ -130,11 +133,11 @@ Both classes live in `src/FabricationAssistant.App.Android/Bom/` and are **linke
 **Android (nested repo):**
 - `src/FabricationAssistant.App.Android/Bom/BomColumnFilterModel.cs` (new, pure)
 - `src/FabricationAssistant.App.Android/Bom/BomConsolidatedFilterEngine.cs` (new, pure)
-- `src/FabricationAssistant.App.Android/Bom/BomFilterVisibilityCoordinator.cs` (new, pure)
+- `src/FabricationAssistant.App.Android/Bom/BomFilterVisibilityPlanner.cs` (new, pure — failing-parts → hidden occurrence-id set)
 - `src/FabricationAssistant.App.Android/Bom/BomColumnFilterPopup.cs` (new, Android view)
 - `src/FabricationAssistant.App.Android/Bom/AndroidBomFilterStateAccess.cs` (new, bridge)
 - `src/FabricationAssistant.App.Android/AndroidBomPanel.cs` (edit: header affordances, hold engine, rebuild rows from engine, raise apply)
-- `src/FabricationAssistant.App.Android/MainActivity.cs` (edit: dirty flag + hooks, apply sequence + warning dialog, BOM→node map, SceneContext wiring, undo recording)
+- `src/FabricationAssistant.App.Android/MainActivity.cs` (edit: dirty flag + `SuppressBomDirty` + hooks in `SetModelExplorerNodeVisibility`/isolate/hide/`ShowAllNodes`, apply sequence + warning `AlertDialog`, part-key→occurrence-id resolver via `ResolveBomTargetNodeIds`+`GetOccurrenceIdsForNodes`, `ApplyBomFilterVisibility` via `AndroidScenePackageState.ApplyVisibilityState`, `AndroidBomFilterStateAccess` wired into the `SceneContext` at `~488`, undo recording)
 - `src/FabricationAssistant.App.Android.Tests/*` (link the 3 pure files; add unit tests + a source guard)
 
 ## Testing
@@ -142,7 +145,7 @@ Both classes live in `src/FabricationAssistant.App.Android/Bom/` and are **linke
 **Host unit tests** (net8.0):
 - `BomColumnFilterModel`: `Allows` with checked/unchecked, unchecked-set O(1) cache, `SetValues` preserves unchecked across rebuilds, SelectAll/Clear, IsActive.
 - `BomConsolidatedFilterEngine`: AND across columns, sort A→Z/Z→A stability, `PassingPartKeys`, full-dataset value lists.
-- `BomFilterVisibilityCoordinator`: `RequiresShowAllWarning` (dirty transitions), `TargetVisibility` (multi-occurrence parts toggle together; non-BOM nodes untouched).
+- `BomFilterVisibilityPlanner`: `HiddenOccurrenceIds` returns the union of failing parts' occurrence ids (passing parts excluded; multi-occurrence parts contribute all their ids; empty when all pass) using a fake `occurrenceIdsForPart` resolver.
 - `BomFilterChange` round-trip: ApplyBefore/ApplyAfter restore filter-state + visibility + dirty via a fake `SceneContext` (fake `IBomFilterStateAccess` + `IVisibilityStateAccess`).
 
 **Source guard:** assert `AndroidBomPanel`/`MainActivity` wire the engine, the dirty flag hooks, and the `BomFilterChange` recording.
