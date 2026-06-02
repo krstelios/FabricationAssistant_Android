@@ -931,6 +931,22 @@ public sealed class GlesRendererSourceGuards
         Assert.Contains("_tool.CommitComputedBoundingBox(boundingBox, primaryNodeId)", src);
     }
 
+    [Fact]
+    public void BomConsolidatedFilters_AreWired()
+    {
+        string panel = File.ReadAllText(ResolveRepoPath(@"..\FabricationAssistant.App.Android\AndroidBomPanel.cs"));
+        Assert.Contains("BomConsolidatedFilterEngine<BomPanelRow>", panel);
+        Assert.Contains("ApplyFilterRequested", panel);
+
+        string main = File.ReadAllText(ResolveRepoPath(@"..\FabricationAssistant.App.Android\MainActivity.cs"));
+        Assert.Contains("_bomFilterStateAccess", main);
+        Assert.Contains("new SceneContext(", main);
+        Assert.Contains("BomFilterVisibilityPlanner.HiddenOccurrenceIds", main);
+        Assert.Contains("AndroidScenePackageState.ApplyVisibilityState(scene, _packageSession, hidden", main);
+        Assert.Contains("new FabricationAssistant.Core.UndoRedo.BomFilterChange(", main);
+        Assert.Contains("_bomFilterVisibilityDirty = true", main);
+    }
+
     private static string ResolveRepoPath(string relativeToTestProject, [CallerFilePath] string caller = "")
         => Path.GetFullPath(Path.Combine(Path.GetDirectoryName(caller)!, relativeToTestProject));
 
