@@ -7,6 +7,7 @@ using Android.Views;
 using Android.Views.InputMethods;
 using Android.Widget;
 using AndroidX.Core.Widget;
+using FabricationAssistant.App.Android.Bom;
 using FabricationAssistant.Core.SceneGraph;
 using FabricationAssistant.Import.Fa;
 using Google.Android.Material.Button;
@@ -66,6 +67,9 @@ internal sealed class AndroidBomPanel : IDisposable
     private MaterialButton? _isolateButton;
     private MaterialButton? _isolateXrayButton;
     private string _filterText = string.Empty;
+    // Consolidated column filters (consolidated kind only).
+    private BomConsolidatedFilterEngine<BomPanelRow>? _filterEngine;
+    private Context? _lastContext; // captured in CreateView for later header rebuilds
     private bool _disposed;
 
     public AndroidBomPanel(
@@ -81,9 +85,37 @@ internal sealed class AndroidBomPanel : IDisposable
 
     public Action<AndroidBomPanelTarget, AndroidBomPanelAction>? ActionRequested { get; set; }
 
+    /// <summary>Raised when the host should run the apply sequence (dirty/warning + visibility + undo), then call back into the panel.</summary>
+    public Action? ApplyFilterRequested { get; set; }
+
+    public IReadOnlyList<string> AllPartKeys => _allRows.Select(r => r.PartKey).Distinct().ToList();
+
+    public IReadOnlyCollection<string> PassingPartKeys()
+        => _filterEngine is null
+            ? AllPartKeys.ToHashSet(StringComparer.Ordinal)
+            : _filterEngine.Apply(_allRows).Select(r => r.PartKey).ToHashSet(StringComparer.Ordinal);
+
+    public IReadOnlyDictionary<string, IReadOnlyList<string>> SnapshotEngineUnchecked()
+        => _filterEngine?.UncheckedByColumn() ?? new Dictionary<string, IReadOnlyList<string>>();
+
+    public string? SortColumnKey => _filterEngine?.SortColumnKey;
+    public bool SortDescending => _filterEngine?.SortDescending ?? false;
+
+    public void RestoreEngineState(IReadOnlyDictionary<string, IReadOnlyList<string>> uncheckedByColumn, string? sortColumnKey, bool sortDescending)
+    {
+        if (_filterEngine is null) return;
+        _filterEngine.RestoreUnchecked(uncheckedByColumn);
+        _filterEngine.SetSortRaw(sortColumnKey, sortDescending);
+        if (_lastContext is { } ctx) RebuildHeader(ctx);
+        ApplyFilter();
+    }
+
+    public void RefreshAfterFilter(Context ctx) { RebuildHeader(ctx); ApplyFilter(); }
+
     public View CreateView(Context ctx)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        _lastContext = ctx;
 
         int pad = Dp(ctx, 14);
         _columnWidthsPx = DefaultColumnWidths(ctx);
@@ -301,8 +333,15 @@ internal sealed class AndroidBomPanel : IDisposable
 
         for (int i = 0; i < _columns.Length; i++)
         {
-            TextView cell = CreateCell(ctx, _columns[i].Title, GetColumnWidth(i), bold: true);
+            int columnIndex = i;
+            TextView cell = CreateCell(ctx, HeaderTitle(i), GetColumnWidth(i), bold: true);
             cell.SetTextColor(ColorRes(ctx, Resource.Color.fa_text_secondary));
+            if (_kind == AndroidBomPanelKind.Consolidated)
+            {
+                cell.Clickable = true;
+                cell.Focusable = true;
+                cell.Click += (_, _) => OpenColumnFilter(ctx, columnIndex, cell);
+            }
             row.AddView(cell);
         }
 
@@ -317,10 +356,42 @@ internal sealed class AndroidBomPanel : IDisposable
         _headerRow.RemoveAllViews();
         for (int i = 0; i < _columns.Length; i++)
         {
-            TextView cell = CreateCell(ctx, _columns[i].Title, GetColumnWidth(i), bold: true);
+            int columnIndex = i;
+            TextView cell = CreateCell(ctx, HeaderTitle(i), GetColumnWidth(i), bold: true);
             cell.SetTextColor(ColorRes(ctx, Resource.Color.fa_text_secondary));
+            if (_kind == AndroidBomPanelKind.Consolidated)
+            {
+                cell.Clickable = true;
+                cell.Focusable = true;
+                cell.Click += (_, _) => OpenColumnFilter(ctx, columnIndex, cell);
+            }
             _headerRow.AddView(cell);
         }
+    }
+
+    private string HeaderTitle(int columnIndex)
+    {
+        ColumnSpec spec = _columns[columnIndex];
+        if (_kind != AndroidBomPanelKind.Consolidated || _filterEngine is null)
+            return spec.Title;
+        bool active = _filterEngine.Column(spec.Key).IsActive;
+        bool sorted = string.Equals(_filterEngine.SortColumnKey, spec.Key, StringComparison.Ordinal);
+        string arrow = sorted ? (_filterEngine.SortDescending ? " ▼" : " ▲") : string.Empty;
+        string dot = active ? " •" : string.Empty;
+        return spec.Title + arrow + dot;
+    }
+
+    private void OpenColumnFilter(Context ctx, int columnIndex, View anchor)
+    {
+        if (_filterEngine is null) return;
+        ColumnSpec spec = _columns[columnIndex];
+        var popup = new BomColumnFilterPopup(
+            ctx,
+            _filterEngine.Column(spec.Key),
+            onSort: dir => _filterEngine.SetSort(spec.Key, dir),
+            onApply: () => ApplyFilterRequested?.Invoke(),
+            onChanged: () => { });
+        popup.Show(anchor);
     }
 
     private void AddActions(Context ctx, LinearLayout root)
@@ -339,6 +410,28 @@ internal sealed class AndroidBomPanel : IDisposable
         actions.AddView(_selectButton, ActionButtonLayout(ctx, first: true));
         actions.AddView(_isolateButton, ActionButtonLayout(ctx, first: false));
         actions.AddView(_isolateXrayButton, ActionButtonLayout(ctx, first: false));
+
+        if (_kind == AndroidBomPanelKind.Consolidated)
+        {
+            var clearFiltersButton = new MaterialButton(ctx, null, Resource.Attribute.materialButtonOutlinedStyle)
+            {
+                Text = "Clear filters",
+                ContentDescription = "Clear filters",
+                InsetTop = 0,
+                InsetBottom = 0,
+            };
+            clearFiltersButton.SetTextSize(ComplexUnitType.Sp, 12f);
+            clearFiltersButton.SetAllCaps(false);
+            clearFiltersButton.SetMinHeight(0);
+            clearFiltersButton.SetPadding(Dp(ctx, 8), 0, Dp(ctx, 8), 0);
+            clearFiltersButton.Click += (_, _) =>
+            {
+                _filterEngine?.ClearAll();
+                ApplyFilterRequested?.Invoke();
+            };
+            actions.AddView(clearFiltersButton, ActionButtonLayout(ctx, first: false));
+        }
+
         root.AddView(actions, new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MatchParent,
             ViewGroup.LayoutParams.WrapContent));
@@ -493,6 +586,10 @@ internal sealed class AndroidBomPanel : IDisposable
         }
 
         _roots.AddRange(_allRows);
+        _filterEngine = new BomConsolidatedFilterEngine<BomPanelRow>(
+            _columns.Select(c => c.Key).ToList(),
+            (row, key) => CellText(row, key));
+        _filterEngine.RebuildValueLists(_allRows);
     }
 
     private void ApplyFilter()
@@ -512,11 +609,10 @@ internal sealed class AndroidBomPanel : IDisposable
         }
         else
         {
-            foreach (BomPanelRow row in _allRows)
-            {
+            IReadOnlyList<BomPanelRow> rows = _filterEngine?.Apply(_allRows) ?? _allRows;
+            foreach (BomPanelRow row in rows)
                 if (filter.Length == 0 || row.Matches(filter))
                     _visibleRows.Add(row);
-            }
         }
 
         _selectedRow = ResolveSelectedRow();
