@@ -44,6 +44,7 @@ public sealed class ViewportSurfaceView : GLSurfaceView
     {
         _renderer = new GlesViewportRenderer { CommandQueue = _pending };
         _renderer.DelayedRenderRequested += OnRendererDelayedRenderRequested;
+        _renderer.ContextResourcesLost += OnRendererSurfaceCreated;
         _bridge = new GlesRendererBridge(_renderer, OnRendererSurfaceCreated);
         _vsyncRenderCallback = new VsyncRenderCallback(this);
         ConfigureContext();
@@ -53,6 +54,7 @@ public sealed class ViewportSurfaceView : GLSurfaceView
     {
         _renderer = new GlesViewportRenderer { CommandQueue = _pending };
         _renderer.DelayedRenderRequested += OnRendererDelayedRenderRequested;
+        _renderer.ContextResourcesLost += OnRendererSurfaceCreated;
         _bridge = new GlesRendererBridge(_renderer, OnRendererSurfaceCreated);
         _vsyncRenderCallback = new VsyncRenderCallback(this);
         ConfigureContext();
@@ -117,6 +119,13 @@ public sealed class ViewportSurfaceView : GLSurfaceView
 
         Volatile.Write(ref _paused, 0);
         base.OnResume();
+        // The EGL context is normally preserved across pause, so the scene's GPU
+        // handles survive and nothing needs re-uploading. But probe on the GL
+        // thread for a context whose resources Android silently reclaimed: if the
+        // mesh program handle is no longer valid the scene is dead, so drop it and
+        // re-upload (via ContextResourcesLost -> the surface-created reload path).
+        // The probe is a cheap no-op when the resources are intact.
+        QueueRendererCommand("resume-context-probe", _ => _renderer.RecoverIfContextResourcesLost(), logSlow: false);
         if (!_pending.IsEmpty)
             RequestRender();
     }
@@ -283,16 +292,16 @@ public sealed class ViewportSurfaceView : GLSurfaceView
     private void ConfigureContext()
     {
         SetEGLContextClientVersion(3);
-        // Do NOT preserve the EGL context across pause/resume. The preserve hint
-        // is unreliable: under memory pressure Android can reclaim the context
-        // while we're backgrounded WITHOUT GLSurfaceView noticing, leaving
-        // renderer.Scene non-null but holding dead GPU handles - a black 3D view
-        // on resume that the context-loss recovery can't catch (it only fires on
-        // a real surface re-create). Forcing a fresh context on every resume
-        // guarantees OnSurfaceCreated runs, which drops the stale scene and lets
-        // the host re-upload the retained model. Cost: a quick re-upload on
-        // resume. Set BEFORE SetEGLConfigChooser per GLSurfaceView contract.
-        PreserveEGLContextOnPause = false;
+        // Preserve the EGL context across pause/resume so a normal return to the
+        // app is instant (the scene's GPU handles survive, no re-upload). The
+        // preserve hint is not a hard guarantee though: Android can silently
+        // reclaim the context's GPU objects WITHOUT GLSurfaceView re-creating the
+        // surface, which leaves renderer.Scene non-null but dead -> a black view
+        // on resume. OnResume probes for exactly that case (see
+        // GlesViewportRenderer.RecoverIfContextResourcesLost) and re-uploads ONLY
+        // when the resources are actually gone, so the common resume stays cheap.
+        // Set BEFORE SetEGLConfigChooser per GLSurfaceView contract.
+        PreserveEGLContextOnPause = true;
         // Default backbuffer: RGB8 + Depth24 + Stencil8 for EGL context
         // compatibility. Scene depth precision comes from the renderer's
         // offscreen D32FS8 FBO; see Plan 3B
@@ -383,6 +392,7 @@ public sealed class ViewportSurfaceView : GLSurfaceView
 
         RendererSurfaceCreated = null;
         _renderer.DelayedRenderRequested -= OnRendererDelayedRenderRequested;
+        _renderer.ContextResourcesLost -= OnRendererSurfaceCreated;
         ClearPendingRenderCallbacks();
         ClearPendingRendererCommands(reason);
         RemoveVsyncRenderCallback(reason);

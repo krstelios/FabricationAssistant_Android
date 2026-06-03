@@ -135,6 +135,13 @@ public sealed class GlesViewportRenderer : IDisposable
     public event Action<int>? DelayedRenderRequested;
 
     /// <summary>
+    /// Raised on the GL thread when a resume probe finds the context's GPU objects
+    /// were silently reclaimed and the stale scene was dropped. The host re-uploads
+    /// the retained model in response (same path as a real surface re-create).
+    /// </summary>
+    public event Action? ContextResourcesLost;
+
+    /// <summary>
     /// 1-based mesh index to highlight in the next frame, or 0 for none.
     /// Set by the host (MainActivity) after a successful tap-pick.
     /// </summary>
@@ -555,6 +562,36 @@ public sealed class GlesViewportRenderer : IDisposable
         _lastSsaoDiagnostics = default;
 #endif
         Android.Util.Log.Info("FA.Renderer", "Trimmed transient GPU framebuffers under memory pressure.");
+    }
+
+    /// <summary>
+    /// Resume-time guard for a context whose GPU objects Android silently reclaimed
+    /// while backgrounded WITHOUT GLSurfaceView re-creating the surface (so
+    /// OnSurfaceCreated never fired and <see cref="Scene"/> is still non-null but
+    /// dead). Runs on the GL thread. If the cached mesh program is no longer a valid
+    /// program name in the current context, the scene's buffers/textures are gone
+    /// too, so drop the stale scene and raise <see cref="ContextResourcesLost"/> to
+    /// have the host re-upload. A cheap no-op when the resources are intact, so a
+    /// normal resume with a preserved context performs no re-upload.
+    /// </summary>
+    public void RecoverIfContextResourcesLost()
+    {
+        _guard.EnsureOnRenderThread();
+        if (_gl is null || !_initialized || _meshProgram is null || Scene is null)
+            return;
+        if (_meshProgram.Handle != 0 && _gl.IsProgram(_meshProgram.Handle))
+            return; // GPU objects survived the pause - nothing to do
+
+        Android.Util.Log.Warn(
+            "FA.Renderer",
+            "GL resources were reclaimed while backgrounded (surface not re-created); dropping stale GPU scene to force re-upload.");
+        GpuScene? stale = Scene;
+        Scene = null;
+        SelectedMeshIndex = 0;
+        HoveredMeshIndex = 0;
+        _edgeSettingsScene = null;
+        TryDispose(stale);
+        ContextResourcesLost?.Invoke();
     }
 
     public void OnDrawFrame()
