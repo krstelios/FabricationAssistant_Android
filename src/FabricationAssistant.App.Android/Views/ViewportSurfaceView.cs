@@ -283,11 +283,16 @@ public sealed class ViewportSurfaceView : GLSurfaceView
     private void ConfigureContext()
     {
         SetEGLContextClientVersion(3);
-        // Preserve the EGL context across app pause/resume cycles. Without
-        // this, going to background destroys the context and every GL
-        // handle in the scene (GpuMesh VBOs, FBOs, textures) becomes
-        // invalid. Set BEFORE SetEGLConfigChooser per GLSurfaceView contract.
-        PreserveEGLContextOnPause = true;
+        // Do NOT preserve the EGL context across pause/resume. The preserve hint
+        // is unreliable: under memory pressure Android can reclaim the context
+        // while we're backgrounded WITHOUT GLSurfaceView noticing, leaving
+        // renderer.Scene non-null but holding dead GPU handles - a black 3D view
+        // on resume that the context-loss recovery can't catch (it only fires on
+        // a real surface re-create). Forcing a fresh context on every resume
+        // guarantees OnSurfaceCreated runs, which drops the stale scene and lets
+        // the host re-upload the retained model. Cost: a quick re-upload on
+        // resume. Set BEFORE SetEGLConfigChooser per GLSurfaceView contract.
+        PreserveEGLContextOnPause = false;
         // Default backbuffer: RGB8 + Depth24 + Stencil8 for EGL context
         // compatibility. Scene depth precision comes from the renderer's
         // offscreen D32FS8 FBO; see Plan 3B
