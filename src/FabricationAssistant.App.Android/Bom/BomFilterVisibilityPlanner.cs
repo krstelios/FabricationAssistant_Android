@@ -69,9 +69,13 @@ public static class BomFilterVisibilityPlanner
         var protect = new HashSet<string>(StringComparer.Ordinal);
         foreach (OccurrenceTreeNode node in nodeList)
         {
-            if (!node.HasGeometry || string.IsNullOrEmpty(node.OccurrenceId))
+            if (!node.HasGeometry)
                 continue;
-            if (candidateHidden.Contains(node.OccurrenceId))
+            // A geometry node whose OWN occurrence is hidden does not need its
+            // ancestors kept. A geometry node with no occurrence id can never be in
+            // the hidden set, so it still protects its ancestors (otherwise a passing
+            // leaf whose mesh sits on an occ-less node would be pruned).
+            if (!string.IsNullOrEmpty(node.OccurrenceId) && candidateHidden.Contains(node.OccurrenceId))
                 continue; // this geometry is hidden — it does not need its ancestors kept
 
             // Visible geometry: protect every ancestor's occurrence so the subtree

@@ -71,6 +71,50 @@ public class BomConsolidatedFilterEngineTests
     }
 
     [Fact]
+    public void UncheckedByColumn_RoundTripsThrough_RestoreUnchecked()
+    {
+        // The undo path snapshots UncheckedByColumn() and later restores it; this
+        // guards that the data path itself round-trips the per-column selection.
+        var e = NewEngine();
+        e.RebuildValueLists(Rows);
+        e.Column("source").SetChecked("Made", false);
+        var snapshot = e.UncheckedByColumn();
+
+        var restored = NewEngine();
+        restored.RebuildValueLists(Rows);
+        restored.RestoreUnchecked(snapshot);
+
+        Assert.False(restored.Column("source").Allows("Made"));
+        Assert.True(restored.Column("source").Allows("Purchased"));
+        Assert.True(restored.AnyActive);
+        Assert.Equal(new[] { "p1", "p2" }, restored.Apply(Rows).Select(r => r.PartKey));
+    }
+
+    private sealed record NumRow(string PartKey, string Qty);
+
+    [Fact]
+    public void Sort_NumericColumn_OrdersNumerically_NotLexicographically()
+    {
+        var rows = new[]
+        {
+            new NumRow("p1", "1"),
+            new NumRow("p2", "10"),
+            new NumRow("p3", "2"),
+        };
+        var e = new BomConsolidatedFilterEngine<NumRow>(
+            new[] { "qty" },
+            (row, key) => row.Qty,
+            numericColumnKeys: new[] { "qty" });
+        e.RebuildValueLists(rows);
+
+        e.SetSort("qty", SortDirection.Ascending);
+        Assert.Equal(new[] { "1", "2", "10" }, e.Apply(rows).Select(r => r.Qty));
+
+        e.SetSort("qty", SortDirection.Descending);
+        Assert.Equal(new[] { "10", "2", "1" }, e.Apply(rows).Select(r => r.Qty));
+    }
+
+    [Fact]
     public void RebuildValueLists_FillsEachColumnWithDistinctValues()
     {
         var e = NewEngine();

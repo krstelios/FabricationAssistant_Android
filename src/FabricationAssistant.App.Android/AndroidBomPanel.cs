@@ -88,6 +88,9 @@ internal sealed class AndroidBomPanel : IDisposable
     /// <summary>Raised when the host should run the apply sequence (dirty/warning + visibility + undo), then call back into the panel.</summary>
     public Action? ApplyFilterRequested { get; set; }
 
+    /// <summary>Raised just before an undoable filter edit begins (a column popup is opened, or Clear filters is pressed), so the host can snapshot the pre-edit state for undo.</summary>
+    public Action? FilterEditStarting { get; set; }
+
     public IReadOnlyList<string> AllPartKeys => _allRows.Select(r => r.PartKey).Distinct().ToList();
 
     public IReadOnlyCollection<string> PassingPartKeys()
@@ -103,7 +106,7 @@ internal sealed class AndroidBomPanel : IDisposable
 
     public void RestoreEngineState(IReadOnlyDictionary<string, IReadOnlyList<string>> uncheckedByColumn, string? sortColumnKey, bool sortDescending)
     {
-        if (_filterEngine is null) return;
+        if (_disposed || _filterEngine is null) return;
         _filterEngine.RestoreUnchecked(uncheckedByColumn);
         _filterEngine.SetSortRaw(sortColumnKey, sortDescending);
         if (_lastContext is { } ctx) RebuildHeader(ctx);
@@ -409,13 +412,12 @@ internal sealed class AndroidBomPanel : IDisposable
     {
         if (_filterEngine is null) return;
         ColumnSpec spec = _columns[columnIndex];
-        global::Android.Util.Log.Info("FA.BOM", $"Column filter opened: {spec.Key}. col={columnIndex}, anchor={anchor.GetHashCode()}.");
+        FilterEditStarting?.Invoke(); // let the host snapshot the pre-edit state for undo
         var popup = new BomColumnFilterPopup(
             ctx,
             _filterEngine.Column(spec.Key),
             onSort: dir => _filterEngine.SetSort(spec.Key, dir),
-            onApply: () => ApplyFilterRequested?.Invoke(),
-            onChanged: () => { });
+            onApply: () => ApplyFilterRequested?.Invoke());
         popup.Show(anchor);
     }
 
@@ -451,6 +453,7 @@ internal sealed class AndroidBomPanel : IDisposable
             clearFiltersButton.SetPadding(Dp(ctx, 8), 0, Dp(ctx, 8), 0);
             clearFiltersButton.Click += (_, _) =>
             {
+                FilterEditStarting?.Invoke();
                 _filterEngine?.ClearAll();
                 ApplyFilterRequested?.Invoke();
             };
@@ -655,7 +658,8 @@ internal sealed class AndroidBomPanel : IDisposable
         _roots.AddRange(_allRows);
         _filterEngine = new BomConsolidatedFilterEngine<BomPanelRow>(
             _columns.Select(c => c.Key).ToList(),
-            (row, key) => CellText(row, key));
+            (row, key) => CellText(row, key),
+            numericColumnKeys: new[] { ColumnKeyOccurrenceCount });
         _filterEngine.RebuildValueLists(_allRows);
     }
 
@@ -680,8 +684,6 @@ internal sealed class AndroidBomPanel : IDisposable
             foreach (BomPanelRow row in rows)
                 if (filter.Length == 0 || row.Matches(filter))
                     _visibleRows.Add(row);
-            global::Android.Util.Log.Info("FA.BOM",
-                $"Consolidated filter: {_visibleRows.Count}/{_allRows.Count} rows, sort={_filterEngine?.SortColumnKey ?? "none"}/{((_filterEngine?.SortDescending ?? false) ? "desc" : "asc")}, anyActive={_filterEngine?.AnyActive ?? false}.");
         }
 
         _selectedRow = ResolveSelectedRow();
@@ -898,6 +900,13 @@ internal sealed class AndroidBomPanel : IDisposable
                 widths[i] = Math.Min(widths[i], maxWidth);
         }
 
+        // Consolidated headers render an enlarged filter/sort glyph after the title.
+        // Apply its width AFTER the MaxWidthDp cap (as a floor) so the active-filter
+        // dot and sort arrow are never clipped on narrow columns like Rev/Source.
+        if (_kind == AndroidBomPanelKind.Consolidated && _filterEngine is not null)
+            for (int i = 0; i < _columns.Length; i++)
+                widths[i] = Math.Max(widths[i], MeasureHeaderWidth(paint, i, cellPadding));
+
         _measuredColumnWidthsPx = (int[])widths.Clone();
         _measuredColumnWidthsDensity = density;
         return widths;
@@ -918,6 +927,24 @@ internal sealed class AndroidBomPanel : IDisposable
 
     private static int MeasureTextWidth(Paint paint, string text, int padding)
         => (int)MathF.Ceiling(paint.MeasureText(text ?? string.Empty)) + padding;
+
+    // Width needed for a consolidated header: the title at base size plus the
+    // filter/sort glyph measured at the enlarged size it is rendered with (the
+    // 1.6x RelativeSizeSpan in ApplyHeaderChevron).
+    private int MeasureHeaderWidth(Paint paint, int columnIndex, int padding)
+    {
+        string title = _columns[columnIndex].Title;
+        string full = HeaderTitle(columnIndex);
+        if (full.Length <= title.Length)
+            return MeasureTextWidth(paint, title, padding);
+
+        float titleWidth = paint.MeasureText(title);
+        float baseSize = paint.TextSize;
+        paint.TextSize = baseSize * 1.6f;
+        float glyphWidth = paint.MeasureText(full.Substring(title.Length));
+        paint.TextSize = baseSize;
+        return (int)MathF.Ceiling(titleWidth + glyphWidth) + padding;
+    }
 
     private static void ExpandColumnsToFill(int[] widths, int extra)
     {

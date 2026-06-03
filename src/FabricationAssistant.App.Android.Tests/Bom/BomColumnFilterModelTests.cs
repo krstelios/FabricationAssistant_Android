@@ -61,6 +61,29 @@ public class BomColumnFilterModelTests
     }
 
     [Fact]
+    public void RestoreUnchecked_DropsValuesNoLongerPresent_SoNoPhantomActiveFilter()
+    {
+        var m = new BomColumnFilterModel("name");
+        m.SetValues(new[] { "Steel", "Aluminum" });
+        // An undo snapshot taken before a reload referenced a value that is gone now.
+        m.RestoreUnchecked(new[] { "Ghost" });
+        Assert.True(m.Allows("Steel"));
+        Assert.True(m.Allows("Aluminum"));
+        Assert.False(m.IsActive); // phantom 'Ghost' must not keep the column "filtering"
+    }
+
+    [Fact]
+    public void RestoreUnchecked_KeepsUncheckedStateForSurvivingValues()
+    {
+        var m = new BomColumnFilterModel("name");
+        m.SetValues(new[] { "Steel", "Aluminum" });
+        m.RestoreUnchecked(new[] { "Aluminum" });
+        Assert.False(m.Allows("Aluminum"));
+        Assert.True(m.Allows("Steel"));
+        Assert.True(m.IsActive);
+    }
+
+    [Fact]
     public void SetValues_IsDistinct_AndOrdinalIgnoreCaseDedup()
     {
         var m = new BomColumnFilterModel("name");

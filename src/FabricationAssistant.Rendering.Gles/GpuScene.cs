@@ -213,11 +213,8 @@ public sealed class GpuScene : IDisposable
         // full-scanning every mesh on each call (e.g. per frame) is wasteful when the
         // scene's visibility state is unchanged.
         long visibilityVersion = scene.VisibilityVersion;
-        bool gated = ReferenceEquals(_lastVisibilitySyncScene, scene)
-            && _lastVisibilityVersion == visibilityVersion;
-        global::Android.Util.Log.Info("FA.Visibility",
-            $"GpuScene.SyncNodeVisibility: gated={gated}, ver={visibilityVersion}, lastVer={_lastVisibilityVersion}.");
-        if (gated)
+        if (ReferenceEquals(_lastVisibilitySyncScene, scene)
+            && _lastVisibilityVersion == visibilityVersion)
         {
             return;
         }
@@ -225,8 +222,6 @@ public sealed class GpuScene : IDisposable
         HashSet<int> visibleNodeIds = scene.GetVisibleNodes()
             .Select(node => node.Id)
             .ToHashSet();
-        global::Android.Util.Log.Info("FA.Visibility",
-            $"GpuScene.SyncNodeVisibility ran: visibleNodes={visibleNodeIds.Count}, meshes={_meshes.Count}.");
 
         IReadOnlyList<GpuMesh> meshes = _meshes;
         foreach (GpuMesh mesh in meshes)

@@ -135,6 +135,7 @@ public sealed class MainActivity : AppCompatActivity
     private bool _bomFilterVisibilityDirty = true;     // true until a filter establishes a consistent state
     private bool _suppressBomDirty;                     // set while filter-driven visibility mutations run
     private AndroidBomPanel? _consolidatedBomPanel;     // the open consolidated panel, if any
+    private FabricationAssistant.Core.UndoRedo.BomFilterStateSnapshot? _pendingBomFilterBefore; // pre-edit snapshot for the next filter undo
     private AndroidBomFilterStateAccess? _bomFilterStateAccess;
     private bool _syncingUndoSelectionState;
     private PackageSessionState? _packageSession;
@@ -3891,26 +3892,6 @@ public sealed class MainActivity : AppCompatActivity
                 return;
             }
             changedCount = occurrenceIds.Length;
-
-            // FA.Vis closed-loop diagnostic: when SHOWING a node, report whether any
-            // ancestor assembly is still hidden (hierarchical scene visibility prunes
-            // a node whose ancestor is hidden) and how many of this node's geometry
-            // nodes are actually effectively visible afterwards.
-            if (isVisible)
-            {
-                HashSet<string> hiddenNow = _packageSession.HiddenOccurrenceIds;
-                int[] shownNodeIds = _modelExplorerPanel.GetSceneNodeIdsForVisibility(scene, node);
-                var ancestorOcc = new HashSet<string>(StringComparer.Ordinal);
-                foreach (int shownNodeId in shownNodeIds)
-                    for (SceneNode? ancestor = scene.GetNode(shownNodeId)?.Parent; ancestor is not null; ancestor = ancestor.Parent)
-                        if (AndroidScenePackageState.TryGetOccurrenceId(scene, ancestor, out string ancestorOccurrenceId))
-                            ancestorOcc.Add(ancestorOccurrenceId);
-                int hiddenAncestors = ancestorOcc.Count(hiddenNow.Contains);
-                HashSet<int> visibleSet = scene.GetVisibleNodes().Select(n => n.Id).ToHashSet();
-                int effectivelyVisible = shownNodeIds.Count(visibleSet.Contains);
-                global::Android.Util.Log.Info("FA.Vis",
-                    $"SHOW '{node.DisplayName}': shownNodes={shownNodeIds.Length}, effectivelyVisible={effectivelyVisible}, hiddenAncestors={hiddenAncestors}/{ancestorOcc.Count}, totalVisible={visibleSet.Count}.");
-            }
         }
         else
         {
@@ -3972,6 +3953,7 @@ public sealed class MainActivity : AppCompatActivity
         {
             _consolidatedBomPanel = panel;
             panel.ApplyFilterRequested = () => ApplyBomFilter(panel);
+            panel.FilterEditStarting = () => _pendingBomFilterBefore = _bomFilterStateAccess?.Snapshot();
         }
         ShowLeftToolPanel(panelKind, panel.CreateView(this), panel);
     }
@@ -4390,6 +4372,14 @@ public sealed class MainActivity : AppCompatActivity
         _leftToolPanelContent = null;
         if (content is CloudFilesPanel)
             _cloudPanel = null;
+        if (ReferenceEquals(content, _consolidatedBomPanel))
+        {
+            // The consolidated BOM panel is being torn down (panel switch/close);
+            // drop the reference the undo bridge holds so a later undo/redo can't act
+            // on a disposed panel, and discard any half-captured pre-edit snapshot.
+            _consolidatedBomPanel = null;
+            _pendingBomFilterBefore = null;
+        }
         if (content is null)
             return;
 
@@ -7552,8 +7542,6 @@ public sealed class MainActivity : AppCompatActivity
         Scene? scene = _runtimeScene;
         if (scene is null || _packageSession is null) return;
 
-        global::Android.Util.Log.Info("FA.BOM", $"Filter apply requested: dirty={_bomFilterVisibilityDirty}.");
-
         int hiddenNow = _packageSession.HiddenOccurrenceIds.Count + _packageSession.IsolatedOccurrenceIds.Count;
         // Only warn when parts are actually hidden — if everything is already
         // visible there is nothing to "show all" first, so apply silently.
@@ -7563,17 +7551,35 @@ public sealed class MainActivity : AppCompatActivity
                 .SetTitle("Show all parts?")
                 ?.SetMessage($"{hiddenNow} part(s) are hidden. Applying a filter will make all parts visible first.")
                 ?.SetPositiveButton("Continue", (_, _) => CommitBomFilter(panel, scene))
-                ?.SetNegativeButton("Cancel", (_, _) => { })
+                ?.SetNegativeButton("Cancel", (_, _) => CancelBomFilter(panel))
                 ?.Show();
             return;
         }
         CommitBomFilter(panel, scene);
     }
 
+    // The popup / Clear-filters already wrote the edit into the engine before
+    // requesting apply, so cancelling the "show all" prompt must roll the engine
+    // back to the snapshot taken when the edit began — otherwise the dropdowns stay
+    // changed with nothing applied and no undo entry to fix it.
+    private void CancelBomFilter(AndroidBomPanel panel)
+    {
+        if (_pendingBomFilterBefore is { } before)
+        {
+            panel.RestoreEngineState(before.UncheckedValuesByColumn, before.SortColumnKey, before.SortDescending);
+            _pendingBomFilterBefore = null;
+        }
+    }
+
     private void CommitBomFilter(AndroidBomPanel panel, Scene scene)
     {
         if (_packageSession is null) return;
-        var filterBefore = _bomFilterStateAccess!.Snapshot();
+        // The pre-edit snapshot was captured when the edit began (popup opened or
+        // Clear filters pressed), BEFORE the popup wrote the change into the engine;
+        // snapshotting here instead would record the already-changed state and make
+        // undo restore nothing. Fall back to a fresh snapshot defensively.
+        var filterBefore = _pendingBomFilterBefore ?? _bomFilterStateAccess!.Snapshot();
+        _pendingBomFilterBefore = null;
         VisibilityStateSnapshot visBefore = CaptureVisibilitySnapshot();
 
         panel.RefreshAfterFilter(this);  // recompute table rows + headers from the engine
@@ -7586,51 +7592,13 @@ public sealed class MainActivity : AppCompatActivity
         // passing part nested beneath it — you could never view a leaf without
         // showing its whole parent assembly. Keep every ancestor of a still-visible
         // part out of the hidden set; the non-passing sibling leaves stay hidden.
-        var occTree = EnumerateOccurrenceTree(scene).ToList();
-        int visibleGeometryNodes = occTree.Count(n => n.HasGeometry && !candidateHidden.Contains(n.OccurrenceId));
-        IReadOnlySet<string> hidden = BomFilterVisibilityPlanner.RetainVisibleContainers(candidateHidden, occTree);
-
-        // FA.BOM closed-loop diagnostic: how much the ancestor-retain reduced the
-        // hidden set, and whether the passing parts actually carry geometry (self vs
-        // only-in-descendants). If visibleGeometryNodes is ~0 the passing rows have
-        // no own geometry — their meshes live in non-passing child parts.
-        int passingNodes = 0, passingSelfMesh = 0, passingDescMesh = 0;
-        foreach (string pk in passing)
-            foreach (SceneNode pn in scene.NodesById.Values.Where(n => SameTextIgnoreCase(n.Metadata?.SourceKey, pk)))
-            {
-                passingNodes++;
-                if (pn.MeshId.HasValue) passingSelfMesh++;
-                if (HasDescendantMesh(pn)) passingDescMesh++;
-            }
-        global::Android.Util.Log.Info("FA.BOM",
-            $"Filter commit: allParts={panel.AllPartKeys.Count}, passing={passing.Count}, passKeys=[{string.Join(";", passing)}], candidateHidden={candidateHidden.Count}, resolvedHidden={hidden.Count}, treeNodes={occTree.Count}, visibleGeometryNodes={visibleGeometryNodes}, passingNodes={passingNodes}, passingSelfMesh={passingSelfMesh}, passingDescMesh={passingDescMesh}.");
-        global::Android.Util.Log.Info("FA.BOM",
-            $"engine unchecked: {string.Join(" | ", panel.SnapshotEngineUnchecked().Where(kv => kv.Value.Count > 0).Select(kv => $"{kv.Key}#{kv.Value.Count}=[{string.Join(",", kv.Value.Take(4))}]"))}");
+        IReadOnlySet<string> hidden = BomFilterVisibilityPlanner.RetainVisibleContainers(
+            candidateHidden, EnumerateOccurrenceTree(scene));
 
         using (SuppressBomDirty())
         {
             ClearXrayIsolationState();
-            long verBefore = scene.VisibilityVersion;
-            bool changed = AndroidScenePackageState.ApplyVisibilityState(scene, _packageSession, hidden, System.Array.Empty<string>());
-            global::Android.Util.Log.Info("FA.BOM",
-                $"apply-visibility: changed={changed}, verBefore={verBefore}, verAfter={scene.VisibilityVersion}, sessionHidden={_packageSession.HiddenOccurrenceIds.Count}, visibleNodes={scene.GetVisibleNodes().Count}.");
-
-            // Deep probe: walk the RUNTIME scene-parent chain of one passing IGU mesh
-            // node, logging each ancestor's type/SourceKey/occ-hidden/Visible so we can
-            // see why the ancestor-retain didn't reach the hidden container.
-            SceneNode? probe = scene.NodesById.Values.FirstOrDefault(
-                n => n.MeshId.HasValue && passing.Any(pk => SameTextIgnoreCase(n.Metadata?.SourceKey, pk)));
-            if (probe is not null)
-            {
-                var sb = new System.Text.StringBuilder();
-                for (SceneNode? a = probe; a is not null; a = a.Parent)
-                {
-                    AndroidScenePackageState.TryGetOccurrenceId(scene, a, out string ao);
-                    sb.Append($"[{a.Id} {a.NodeType} sk='{a.Metadata?.SourceKey}' hid={_packageSession.HiddenOccurrenceIds.Contains(ao)} vis={a.Visible}] <- ");
-                }
-                global::Android.Util.Log.Info("FA.BOM", $"probe[{probe.Id}] chain: {sb}");
-            }
-
+            AndroidScenePackageState.ApplyVisibilityState(scene, _packageSession, hidden, System.Array.Empty<string>());
             _bomFilterVisibilityDirty = false;
             FinalizeVisibilityMutation("bom-filter", hidden.Count);
         }
@@ -7657,23 +7625,15 @@ public sealed class MainActivity : AppCompatActivity
     private static IEnumerable<BomFilterVisibilityPlanner.OccurrenceTreeNode> EnumerateOccurrenceTree(Scene scene)
     {
         // Emit EVERY node (keyed by unique node id) so the parent chain stays
-        // unbroken even past nodes without an occurrence id; occ-less nodes carry
-        // an empty occurrence id and are simply never protected.
+        // unbroken even past nodes without an occurrence id; an occ-less node carries
+        // an empty occurrence id (it can't be hidden directly, but a visible occ-less
+        // mesh still protects its ancestors).
         foreach (SceneNode node in scene.NodesById.Values)
         {
             AndroidScenePackageState.TryGetOccurrenceId(scene, node, out string occurrenceId);
             yield return new BomFilterVisibilityPlanner.OccurrenceTreeNode(
                 node.Id, node.Parent?.Id ?? -1, occurrenceId ?? string.Empty, node.MeshId.HasValue);
         }
-    }
-
-    // Diagnostic helper: does any descendant of this node carry mesh geometry?
-    private static bool HasDescendantMesh(SceneNode node)
-    {
-        foreach (SceneNode child in node.Children)
-            if (child.MeshId.HasValue || HasDescendantMesh(child))
-                return true;
-        return false;
     }
 
     private void ClearSelectionAfterVisibilityMutation(Scene scene)
@@ -7822,8 +7782,6 @@ public sealed class MainActivity : AppCompatActivity
                 return;
             }
 
-            global::Android.Util.Log.Info("FA.Visibility",
-                $"sync-cmd run: reason={reason}, ver={scene.VisibilityVersion}, hasGpuScene={viewport.Renderer.Scene is not null}.");
             var renderer = viewport.Renderer;
             renderer.Scene?.SyncNodeVisibility(scene);
             renderer.XrayIsolationOpacity = opacity;

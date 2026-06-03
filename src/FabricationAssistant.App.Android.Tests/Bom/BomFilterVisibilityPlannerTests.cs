@@ -46,4 +46,44 @@ public class BomFilterVisibilityPlannerTests
             occurrenceIdsForPart: OccOf);
         Assert.Empty(hidden);
     }
+
+    private static OccNode Node(int id, int parent, string occ, bool geom) => new(id, parent, occ, geom);
+
+    private sealed record OccNode(int Id, int Parent, string Occ, bool Geom);
+
+    private static BomFilterVisibilityPlanner.OccurrenceTreeNode[] Tree(params OccNode[] ns) =>
+        ns.Select(n => new BomFilterVisibilityPlanner.OccurrenceTreeNode(n.Id, n.Parent, n.Occ, n.Geom)).ToArray();
+
+    [Fact]
+    public void RetainVisibleContainers_ProtectsAncestor_OfVisibleOccBearingGeometry()
+    {
+        // container "c" (no geometry) -> visible leaf "leaf" (geometry, passing).
+        var nodes = Tree(Node(1, -1, "c", false), Node(2, 1, "leaf", true));
+        var candidateHidden = new HashSet<string>(System.StringComparer.Ordinal) { "c" };
+        var result = BomFilterVisibilityPlanner.RetainVisibleContainers(candidateHidden, nodes);
+        Assert.DoesNotContain("c", result); // ancestor kept visible so the leaf renders
+    }
+
+    [Fact]
+    public void RetainVisibleContainers_ProtectsAncestor_OfVisibleGeometryWithEmptyOccurrenceId()
+    {
+        // The visible mesh sits on a node with NO occurrence id; its ancestor "c"
+        // must still be protected, otherwise the passing leaf is pruned.
+        var nodes = Tree(Node(1, -1, "c", false), Node(2, 1, "", true));
+        var candidateHidden = new HashSet<string>(System.StringComparer.Ordinal) { "c" };
+        var result = BomFilterVisibilityPlanner.RetainVisibleContainers(candidateHidden, nodes);
+        Assert.DoesNotContain("c", result);
+    }
+
+    [Fact]
+    public void RetainVisibleContainers_KeepsContainerHidden_WhenWholeSubtreeHidden()
+    {
+        // container "c" with its only geometry leaf also hidden -> nothing visible
+        // beneath it, so the container stays hidden.
+        var nodes = Tree(Node(1, -1, "c", false), Node(2, 1, "leaf", true));
+        var candidateHidden = new HashSet<string>(System.StringComparer.Ordinal) { "c", "leaf" };
+        var result = BomFilterVisibilityPlanner.RetainVisibleContainers(candidateHidden, nodes);
+        Assert.Contains("c", result);
+        Assert.Contains("leaf", result);
+    }
 }

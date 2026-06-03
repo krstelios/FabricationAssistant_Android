@@ -82,6 +82,10 @@ public sealed class BomColumnFilterModel
     {
         _unchecked.Clear();
         foreach (string v in unchecked_) _unchecked.Add(v ?? string.Empty);
+        // Drop any restored value that no longer exists in the current value list
+        // (mirrors SetValues), so a stale snapshot can't leave a phantom "active"
+        // filter — IsActive true while every visible value reads as checked.
+        _unchecked.IntersectWith(_values.Select(item => item.Value));
         foreach (BomColumnFilterValue item in _values)
             item.IsChecked = !_unchecked.Contains(item.Value);
     }

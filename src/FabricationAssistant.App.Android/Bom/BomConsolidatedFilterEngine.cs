@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 
 namespace FabricationAssistant.App.Android.Bom;
@@ -14,12 +15,17 @@ public sealed class BomConsolidatedFilterEngine<TRow>
     private readonly Func<TRow, string, string> _cell;
     private readonly Dictionary<string, BomColumnFilterModel> _columns;
     private readonly List<string> _columnKeys;
+    private readonly HashSet<string> _numericColumns;
 
-    public BomConsolidatedFilterEngine(IReadOnlyList<string> filterableColumnKeys, Func<TRow, string, string> cell)
+    public BomConsolidatedFilterEngine(
+        IReadOnlyList<string> filterableColumnKeys,
+        Func<TRow, string, string> cell,
+        IReadOnlyCollection<string>? numericColumnKeys = null)
     {
         _cell = cell ?? throw new ArgumentNullException(nameof(cell));
         _columnKeys = filterableColumnKeys.ToList();
         _columns = _columnKeys.ToDictionary(k => k, k => new BomColumnFilterModel(k), StringComparer.Ordinal);
+        _numericColumns = new HashSet<string>(numericColumnKeys ?? Array.Empty<string>(), StringComparer.Ordinal);
     }
 
     public IReadOnlyList<string> ColumnKeys => _columnKeys;
@@ -66,9 +72,14 @@ public sealed class BomConsolidatedFilterEngine<TRow>
         if (SortColumnKey is not { } sortKey)
             return filtered.ToList();
 
+        // Numeric columns (e.g. occurrence count) must sort by value, not as text,
+        // so "10" comes after "2" rather than before it.
+        IComparer<string> comparer = _numericColumns.Contains(sortKey)
+            ? NumericThenTextComparer.Instance
+            : StringComparer.OrdinalIgnoreCase;
         IOrderedEnumerable<TRow> ordered = SortDescending
-            ? filtered.OrderByDescending(r => _cell(r, sortKey), StringComparer.OrdinalIgnoreCase)
-            : filtered.OrderBy(r => _cell(r, sortKey), StringComparer.OrdinalIgnoreCase);
+            ? filtered.OrderByDescending(r => _cell(r, sortKey), comparer)
+            : filtered.OrderBy(r => _cell(r, sortKey), comparer);
         return ordered.ToList();
     }
 
@@ -92,5 +103,27 @@ public sealed class BomConsolidatedFilterEngine<TRow>
         foreach (string key in _columnKeys)
             _columns[key].RestoreUnchecked(
                 uncheckedByColumn.TryGetValue(key, out IReadOnlyList<string>? v) ? v : Array.Empty<string>());
+    }
+
+    /// <summary>
+    /// Orders parseable numbers by value, then all non-numeric values (including
+    /// blanks) after them by ordinal text. A total order, so it is stable under
+    /// OrderBy and safe for mixed columns.
+    /// </summary>
+    private sealed class NumericThenTextComparer : IComparer<string>
+    {
+        public static readonly NumericThenTextComparer Instance = new();
+
+        public int Compare(string? x, string? y)
+        {
+            x ??= string.Empty;
+            y ??= string.Empty;
+            bool xn = double.TryParse(x, NumberStyles.Any, CultureInfo.InvariantCulture, out double dx);
+            bool yn = double.TryParse(y, NumberStyles.Any, CultureInfo.InvariantCulture, out double dy);
+            if (xn && yn) return dx.CompareTo(dy);
+            if (xn) return -1;
+            if (yn) return 1;
+            return string.Compare(x, y, StringComparison.OrdinalIgnoreCase);
+        }
     }
 }

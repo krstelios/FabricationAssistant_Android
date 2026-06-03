@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Android.Content;
 using Android.Graphics;
@@ -15,20 +16,26 @@ internal sealed class BomColumnFilterPopup
     private readonly Context _ctx;
     private readonly BomColumnFilterModel _model;
     private readonly Action<SortDirection> _onSort;
-    private readonly Action _onApply;      // called on Done / Sort (commit current checks)
-    private readonly Action _onChanged;    // notifies the owner that the model changed without committing (Select all/Clear)
+    private readonly Action _onApply;      // called on Done / Sort to commit the edited selection
+    // The checklist is edited locally and only written back to the shared model on
+    // Done/Sort, so dismissing the popup (tap-outside) cleanly discards the edits
+    // and never leaves the engine half-changed without an apply/undo.
+    private readonly HashSet<string> _workingUnchecked;
     private PopupWindow? _popup;
     private LinearLayout? _listContainer;
     private string _search = string.Empty;
 
-    public BomColumnFilterPopup(Context ctx, BomColumnFilterModel model, Action<SortDirection> onSort, Action onApply, Action onChanged)
+    public BomColumnFilterPopup(Context ctx, BomColumnFilterModel model, Action<SortDirection> onSort, Action onApply)
     {
         _ctx = ctx;
         _model = model;
         _onSort = onSort;
         _onApply = onApply;
-        _onChanged = onChanged;
+        _workingUnchecked = new HashSet<string>(model.UncheckedValues, StringComparer.OrdinalIgnoreCase);
     }
+
+    /// <summary>Writes the locally-edited selection back to the shared model.</summary>
+    private void Commit() => _model.RestoreUnchecked(_workingUnchecked);
 
     public void Show(View anchor)
     {
@@ -69,8 +76,8 @@ internal sealed class BomColumnFilterPopup
     private View SortRow()
     {
         var row = new LinearLayout(_ctx) { Orientation = Orientation.Horizontal };
-        row.AddView(TextButton("Sort A→Z", () => { _onSort(SortDirection.Ascending); _onApply(); _popup?.Dismiss(); }));
-        row.AddView(TextButton("Sort Z→A", () => { _onSort(SortDirection.Descending); _onApply(); _popup?.Dismiss(); }));
+        row.AddView(TextButton("Sort A→Z", () => { Commit(); _onSort(SortDirection.Ascending); _onApply(); _popup?.Dismiss(); }));
+        row.AddView(TextButton("Sort Z→A", () => { Commit(); _onSort(SortDirection.Descending); _onApply(); _popup?.Dismiss(); }));
         return row;
     }
 
@@ -87,8 +94,13 @@ internal sealed class BomColumnFilterPopup
     private View SelectClearRow()
     {
         var row = new LinearLayout(_ctx) { Orientation = Orientation.Horizontal };
-        row.AddView(TextButton("Select all", () => { _model.SelectAll(); RebuildList(); _onChanged(); }));
-        row.AddView(TextButton("Clear", () => { _model.Clear(); RebuildList(); _onChanged(); }));
+        row.AddView(TextButton("Select all", () => { _workingUnchecked.Clear(); RebuildList(); }));
+        row.AddView(TextButton("Clear", () =>
+        {
+            _workingUnchecked.Clear();
+            foreach (BomColumnFilterValue v in _model.Values) _workingUnchecked.Add(v.Value);
+            RebuildList();
+        }));
         return row;
     }
 
@@ -99,16 +111,20 @@ internal sealed class BomColumnFilterPopup
         foreach (BomColumnFilterValue value in _model.Values.Where(v =>
                      _search.Length == 0 || v.Display.Contains(_search, StringComparison.OrdinalIgnoreCase)))
         {
-            var cb = new CheckBox(_ctx) { Text = value.Display, Checked = value.IsChecked };
+            var cb = new CheckBox(_ctx) { Text = value.Display, Checked = !_workingUnchecked.Contains(value.Value) };
             cb.SetTextColor(ColorRes(Resource.Color.fa_text_primary));
             BomColumnFilterValue captured = value;
-            cb.CheckedChange += (_, e) => { _model.SetChecked(captured.Value, e.IsChecked); };
+            cb.CheckedChange += (_, e) =>
+            {
+                if (e.IsChecked) _workingUnchecked.Remove(captured.Value);
+                else _workingUnchecked.Add(captured.Value);
+            };
             _listContainer.AddView(cb);
         }
     }
 
     private View DoneButton()
-        => TextButton("Done", () => { _onApply(); _popup?.Dismiss(); });
+        => TextButton("Done", () => { Commit(); _onApply(); _popup?.Dismiss(); });
 
     private TextView TextButton(string text, Action onClick)
     {
