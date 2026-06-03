@@ -457,6 +457,10 @@ public static class AppSettings
     public static float MeasurementFaceHoverG { get => Get("measurement_face_hover_g", 0.92156863f); set => Put("measurement_face_hover_g", Clamp01(value)); }
     public static float MeasurementFaceHoverB { get => Get("measurement_face_hover_b", 0.16078432f); set => Put("measurement_face_hover_b", Clamp01(value)); }
     public static void SetMeasurementFaceHoverColor(float r, float g, float b) => PutRgb("measurement_face_hover_r", "measurement_face_hover_g", "measurement_face_hover_b", r, g, b);
+    // Measurement display units. Index maps to UnitSystem (0=mm, 1=cm, 2=m, 3=in, 4=ft).
+    // Source geometry is always millimetres; these only change how labels are printed.
+    public static int MeasurementLengthUnitIndex { get => GetIntInRange("measurement_length_unit", 0, 0, 4); set => Put("measurement_length_unit", System.Math.Clamp(value, 0, 4)); }
+    public static int MeasurementAreaUnitIndex { get => GetIntInRange("measurement_area_unit", 2, 0, 4); set => Put("measurement_area_unit", System.Math.Clamp(value, 0, 4)); }
 
     // Section tools
     public static bool SectionFillVisible { get => Get("section_fill_visible", false); set => Put("section_fill_visible", value); }
