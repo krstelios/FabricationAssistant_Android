@@ -40,6 +40,7 @@
     <string name="cd_measure_point_to_point">Point to point measurement</string>
     <string name="cd_measure_face_to_point">Face to point measurement</string>
     <string name="cd_measure_face_to_face">Face to face measurement</string>
+    <string name="cd_measure_area">Area measurement</string>
     <string name="cd_measure_bounding_box">Bounding box measurement</string>
     <string name="cd_measure_bounding_box_additive">Additive bounding box</string>
     <string name="cd_measure_snap_endpoint">Endpoint snap</string>
