@@ -227,6 +227,7 @@ public sealed class MainActivity : AppCompatActivity
     private MaterialButton? _measurePointToPointButton;
     private MaterialButton? _measureFaceToPointButton;
     private MaterialButton? _measureFaceToFaceButton;
+    private MaterialButton? _measureAreaButton;
     private MaterialButton? _measureBoundingBoxButton;
     private SwitchMaterial? _measureBoundingBoxAdditiveSwitch;
     private SwitchMaterial? _measureEndpointSnapSwitch;
@@ -4689,6 +4690,7 @@ public sealed class MainActivity : AppCompatActivity
         yield return _measurePointToPointButton;
         yield return _measureFaceToPointButton;
         yield return _measureFaceToFaceButton;
+        yield return _measureAreaButton;
         yield return _measureBoundingBoxButton;
         yield return _measureClearButton;
         yield return _viewPresetReturnButton;
@@ -5134,6 +5136,7 @@ public sealed class MainActivity : AppCompatActivity
         _measurePointToPointButton = FindViewById<MaterialButton>(Resource.Id.measurePointToPoint);
         _measureFaceToPointButton = FindViewById<MaterialButton>(Resource.Id.measureFaceToPoint);
         _measureFaceToFaceButton = FindViewById<MaterialButton>(Resource.Id.measureFaceToFace);
+        _measureAreaButton = FindViewById<MaterialButton>(Resource.Id.measureArea);
         _measureBoundingBoxButton = FindViewById<MaterialButton>(Resource.Id.measureBoundingBox);
         _measureBoundingBoxAdditiveSwitch = FindViewById<SwitchMaterial>(Resource.Id.measureBoundingBoxAdditive);
         _measureEndpointSnapSwitch = FindViewById<SwitchMaterial>(Resource.Id.measureEndpointSnap);
@@ -5224,6 +5227,8 @@ public sealed class MainActivity : AppCompatActivity
             _measureFaceToPointButton.Click += OnMeasureFaceToPointClicked;
         if (_measureFaceToFaceButton is not null)
             _measureFaceToFaceButton.Click += OnMeasureFaceToFaceClicked;
+        if (_measureAreaButton is not null)
+            _measureAreaButton.Click += OnMeasureAreaClicked;
         if (_measureBoundingBoxButton is not null)
             _measureBoundingBoxButton.Click += OnBoundingBoxMeasureClicked;
         if (_measureBoundingBoxAdditiveSwitch is not null)
@@ -5456,6 +5461,8 @@ public sealed class MainActivity : AppCompatActivity
     private void OnMeasureFaceToPointClicked(object? sender, EventArgs e) => SetMeasureMode(MeasureToolMode.FaceToPoint);
 
     private void OnMeasureFaceToFaceClicked(object? sender, EventArgs e) => SetMeasureMode(MeasureToolMode.FaceToFace);
+
+    private void OnMeasureAreaClicked(object? sender, EventArgs e) => SetMeasureMode(MeasureToolMode.Area);
 
     private void OnMeasureBoundingBoxAdditiveCheckedChanged(object? sender, CompoundButton.CheckedChangeEventArgs e)
     {
@@ -5829,6 +5836,7 @@ public sealed class MainActivity : AppCompatActivity
         SetVisibility(_measurePointToPointButton, measureVisibility);
         SetVisibility(_measureFaceToPointButton, measureVisibility);
         SetVisibility(_measureFaceToFaceButton, measureVisibility);
+        SetVisibility(_measureAreaButton, measureVisibility);
         SetVisibility(_measureBoundingBoxButton, measureVisibility);
         SetVisibility(_measureBoundingBoxAdditiveSwitch, measureVisibility);
         SetVisibility(_measureEndpointSnapSwitch, measureVisibility);
@@ -6362,6 +6370,7 @@ public sealed class MainActivity : AppCompatActivity
         SetSelected(_measurePointToPointButton, activeMode == MeasureToolMode.PointToPoint);
         SetSelected(_measureFaceToPointButton, activeMode == MeasureToolMode.FaceToPoint);
         SetSelected(_measureFaceToFaceButton, activeMode == MeasureToolMode.FaceToFace);
+        SetSelected(_measureAreaButton, activeMode == MeasureToolMode.Area);
         SetSelected(_measureBoundingBoxButton, _measureBoundingBoxAwaitingSelection && !_measureBoundingBoxBusy);
         if (_measureBoundingBoxAdditiveSwitch is not null)
         {
@@ -10942,7 +10951,8 @@ public sealed class MainActivity : AppCompatActivity
             return;
 
         _lastInteractiveMeasureMode = mode;
-        AppSettings.MeasureModeSelectionIndex = MeasureModeToSettingsIndex(mode);
+        if (mode is MeasureToolMode.PointToPoint or MeasureToolMode.FaceToPoint or MeasureToolMode.FaceToFace)
+            AppSettings.MeasureModeSelectionIndex = MeasureModeToSettingsIndex(mode);
         if (_measure.ActiveMode != mode)
             _measure.SetMode(mode);
         else
@@ -10983,7 +10993,8 @@ public sealed class MainActivity : AppCompatActivity
     private static bool IsInteractiveMeasureMode(MeasureToolMode mode)
         => mode == MeasureToolMode.PointToPoint
            || mode == MeasureToolMode.FaceToPoint
-           || mode == MeasureToolMode.FaceToFace;
+           || mode == MeasureToolMode.FaceToFace
+           || mode == MeasureToolMode.Area;
 
     private void ApplyMeasureTooltips()
     {
@@ -10991,6 +11002,7 @@ public sealed class MainActivity : AppCompatActivity
         SetTooltip(_measurePointToPointButton, Resource.String.cd_measure_point_to_point);
         SetTooltip(_measureFaceToPointButton, Resource.String.cd_measure_face_to_point);
         SetTooltip(_measureFaceToFaceButton, Resource.String.cd_measure_face_to_face);
+        SetTooltip(_measureAreaButton, Resource.String.cd_measure_area);
         SetTooltip(_measureBoundingBoxButton, Resource.String.cd_measure_bounding_box);
         SetTooltip(_measureBoundingBoxAdditiveSwitch, Resource.String.cd_measure_bounding_box_additive);
         SetTooltip(_measureEndpointSnapSwitch, Resource.String.cd_measure_snap_endpoint);
@@ -15893,6 +15905,7 @@ public sealed class MainActivity : AppCompatActivity
         DetachClick(_measurePointToPointButton, OnMeasurePointToPointClicked);
         DetachClick(_measureFaceToPointButton, OnMeasureFaceToPointClicked);
         DetachClick(_measureFaceToFaceButton, OnMeasureFaceToFaceClicked);
+        DetachClick(_measureAreaButton, OnMeasureAreaClicked);
         DetachClick(_measureBoundingBoxButton, OnBoundingBoxMeasureClicked);
         if (_measureBoundingBoxAdditiveSwitch is not null)
         {
