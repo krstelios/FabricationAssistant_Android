@@ -16267,6 +16267,9 @@ public sealed class MainActivity : AppCompatActivity
         _measure?.ApplySectionVisibility(
             AppSettings.SectionCurvesVisible,
             AppSettings.SectionCapsVisible);
+        _measure?.SetDisplayUnits(
+            (UnitSystem)AppSettings.MeasurementLengthUnitIndex,
+            (UnitSystem)AppSettings.MeasurementAreaUnitIndex);
 
         if (_measure is null || !_measure.IsActive)
             _lastInteractiveMeasureMode = MeasureModeFromSettings();

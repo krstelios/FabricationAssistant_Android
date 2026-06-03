@@ -140,6 +140,13 @@ internal sealed class AndroidMeasureIntegration : IDisposable
         _raycaster.SectionCapRaycastEnabled = sectionCapsVisible;
     }
 
+    public void SetDisplayUnits(UnitSystem lengthUnit, UnitSystem areaUnit)
+    {
+        _units.DisplayUnit = lengthUnit;
+        _units.AreaDisplayUnit = areaUnit;
+        _invalidate();
+    }
+
     public void ClearRaycastAccelerationCache(string reason)
         => _raycaster.ClearAccelerationCache(reason);
 

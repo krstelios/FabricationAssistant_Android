@@ -281,6 +281,10 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
             AppSettings.MeasureModeSelectionIndex, idx => AppSettings.MeasureModeSelectionIndex = idx);
         AddLabeledToggleRow(ctx, measure, "Box mode", new[] { "Axis", "Best Fit" },
             AppSettings.MeasureBoxModeSelectionIndex, idx => AppSettings.MeasureBoxModeSelectionIndex = idx);
+        AddLabeledToggleRow(ctx, measure, "Length unit", new[] { "mm", "cm", "m", "in", "ft" },
+            AppSettings.MeasurementLengthUnitIndex, idx => AppSettings.MeasurementLengthUnitIndex = idx);
+        AddLabeledToggleRow(ctx, measure, "Area unit", new[] { "mm²", "cm²", "m²", "in²", "ft²" },
+            AppSettings.MeasurementAreaUnitIndex, idx => AppSettings.MeasurementAreaUnitIndex = idx);
         AddFloatSlider(ctx, measure, "Dimension text scale", 0.5f, 4f, AppSettings.DimensionTextScale, v => AppSettings.DimensionTextScale = v);
         AddRgbRow(ctx, measure, "Face selection color",
             AppSettings.MeasurementFaceSelectionR, AppSettings.MeasurementFaceSelectionG, AppSettings.MeasurementFaceSelectionB,
