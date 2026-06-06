@@ -78,6 +78,37 @@ public sealed class AndroidSnapPreparedOnlyTests
         Assert.NotNull(snap);
     }
 
+    [Fact]
+    public void Warmup_ContinuesAcrossBudgetSlicesUntilTrailingMeshesArePrepared()
+    {
+        float[] firstEdges = WeldedRuns(32);
+        float[] secondEdges = WeldedRuns(48);
+        float[] trailingEdges = WeldedRuns(64);
+        var runner = new AndroidSnapWarmupRunner();
+
+        AndroidSnapWarmupResult result = runner.WarmSnapModels(
+            [
+                new AndroidSnapWarmupMesh(firstEdges, Array.Empty<float>(), Array.Empty<int>()),
+                new AndroidSnapWarmupMesh(secondEdges, Array.Empty<float>(), Array.Empty<int>()),
+                new AndroidSnapWarmupMesh(trailingEdges, Array.Empty<float>(), Array.Empty<int>()),
+            ],
+            budgetMs: 0,
+            CancellationToken.None);
+
+        EdgeSnapResult? snap = new EdgeSnapService().TrySnapPrepared(
+            trailingEdges,
+            Matrix4d.Identity,
+            new Vector3d(5, 10, 1000),
+            new Vector3d(0, 0, -1),
+            EdgeTol,
+            EndpointTol);
+
+        Assert.Equal(3, result.WarmedMeshes);
+        Assert.Equal(32 + 48 + 64, result.SegmentCount);
+        Assert.True(result.BudgetReached);
+        Assert.NotNull(snap);
+    }
+
     private static SectionPlane CreateZSectionPlane()
         => new(Guid.NewGuid(), Vector3.Zero, Vector3.UnitX, Vector3.UnitY, Vector3.UnitZ);
 

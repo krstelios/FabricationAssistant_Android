@@ -17,6 +17,7 @@ internal sealed class BomColumnFilterPopup
     private readonly BomColumnFilterModel _model;
     private readonly Action<SortDirection> _onSort;
     private readonly Action _onApply;      // called on Done / Sort to commit the edited selection
+    private readonly Action? _onDismiss;
     // The checklist is edited locally and only written back to the shared model on
     // Done/Sort, so dismissing the popup (tap-outside) cleanly discards the edits
     // and never leaves the engine half-changed without an apply/undo.
@@ -25,12 +26,18 @@ internal sealed class BomColumnFilterPopup
     private LinearLayout? _listContainer;
     private string _search = string.Empty;
 
-    public BomColumnFilterPopup(Context ctx, BomColumnFilterModel model, Action<SortDirection> onSort, Action onApply)
+    public BomColumnFilterPopup(
+        Context ctx,
+        BomColumnFilterModel model,
+        Action<SortDirection> onSort,
+        Action onApply,
+        Action? onDismiss = null)
     {
         _ctx = ctx;
         _model = model;
         _onSort = onSort;
         _onApply = onApply;
+        _onDismiss = onDismiss;
         _workingUnchecked = new HashSet<string>(model.UncheckedValues, StringComparer.OrdinalIgnoreCase);
     }
 
@@ -70,7 +77,24 @@ internal sealed class BomColumnFilterPopup
         card.AddView(col);
         _popup = new PopupWindow((View)card, ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent, focusable: true);
         _popup.SetBackgroundDrawable(new ColorDrawable(global::Android.Graphics.Color.Transparent));
+        _popup.DismissEvent += (_, _) =>
+        {
+            _popup = null;
+            _listContainer = null;
+            _onDismiss?.Invoke();
+        };
         _popup.ShowAsDropDown(anchor, 0, 0, GravityFlags.Start);
+    }
+
+    public void Dismiss()
+    {
+        PopupWindow? popup = _popup;
+        if (popup is null)
+            return;
+
+        popup.Dismiss();
+        _popup = null;
+        _listContainer = null;
     }
 
     private View SortRow()

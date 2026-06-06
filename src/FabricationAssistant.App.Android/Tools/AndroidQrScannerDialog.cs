@@ -546,7 +546,7 @@ internal sealed class AndroidQrScannerDialog : Dialog, ISurfaceHolderCallback, g
         RenderResult();
         global::Android.Util.Log.Info(
             "FA.QR",
-            $"Scan surfaced result: payload='{_currentResult.LastScan}', part='{_currentResult.ResolvedPartNumber}', matches={_currentResult.Matches.Count}.");
+            $"Scan surfaced result: payloadLength={_currentResult.LastScan.Length}, resolvedLength={_currentResult.ResolvedPartNumber.Length}, matches={_currentResult.Matches.Count}.");
     }
 
     private void ClearResultAndResume()

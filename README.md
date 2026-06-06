@@ -340,7 +340,7 @@ Plan: `Android/docs/superpowers/plans/2026-05-24-android-render-pipeline-and-set
   - **Render Mode** (Shaded+Edges / Shaded / Wireframe / Clay).
   - **Camera & Helpers** (Show Grid, Push to model min, Auto grid spacing, Spacing mm, Line thickness, Grid color RGB, Show Axes, Show ViewCube, Projection).
   - **Scene Colors** (Background RGB, Surface RGB, Surface opacity).
-  - **CAD Edges** (Enable, Color, Width, Feature Angle, Coplanar Tol, Weld Tol, Silhouettes, Depth bias, Offset F/U).
+  - **CAD Edges** (Enable, Color, Width, Feature Angle, Coplanar Tol, Weld Tol, Depth bias, Offset F/U).
   - **Clay Render** (Clay surface RGB, Clay background RGB).
   - **Lighting** (Base Lift, Ambient, Headlight, Key, Fill, Bounce, Hemisphere, Specular Strength + Power).
   - **Anti-aliasing & Occlusion** (MSAA Off/2x/4x, Contour Strength, Contour Falloff, AO enable, AO Radius, AO Bias, AO Intensity, AO Blur Passes).
@@ -403,7 +403,6 @@ clear default FBO
 
 ### Deferred to follow-up plans
 
-- True silhouette extraction (view-dependent edges on top of per-mesh dihedral features).
 - Live edge rebuild when the feature-angle slider moves (rerun CadEdgeBuilder on the GL thread + re-upload the edge EBO per mesh).
 - `glLineWidth > 1.0` is a no-op on tablet drivers; wider edges need true ribbon expansion via quad geometry.
 - Real shadow maps (current "shadow" feel is entirely from SSAO contact shadows).

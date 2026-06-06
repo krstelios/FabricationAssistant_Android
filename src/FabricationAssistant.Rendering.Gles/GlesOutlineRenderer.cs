@@ -117,13 +117,12 @@ public sealed class GlesOutlineRenderer : IDisposable
         => DestroyResources();
 
     /// <summary>
-    /// Draws the outline composite onto the currently-bound framebuffer
-    /// (must be the default surface FBO when called from
-    /// GlesViewportRenderer.OnDrawFrame). No-op when no mesh is selected
-    /// or the outline thickness collapses to zero.
+    /// Draws the outline composite onto <paramref name="targetFramebuffer"/>.
+    /// Pass 0 for the default surface FBO, or the viewport renderer's composite
+    /// FBO when a final post-process pass needs to consume the outline too.
     /// </summary>
     public void Render(GpuScene scene, CameraState camera, int selectedMeshIndex,
-        float[] outlineColor, float thicknessPx, int width, int height)
+        float[] outlineColor, float thicknessPx, int width, int height, uint targetFramebuffer = 0)
         => Render(
             scene,
             camera,
@@ -131,14 +130,15 @@ public sealed class GlesOutlineRenderer : IDisposable
             outlineColor,
             thicknessPx,
             width,
-            height);
+            height,
+            targetFramebuffer);
 
     /// <summary>
     /// Draws one outline around a logical selection that may contain multiple
     /// rendered meshes, such as an assembly selected from the Model Explorer.
     /// </summary>
     public void Render(GpuScene scene, CameraState camera, IReadOnlyCollection<int> selectedMeshIndices,
-        float[] outlineColor, float thicknessPx, int width, int height)
+        float[] outlineColor, float thicknessPx, int width, int height, uint targetFramebuffer = 0)
     {
         if (selectedMeshIndices is null || selectedMeshIndices.Count == 0 || width <= 0 || height <= 0) return;
         if (width != _width || height != _height || _maskFbo == 0)
@@ -209,7 +209,7 @@ public sealed class GlesOutlineRenderer : IDisposable
             GlesRenderUtil.ResetMeshCulling(_gl);
 
             // Composite pass.
-            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, targetFramebuffer);
             _gl.Viewport(0, 0, (uint)width, (uint)height);
 
             _gl.Enable(EnableCap.Blend);
@@ -229,7 +229,7 @@ public sealed class GlesOutlineRenderer : IDisposable
         finally
         {
             GlesRenderUtil.ResetMeshCulling(_gl);
-            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, targetFramebuffer);
             _gl.ActiveTexture(TextureUnit.Texture0);
             _gl.Disable(EnableCap.Blend);
             _gl.Enable(EnableCap.DepthTest);

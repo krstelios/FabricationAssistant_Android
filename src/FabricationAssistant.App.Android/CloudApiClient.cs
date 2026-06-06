@@ -1138,13 +1138,24 @@ public sealed class CloudApiClient : IDisposable
         using OperationLease operation = BeginOperation();
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, _disposeCts.Token);
         ct = linkedCts.Token;
-        using HttpResponseMessage response = await _http.SendAsync(
-            CreateJsonRequest(HttpMethod.Post, BuildUri(serverUrl, path), body, idempotencyKey: null),
-            ct).ConfigureAwait(false);
-        await EnsureSuccessAsync(response).ConfigureAwait(false);
-        await using Stream stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-        return await JsonSerializer.DeserializeAsync<T>(stream, JsonOptions, ct).ConfigureAwait(false)
-            ?? throw new CloudApiException("Cloud server returned an empty response.");
+        Uri uri = BuildUri(serverUrl, path);
+        try
+        {
+            using HttpResponseMessage response = await _http.SendAsync(
+                CreateJsonRequest(HttpMethod.Post, uri, body, idempotencyKey: null),
+                ct).ConfigureAwait(false);
+            await EnsureSuccessAsync(response).ConfigureAwait(false);
+            await using Stream stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+            return await JsonSerializer.DeserializeAsync<T>(stream, JsonOptions, ct).ConfigureAwait(false)
+                ?? throw new CloudApiException("Cloud server returned an empty response.");
+        }
+        catch (CloudApiException ex)
+        {
+            global::Android.Util.Log.Warn(
+                "FA.Cloud.Auth",
+                $"No-auth cloud request failed path={path} uriScheme={uri.Scheme} status={ex.StatusCode?.ToString(CultureInfo.InvariantCulture) ?? "none"} code={ex.Code ?? ""}: {ex.Message}");
+            throw;
+        }
     }
 
     private async Task<T> PostJsonWithBearerAsync<T>(
@@ -1504,9 +1515,10 @@ public sealed class CloudApiClient : IDisposable
 
     private string CreateCloudTempPath(string packageId, int counter, string fileName)
     {
-        string root = Path.Combine(GetCloudOpenCacheRoot(), packageId);
+        string safePackageId = SanitizePathPart(packageId);
+        string root = Path.Combine(GetCloudOpenCacheRoot(), safePackageId);
         Directory.CreateDirectory(root);
-        string safeName = ImportCacheFileName.Create($"cloud-{packageId}-c{counter}-{fileName}");
+        string safeName = ImportCacheFileName.Create($"cloud-{safePackageId}-c{counter}-{fileName}");
         return Path.Combine(root, safeName);
     }
 
@@ -1519,7 +1531,7 @@ public sealed class CloudApiClient : IDisposable
     private string GetPreviewCachePath(string packageId)
     {
         string owner = CloudSecureStore.StableCacheKey(SnapshotRequiredSession().Email);
-        return Path.Combine(_context.CacheDir?.AbsolutePath ?? Path.GetTempPath(), "fa-cloud-thumbnails", owner, packageId + ".png");
+        return Path.Combine(_context.CacheDir?.AbsolutePath ?? Path.GetTempPath(), "fa-cloud-thumbnails", owner, SanitizePathPart(packageId) + ".png");
     }
 
     private void PruneThumbnailCache()
@@ -1603,78 +1615,18 @@ public sealed class CloudApiClient : IDisposable
     {
         string value = CloudServerUrls.NormalizeConfiguredUrl(serverUrl);
         if (string.IsNullOrWhiteSpace(value))
-            throw new CloudApiException(
-                $"FA Cloud {AppSettings.CloudServerProfileDisplayName} server is not configured. Set {AppSettings.CloudServerSelectedUrlKey} in {AppSettings.CloudServerConfigPath}.");
+            throw new CloudApiException("FA Cloud server is not configured. Set the server URL in Settings.");
         if (!Uri.TryCreate(value, UriKind.Absolute, out Uri? uri)
-            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+            || uri.Scheme != Uri.UriSchemeHttps)
         {
-            throw new CloudApiException("Cloud server must be an http or https URL.");
-        }
-
-        // S22-1: never send credentials/tokens in cleartext to an internet host.
-        // http:// is only allowed for a private/loopback (LAN) server the operator
-        // configured for the Local profile; an internet server must use https.
-        if (uri.Scheme == Uri.UriSchemeHttp && !IsPrivateOrLoopbackHost(uri.Host))
-        {
-            throw new CloudApiException(
-                "Cleartext (http) is only allowed for a local/LAN server. Use an https:// URL for an internet server.");
+            throw new CloudApiException("Cloud server must be an https:// URL.");
         }
 
         return value;
     }
 
-    // S22-1: a host is treated as local when it is a loopback/link-local/RFC1918
-    // address, or a non-routable name (localhost, *.local mDNS, or a single-label
-    // LAN hostname). Public internet hosts are always FQDNs, so they require https.
-    internal static bool IsPrivateOrLoopbackHost(string host)
-    {
-        if (string.IsNullOrWhiteSpace(host))
-            return false;
-
-        if (System.Net.IPAddress.TryParse(host, out System.Net.IPAddress? ip))
-        {
-            if (System.Net.IPAddress.IsLoopback(ip))
-                return true;
-
-            byte[] b = ip.GetAddressBytes();
-            if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && b.Length == 4)
-            {
-                if (b[0] == 10) return true;                          // 10.0.0.0/8
-                if (b[0] == 172 && b[1] >= 16 && b[1] <= 31) return true; // 172.16.0.0/12
-                if (b[0] == 192 && b[1] == 168) return true;         // 192.168.0.0/16
-                if (b[0] == 169 && b[1] == 254) return true;         // 169.254.0.0/16 link-local
-                return false;
-            }
-
-            if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
-            {
-                if (ip.IsIPv6LinkLocal) return true;
-                if (b.Length == 16 && (b[0] & 0xFE) == 0xFC) return true; // fc00::/7 unique-local
-                return false;
-            }
-
-            return false;
-        }
-
-        if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
-            return true;
-        if (host.EndsWith(".local", StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        // A single-label host (no dot) is a LAN/NetBIOS name, not an internet FQDN.
-        return !host.Contains('.');
-    }
-
     private static Uri BuildUri(string serverUrl, string path)
-    {
-        if (Uri.TryCreate(path, UriKind.Absolute, out Uri? absolute)
-            && (absolute.Scheme == Uri.UriSchemeHttp || absolute.Scheme == Uri.UriSchemeHttps))
-        {
-            return absolute;
-        }
-
-        return new Uri(new Uri(serverUrl.TrimEnd('/') + "/"), path.TrimStart('/'));
-    }
+        => CloudServerUrls.BuildCloudUri(serverUrl, path);
 
     private static string FormatBytes(long bytes)
     {

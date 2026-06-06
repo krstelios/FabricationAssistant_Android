@@ -12,7 +12,7 @@ namespace FabricationAssistant.App.Android;
 public static class AppSettings
 {
     private const string FileName = "fa_settings";
-    private const int SettingsSchemaVersion = 22;
+    private const int SettingsSchemaVersion = 25;
 
     private const int DefaultAoSampleCount = SceneAppearanceDefaults.AoSampleCount;
     private const int MinAoSampleCount = 1;
@@ -65,10 +65,11 @@ public static class AppSettings
     private const int MeasureModeFaceToFace = 2;
     private const int MeasureBoxModeAxisAligned = 0;
     private const int MeasureBoxModeBestFit = 1;
-    private const float DefaultDimensionTextScale = 1.4484999f;
+    private const float DefaultDimensionTextScale = 1.05f;
     private const float MinDimensionTextScale = 0.5f;
     private const float MaxDimensionTextScale = 4.0f;
-    private const float DefaultMeasureSnapFactor = 1.0f;
+    private const float DefaultMeasureSnapEdgeFactor = 0.6f;
+    private const float DefaultMeasureSnapEndpointFactor = 0.6f;
     private const float MinMeasureSnapFactor = 0.1f;
     private const float MaxMeasureSnapFactor = 4.0f;
     private const float DefaultMeasureSnapVisibilityProbe = 0.01f;
@@ -81,27 +82,28 @@ public static class AppSettings
     private const float LegacySectionGizmoSizeFractionBase = 0.10f;
     private const float MinSectionGizmoSizeFraction = 0.005f;
     private const float MaxSectionGizmoSizeFraction = 0.5f;
-    private const float DefaultSectionGizmoScale = 1.0845f;
+    private const float DefaultSectionGizmoScale = 1.1f;
     private const float MinSectionGizmoScale = 0.5f;
     private const float MaxSectionGizmoScale = 4.0f;
     private const float DefaultSectionEdgeWidth = 2.4f;
     private const float MinSectionEdgeWidth = 0.5f;
     private const float MaxSectionEdgeWidth = 8.0f;
     private const float DefaultMouseOrbitSpeed = 1.0f;
-    private const float DefaultMousePanSpeed = 1.1f;
+    private const float DefaultMousePanSpeed = 1.45f;
     private const float DefaultMouseWheelZoomSpeed = 1.0f;
     private const float DefaultMouseDragThresholdDip = 4.0f;
     private const float MinMouseSpeed = 0.1f;
     private const float MaxMouseSpeed = 5.0f;
     private const float MinMouseDragThresholdDip = 1.0f;
     private const float MaxMouseDragThresholdDip = 20.0f;
-    private const float DefaultCameraNearClipMm = 10.0f;
-    private const float DefaultCameraFarClipMm = 5000.0f;
+    private const float DefaultCameraNearClipMm = 50.0f;
+    private const float DefaultCameraFarClipMm = 80000.0f;
     private const float MinCameraClipMm = 0.001f;
     private const float MaxCameraNearClipMm = 10000000.0f;
     private const float MaxCameraFarClipMm = 100000000.0f;
+    private const string CloudServerUrlKey = "cloud_server_url";
+    private const string LegacyCloudConfigFileName = "fa_cloud.ini";
     private const string DefaultCloudUserEmail = "";
-    private const string DefaultCloudProjectName = "";
 
     private static ISharedPreferences? _prefs;
     private static readonly (string Key, float Expected)[] LegacyFloatDefaultsToRemove =
@@ -120,6 +122,7 @@ public static class AppSettings
         ("ao_power", 1.33f),
         ("ao_blur_sharpness", 10.9f),
         ("grid_spacing_mm", 10.0f),
+        ("grid_spacing_mm", 100.8f),
         ("grid_r", 0.28f),
         ("grid_g", 0.30f),
         ("grid_b", 0.33f),
@@ -136,8 +139,12 @@ public static class AppSettings
         ("edge_r", 0.05f),
         ("edge_g", 0.05f),
         ("edge_b", 0.06f),
+        ("edge_r", 0.24028806f),
+        ("edge_g", 0.24f),
+        ("edge_b", 0.26f),
         ("edge_width", 1.0f),
         ("edge_width", 0.28595f),
+        ("surface_offset_f", 2.44f),
         ("clay_surface_r", 0.85f),
         ("clay_surface_g", 0.78f),
         ("clay_surface_b", 0.65f),
@@ -145,19 +152,42 @@ public static class AppSettings
         ("clay_bg_g", 0.14f),
         ("clay_bg_b", 0.16f),
         ("light_base_lift", 0.04f),
+        ("light_base_lift", 0.1095f),
         ("light_ambient", 0.40f),
+        ("light_ambient", 0.306f),
         ("light_headlight", 0.30f),
         ("light_key", 0.55f),
         ("light_fill", 0.20f),
         ("light_bounce", 0.15f),
         ("light_hemisphere", 0.40f),
         ("light_spec_strength", 0.10f),
+        ("light_spec_strength", 0.354f),
         ("light_spec_power", 32.0f),
+        ("ao_radius", 0.018617f),
+        ("ao_bias", 0.00064f),
+        ("ao_intensity", 1.516f),
+        ("ao_contrast", 1.0f),
+        ("ao_fade_start", 1.094f),
+        ("ao_blur_sharpness", 8.96f),
+        ("ao_blur_sharpness", 6.0f),
         ("contour_strength", 0.50f),
+        ("contour_strength", 0.20040001f),
         ("contour_power", 2.0f),
+        ("contour_power", 4.4105f),
         ("outline_g", 0.62f),
         ("outline_b", 0.20f),
         ("outline_thickness", 2.5f),
+        ("outline_thickness", 3.2098765f),
+        ("hover_outline_thickness", 0.37757202f),
+        ("clay_edge_a", 0.48666665f),
+        ("dimension_text_scale", 1.4484999f),
+        ("measure_snap_edge_factor", 1.0f),
+        ("measure_snap_endpoint_factor", 1.0f),
+        ("section_gizmo_scale", 1.0845f),
+        ("pan_sensitivity", 0.87420005f),
+        ("mouse_pan_speed", 1.1f),
+        ("camera_near_clip_mm", 10.0f),
+        ("camera_far_clip_mm", 5000.0f),
         ("camera_far_clip_mm", 50000.0f),
     ];
     private static readonly (string Key, int Expected)[] LegacyIntDefaultsToRemove =
@@ -168,6 +198,15 @@ public static class AppSettings
         ("ao_sample_count", 32),
         ("ao_blur_radius", 6),
         ("ao_blur_passes", 1),
+        ("ao_sample_count", 4),
+        ("ao_blur_radius", 24),
+    ];
+    private static readonly (string Key, bool Expected)[] LegacyBoolDefaultsToRemove =
+    [
+        ("fxaa_enabled", false),
+        ("manual_camera_clip_planes", false),
+        ("measure_show_deltas", true),
+        ("section_edges_visible", true),
     ];
     private static readonly (string Key, float Min, float Max)[] FloatRangeGuards =
     [
@@ -200,6 +239,62 @@ public static class AppSettings
         ("ao_blur_passes", MinAoBlurPasses, MaxAoBlurPasses),
         ("msaa_samples", AppSettingsValueGuards.MinAndroidMsaaSamples, AppSettingsValueGuards.MaxAndroidMsaaSamples),
     ];
+    private static readonly (string Key, float Default, float Min, float Max, bool Logarithmic)[] SliderFloatRules =
+    [
+        ("orbit_sensitivity", 1.0f, 0.1f, 5.0f, false),
+        ("pan_sensitivity", 0.87f, 0.1f, 5.0f, false),
+        ("zoom_sensitivity", 1.0f, 0.1f, 5.0f, false),
+        ("section_gizmo_scale", DefaultSectionGizmoScale, MinSectionGizmoScale, MaxSectionGizmoScale, false),
+        ("mouse_orbit_speed", DefaultMouseOrbitSpeed, MinMouseSpeed, MaxMouseSpeed, false),
+        ("mouse_pan_speed", DefaultMousePanSpeed, MinMouseSpeed, MaxMouseSpeed, false),
+        ("mouse_wheel_zoom_speed", DefaultMouseWheelZoomSpeed, MinMouseSpeed, MaxMouseSpeed, false),
+        ("mouse_drag_threshold_dip", DefaultMouseDragThresholdDip, MinMouseDragThresholdDip, MaxMouseDragThresholdDip, false),
+        ("grid_spacing_mm", SceneAppearanceDefaults.GridSpacingMm, 0.001f, 1_000_000.0f, true),
+        ("grid_thickness", SceneAppearanceDefaults.GridLineThickness, 1.0f, 8.0f, false),
+        ("surface_opacity", SceneAppearanceDefaults.SurfaceOpacity, 0.0f, 1.0f, false),
+        ("edge_width", DefaultEdgeWidth, MinEdgeWidth, MaxEdgeWidth, false),
+        ("edge_feature_angle", SceneAppearanceDefaults.CadEdgeFeatureAngleDegrees, 1.0f, 150.0f, false),
+        ("edge_coplanar_tol", SceneAppearanceDefaults.CadEdgeCoplanarToleranceDegrees, 0.0f, 30.0f, false),
+        ("edge_weld_tol", SceneAppearanceDefaults.CadEdgeWeldToleranceScale, 1.0e-6f, 1.0e-4f, true),
+        ("edge_depth_bias", SceneAppearanceDefaults.EdgeDepthBias, 0.0f, 0.002f, false),
+        ("surface_offset_f", DefaultSurfaceOffsetFactor, 0.0f, 4.0f, false),
+        ("surface_offset_u", DefaultSurfaceOffsetUnits, 0.0f, 4.0f, false),
+        ("clay_edge_a", SceneAppearanceDefaults.ClayFeatureEdgeA, 0.0f, 1.0f, false),
+        ("clay_edge_width", SceneAppearanceDefaults.ClayFeatureEdgeWidth, 0.05f, 4.0f, false),
+        ("clay_edge_depth_bias", SceneAppearanceDefaults.ClayFeatureEdgeDepthBias, 0.0f, 0.01f, false),
+        ("clay_edge_crease_angle", SceneAppearanceDefaults.ClayFeatureEdgeCreaseAngleDegrees, 1.0f, 150.0f, false),
+        ("light_base_lift", SceneAppearanceDefaults.BaseColorLift, 0.0f, 0.25f, false),
+        ("light_ambient", SceneAppearanceDefaults.AmbientStrength, 0.0f, 1.0f, false),
+        ("light_headlight", SceneAppearanceDefaults.HeadlightStrength, 0.0f, 1.0f, false),
+        ("light_key", SceneAppearanceDefaults.KeyLightStrength, 0.0f, 1.0f, false),
+        ("light_fill", SceneAppearanceDefaults.FillLightStrength, 0.0f, 1.0f, false),
+        ("light_bounce", SceneAppearanceDefaults.BounceLightStrength, 0.0f, 1.0f, false),
+        ("light_hemisphere", SceneAppearanceDefaults.HemisphereStrength, 0.0f, 1.0f, false),
+        ("light_spec_strength", SceneAppearanceDefaults.SpecularStrength, 0.0f, 1.0f, false),
+        ("light_spec_power", SceneAppearanceDefaults.SpecularPower, 1.0f, 128.0f, false),
+        ("contour_strength", SceneAppearanceDefaults.ContourStrength, 0.0f, 1.2f, false),
+        ("contour_power", SceneAppearanceDefaults.ContourPower, 0.5f, 6.0f, false),
+        ("ao_radius", DefaultAoRadius, MinAoRadius, MaxAoRadius, false),
+        ("ao_bias", DefaultAoBias, MinAoBias, MaxAoBias, false),
+        ("ao_intensity", DefaultAoIntensity, MinAoIntensity, MaxAoIntensity, false),
+        ("ao_power", DefaultAoPower, MinAoPower, MaxAoPower, false),
+        ("ao_contrast", DefaultAoContrast, MinAoContrast, MaxAoContrast, false),
+        ("ao_max_distance", DefaultAoMaxDistance, MinAoMaxDistance, MaxAoMaxDistance, false),
+        ("ao_fade_start", DefaultAoFadeStart, MinAoFade, MaxAoFade, false),
+        ("ao_fade_end", DefaultAoFadeEnd, MinAoFade, MaxAoFade, false),
+        ("ao_blur_sharpness", DefaultAoBlurSharpness, MinAoBlurSharpness, MaxAoBlurSharpness, false),
+        ("outline_thickness", SceneAppearanceDefaults.OutlineThicknessPx, 1.0f, 8.0f, false),
+        ("hover_outline_thickness", SceneAppearanceDefaults.HoverOutlineThicknessPx, 0.05f, 8.0f, false),
+        ("hover_tint_strength", SceneAppearanceDefaults.HoverTintStrength, 0.0f, 1.0f, false),
+        ("dimension_text_scale", DefaultDimensionTextScale, MinDimensionTextScale, MaxDimensionTextScale, false),
+        ("measure_snap_edge_factor", DefaultMeasureSnapEdgeFactor, MinMeasureSnapFactor, MaxMeasureSnapFactor, false),
+        ("measure_snap_endpoint_factor", DefaultMeasureSnapEndpointFactor, MinMeasureSnapFactor, MaxMeasureSnapFactor, false),
+        ("measure_snap_visibility_probe", DefaultMeasureSnapVisibilityProbe, MinMeasureSnapVisibilityProbe, MaxMeasureSnapVisibilityProbe, false),
+        ("measure_snap_occlusion_tolerance_factor", DefaultMeasureSnapOcclusionToleranceFactor, MinMeasureSnapOcclusionToleranceFactor, MaxMeasureSnapOcclusionToleranceFactor, false),
+        ("section_plane_opacity", 0.20f, 0.0f, 1.0f, false),
+        ("section_edge_width", DefaultSectionEdgeWidth, MinSectionEdgeWidth, MaxSectionEdgeWidth, false),
+        ("section_plane_size", 0.025f, 0.001f, 1.0f, false),
+    ];
 
     public static void Initialize(Context context)
     {
@@ -207,8 +302,8 @@ public static class AppSettings
         ISharedPreferences prefs = context.GetSharedPreferences(FileName, FileCreationMode.Private)
             ?? throw new InvalidOperationException("Context.GetSharedPreferences returned null.");
         System.Threading.Interlocked.CompareExchange(ref _prefs, prefs, null);
-        CloudServerConfig.Initialize(context);
         MigrateDefaultsIfNeeded();
+        MigrateLegacyCloudServerUrl(context.ApplicationContext ?? context);
     }
 
     public static void ResetToDefaults()
@@ -226,7 +321,7 @@ public static class AppSettings
     // Navigation (existing)
     public static float OrbitSensitivity { get => Get("orbit_sensitivity", 1.0f); set => Put("orbit_sensitivity", System.Math.Clamp(value, 0.1f, 5.0f)); }
     // Tuned on Galaxy S-series touch input to reduce pan overshoot on dense CAD scenes.
-    public static float PanSensitivity { get => Get("pan_sensitivity", 0.87420005f); set => Put("pan_sensitivity", System.Math.Clamp(value, 0.1f, 5.0f)); }
+    public static float PanSensitivity { get => Get("pan_sensitivity", 0.87f); set => Put("pan_sensitivity", System.Math.Clamp(value, 0.1f, 5.0f)); }
     public static float ZoomSensitivity { get => Get("zoom_sensitivity", 1.0f); set => Put("zoom_sensitivity", System.Math.Clamp(value, 0.1f, 5.0f)); }
     public static bool LightweightNavigationEnabled { get => Get("lightweight_navigation_enabled", true); set => Put("lightweight_navigation_enabled", value); }
     public static bool SpenPalmRejectionEnabled { get => Get("spen_palm_rejection", false); set => Put("spen_palm_rejection", value); }
@@ -267,8 +362,8 @@ public static class AppSettings
     public static bool ShiftGridToModelMin { get => Get("shift_grid", true); set => Put("shift_grid", value); }
     public static bool UseAutomaticGridSpacing { get => Get("auto_grid_spacing", true); set => Put("auto_grid_spacing", value); }
     public static bool DoubleTapFitScreenEnabled { get => Get("double_tap_fit_screen", false); set => Put("double_tap_fit_screen", value); }
-    public static float GridSpacingMm { get => GetFloatInRange("grid_spacing_mm", 100.8f, 0.001f, 1_000_000.0f); set => Put("grid_spacing_mm", System.Math.Clamp(value, 0.001f, 1_000_000.0f)); }
-    public static float GridLineThickness { get => GetFloatInRange("grid_thickness", 1.0f, 1.0f, 8.0f); set => Put("grid_thickness", System.Math.Clamp(value, 1.0f, 8.0f)); }
+    public static float GridSpacingMm { get => GetFloatInRange("grid_spacing_mm", SceneAppearanceDefaults.GridSpacingMm, 0.001f, 1_000_000.0f); set => Put("grid_spacing_mm", System.Math.Clamp(value, 0.001f, 1_000_000.0f)); }
+    public static float GridLineThickness { get => GetFloatInRange("grid_thickness", SceneAppearanceDefaults.GridLineThickness, 1.0f, 8.0f); set => Put("grid_thickness", System.Math.Clamp(value, 1.0f, 8.0f)); }
     public static float GridLineColorR { get => Get("grid_r", 0.35f); set => Put("grid_r", Clamp01(value)); }
     public static float GridLineColorG { get => Get("grid_g", 0.35f); set => Put("grid_g", Clamp01(value)); }
     public static float GridLineColorB { get => Get("grid_b", 0.35f); set => Put("grid_b", Clamp01(value)); }
@@ -277,14 +372,14 @@ public static class AppSettings
         float spacing = float.IsFinite(value) ? System.Math.Clamp(value, 0.001f, 1_000_000.0f) : 0.0f;
         Edit(editor =>
         {
-            editor.PutFloat("grid_spacing_mm", spacing);
+            editor.PutFloat("grid_spacing_mm", NormalizeFloatForStorage("grid_spacing_mm", spacing));
             editor.PutBoolean("auto_grid_spacing", false);
         });
     }
     public static void SetGridLineColor(float r, float g, float b) => PutRgb("grid_r", "grid_g", "grid_b", r, g, b);
     public static bool ShowAxes { get => Get("show_axes", true); set => Put("show_axes", value); }
     public static bool IsPerspective { get => Get("is_perspective", true); set => Put("is_perspective", value); }
-    public static bool ManualCameraClipPlanesEnabled { get => Get("manual_camera_clip_planes", false); set => Put("manual_camera_clip_planes", value); }
+    public static bool ManualCameraClipPlanesEnabled { get => Get("manual_camera_clip_planes", true); set => Put("manual_camera_clip_planes", value); }
     public static float CameraNearClipMm => GetFloatInRange("camera_near_clip_mm", DefaultCameraNearClipMm, MinCameraClipMm, MaxCameraNearClipMm);
     public static float CameraFarClipMm => GetFloatInRange("camera_far_clip_mm", DefaultCameraFarClipMm, MinCameraClipMm, MaxCameraFarClipMm);
 
@@ -338,15 +433,14 @@ public static class AppSettings
                 editor.PutInt("render_mode", enabled ? ModeShadedWithEdges : ModeShaded);
         });
     }
-    public static float EdgeR { get => Get("edge_r", 0.24028806f); set => Put("edge_r", Clamp01(value)); }
-    public static float EdgeG { get => Get("edge_g", 0.24f); set => Put("edge_g", Clamp01(value)); }
-    public static float EdgeB { get => Get("edge_b", 0.26f); set => Put("edge_b", Clamp01(value)); }
+    public static float EdgeR { get => Get("edge_r", SceneAppearanceDefaults.EdgeR); set => Put("edge_r", Clamp01(value)); }
+    public static float EdgeG { get => Get("edge_g", SceneAppearanceDefaults.EdgeG); set => Put("edge_g", Clamp01(value)); }
+    public static float EdgeB { get => Get("edge_b", SceneAppearanceDefaults.EdgeB); set => Put("edge_b", Clamp01(value)); }
     public static void SetEdgeColor(float r, float g, float b) => PutRgb("edge_r", "edge_g", "edge_b", r, g, b);
     public static float EdgeWidth { get => GetFloatInRange("edge_width", DefaultEdgeWidth, MinEdgeWidth, MaxEdgeWidth); set => Put("edge_width", System.Math.Clamp(value, MinEdgeWidth, MaxEdgeWidth)); }
     public static float CadEdgeFeatureAngleDegrees { get => GetFloatInRange("edge_feature_angle", 28.0f, 1.0f, 150.0f); set => Put("edge_feature_angle", System.Math.Clamp(value, 1.0f, 150.0f)); }
     public static float CadEdgeCoplanarToleranceDegrees { get => GetFloatInRange("edge_coplanar_tol", 5.0f, 0.0f, 30.0f); set => Put("edge_coplanar_tol", System.Math.Clamp(value, 0.0f, 30.0f)); }
     public static float CadEdgeWeldToleranceScale { get => GetFloatInRange("edge_weld_tol", 1.0e-5f, 1.0e-6f, 1.0e-4f); set => Put("edge_weld_tol", System.Math.Clamp(value, 1.0e-6f, 1.0e-4f)); }
-    public static bool CadEdgeSilhouetteEnabled { get => Get("edge_silhouette", true); set => Put("edge_silhouette", value); }
     public static float EdgeDepthBias { get => GetFloatInRange("edge_depth_bias", 0.0f, 0.0f, 0.002f); set => Put("edge_depth_bias", System.Math.Clamp(value, 0.0f, 0.002f)); }
     public static float SurfaceOffsetFactor { get => GetFloatInRange("surface_offset_f", DefaultSurfaceOffsetFactor, 0.0f, 4.0f); set => Put("surface_offset_f", System.Math.Clamp(value, 0.0f, 4.0f)); }
     public static float SurfaceOffsetUnits { get => GetFloatInRange("surface_offset_u", DefaultSurfaceOffsetUnits, 0.0f, 4.0f); set => Put("surface_offset_u", System.Math.Clamp(value, 0.0f, 4.0f)); }
@@ -365,21 +459,21 @@ public static class AppSettings
     public static float ClayFeatureEdgeG { get => Get("clay_edge_g", 0.12004116f); set => Put("clay_edge_g", Clamp01(value)); }
     public static float ClayFeatureEdgeB { get => Get("clay_edge_b", 0.11650209f); set => Put("clay_edge_b", Clamp01(value)); }
     public static void SetClayFeatureEdgeColor(float r, float g, float b) => PutRgb("clay_edge_r", "clay_edge_g", "clay_edge_b", r, g, b);
-    public static float ClayFeatureEdgeA { get => GetFloatInRange("clay_edge_a", 0.48666665f, 0.0f, 1.0f); set => Put("clay_edge_a", System.Math.Clamp(value, 0.0f, 1.0f)); }
+    public static float ClayFeatureEdgeA { get => GetFloatInRange("clay_edge_a", SceneAppearanceDefaults.ClayFeatureEdgeA, 0.0f, 1.0f); set => Put("clay_edge_a", System.Math.Clamp(value, 0.0f, 1.0f)); }
     public static float ClayFeatureEdgeWidth { get => GetFloatInRange("clay_edge_width", 0.95f, 0.05f, 4.0f); set => Put("clay_edge_width", System.Math.Clamp(value, 0.05f, 4.0f)); }
     public static float ClayFeatureEdgeDepthBias { get => GetFloatInRange("clay_edge_depth_bias", 0.0f, 0.0f, 0.01f); set => Put("clay_edge_depth_bias", System.Math.Clamp(value, 0.0f, 0.01f)); }
     public static float ClayFeatureEdgeCreaseAngleDegrees { get => GetFloatInRange("clay_edge_crease_angle", 35.0f, 1.0f, 150.0f); set => Put("clay_edge_crease_angle", System.Math.Clamp(value, 1.0f, 150.0f)); }
 
     // Lighting
-    public static float BaseColorLift { get => GetFloatInRange("light_base_lift", 0.1095f, 0.0f, 0.25f); set => Put("light_base_lift", System.Math.Clamp(value, 0.0f, 0.25f)); }
-    public static float AmbientStrength { get => GetFloatInRange("light_ambient", 0.306f, 0.0f, 1.0f); set => Put("light_ambient", Clamp01(value)); }
-    public static float HeadlightStrength { get => GetFloatInRange("light_headlight", 0.14f, 0.0f, 1.0f); set => Put("light_headlight", Clamp01(value)); }
-    public static float KeyLightStrength { get => GetFloatInRange("light_key", 0.34f, 0.0f, 1.0f); set => Put("light_key", Clamp01(value)); }
-    public static float FillLightStrength { get => GetFloatInRange("light_fill", 0.24f, 0.0f, 1.0f); set => Put("light_fill", Clamp01(value)); }
-    public static float BounceLightStrength { get => GetFloatInRange("light_bounce", 0.0f, 0.0f, 1.0f); set => Put("light_bounce", Clamp01(value)); }
-    public static float HemisphereStrength { get => GetFloatInRange("light_hemisphere", 0.28f, 0.0f, 1.0f); set => Put("light_hemisphere", Clamp01(value)); }
-    public static float SpecularStrength { get => GetFloatInRange("light_spec_strength", 0.354f, 0.0f, 1.0f); set => Put("light_spec_strength", Clamp01(value)); }
-    public static float SpecularPower { get => GetFloatInRange("light_spec_power", 77.0f, 1.0f, 128.0f); set => Put("light_spec_power", System.Math.Clamp(value, 1.0f, 128.0f)); }
+    public static float BaseColorLift { get => GetFloatInRange("light_base_lift", SceneAppearanceDefaults.BaseColorLift, 0.0f, 0.25f); set => Put("light_base_lift", System.Math.Clamp(value, 0.0f, 0.25f)); }
+    public static float AmbientStrength { get => GetFloatInRange("light_ambient", SceneAppearanceDefaults.AmbientStrength, 0.0f, 1.0f); set => Put("light_ambient", Clamp01(value)); }
+    public static float HeadlightStrength { get => GetFloatInRange("light_headlight", SceneAppearanceDefaults.HeadlightStrength, 0.0f, 1.0f); set => Put("light_headlight", Clamp01(value)); }
+    public static float KeyLightStrength { get => GetFloatInRange("light_key", SceneAppearanceDefaults.KeyLightStrength, 0.0f, 1.0f); set => Put("light_key", Clamp01(value)); }
+    public static float FillLightStrength { get => GetFloatInRange("light_fill", SceneAppearanceDefaults.FillLightStrength, 0.0f, 1.0f); set => Put("light_fill", Clamp01(value)); }
+    public static float BounceLightStrength { get => GetFloatInRange("light_bounce", SceneAppearanceDefaults.BounceLightStrength, 0.0f, 1.0f); set => Put("light_bounce", Clamp01(value)); }
+    public static float HemisphereStrength { get => GetFloatInRange("light_hemisphere", SceneAppearanceDefaults.HemisphereStrength, 0.0f, 1.0f); set => Put("light_hemisphere", Clamp01(value)); }
+    public static float SpecularStrength { get => GetFloatInRange("light_spec_strength", SceneAppearanceDefaults.SpecularStrength, 0.0f, 1.0f); set => Put("light_spec_strength", Clamp01(value)); }
+    public static float SpecularPower { get => GetFloatInRange("light_spec_power", SceneAppearanceDefaults.SpecularPower, 1.0f, 128.0f); set => Put("light_spec_power", System.Math.Clamp(value, 1.0f, 128.0f)); }
 
     // AO, contour, and MSAA
     public static bool AmbientOcclusionEnabled { get => Get("ao_enabled", true); set => Put("ao_enabled", value); }
@@ -401,8 +495,8 @@ public static class AppSettings
     public static int AoBlurRadius { get => GetIntInRange("ao_blur_radius", DefaultAoBlurRadius, MinAoBlurRadius, MaxAoBlurRadius); set => Put("ao_blur_radius", System.Math.Clamp(value, MinAoBlurRadius, MaxAoBlurRadius)); }
     public static float AoBlurSharpness { get => GetFloatInRange("ao_blur_sharpness", DefaultAoBlurSharpness, MinAoBlurSharpness, MaxAoBlurSharpness); set => Put("ao_blur_sharpness", System.Math.Clamp(value, MinAoBlurSharpness, MaxAoBlurSharpness)); }
     public static int AoBlurPasses { get => GetIntInRange("ao_blur_passes", DefaultAoBlurPasses, MinAoBlurPasses, MaxAoBlurPasses); set => Put("ao_blur_passes", System.Math.Clamp(value, MinAoBlurPasses, MaxAoBlurPasses)); }
-    public static float ContourStrength { get => GetFloatInRange("contour_strength", 0.20040001f, 0.0f, 1.2f); set => Put("contour_strength", System.Math.Clamp(value, 0.0f, 1.2f)); }
-    public static float ContourPower { get => GetFloatInRange("contour_power", 4.4105f, 0.5f, 6.0f); set => Put("contour_power", System.Math.Clamp(value, 0.5f, 6.0f)); }
+    public static float ContourStrength { get => GetFloatInRange("contour_strength", SceneAppearanceDefaults.ContourStrength, 0.0f, 1.2f); set => Put("contour_strength", System.Math.Clamp(value, 0.0f, 1.2f)); }
+    public static float ContourPower { get => GetFloatInRange("contour_power", SceneAppearanceDefaults.ContourPower, 0.5f, 6.0f); set => Put("contour_power", System.Math.Clamp(value, 0.5f, 6.0f)); }
     // Read-side clamp remains defence-in-depth; schema migration removes invalid persisted values.
     public static int MsaaSamples { get => ClampAndroidMsaaSamples(Get("msaa_samples", 4)); set => Put("msaa_samples", ClampAndroidMsaaSamples(value)); }
 
@@ -422,12 +516,12 @@ public static class AppSettings
     public static float OutlineG { get => Get("outline_g", 0.0f); set => Put("outline_g", Clamp01(value)); }
     public static float OutlineB { get => Get("outline_b", 0.0f); set => Put("outline_b", Clamp01(value)); }
     public static void SetOutlineColor(float r, float g, float b) => PutRgb("outline_r", "outline_g", "outline_b", r, g, b);
-    public static float OutlineThicknessPx { get => GetFloatInRange("outline_thickness", 3.2098765f, 1.0f, 8.0f); set => Put("outline_thickness", System.Math.Clamp(value, 1.0f, 8.0f)); }
+    public static float OutlineThicknessPx { get => GetFloatInRange("outline_thickness", SceneAppearanceDefaults.OutlineThicknessPx, 1.0f, 8.0f); set => Put("outline_thickness", System.Math.Clamp(value, 1.0f, 8.0f)); }
     public static float HoverOutlineR { get => Get("hover_outline_r", 0.0f); set => Put("hover_outline_r", Clamp01(value)); }
     public static float HoverOutlineG { get => Get("hover_outline_g", 1.0f); set => Put("hover_outline_g", Clamp01(value)); }
     public static float HoverOutlineB { get => Get("hover_outline_b", 0.0f); set => Put("hover_outline_b", Clamp01(value)); }
     public static void SetHoverOutlineColor(float r, float g, float b) => PutRgb("hover_outline_r", "hover_outline_g", "hover_outline_b", r, g, b);
-    public static float HoverOutlineThicknessPx { get => GetFloatInRange("hover_outline_thickness", 0.37757202f, 0.05f, 8.0f); set => Put("hover_outline_thickness", System.Math.Clamp(value, 0.05f, 8.0f)); }
+    public static float HoverOutlineThicknessPx { get => GetFloatInRange("hover_outline_thickness", SceneAppearanceDefaults.HoverOutlineThicknessPx, 0.05f, 8.0f); set => Put("hover_outline_thickness", System.Math.Clamp(value, 0.05f, 8.0f)); }
     public static float HoverTintStrength { get => GetFloatInRange("hover_tint_strength", 0.2f, 0.0f, 1.0f); set => Put("hover_tint_strength", System.Math.Clamp(value, 0.0f, 1.0f)); }
     public static float DimensionHighlightR { get => Get("dimension_highlight_r", 1.0f); set => Put("dimension_highlight_r", Clamp01(value)); }
     public static float DimensionHighlightG { get => Get("dimension_highlight_g", 0.5019608f); set => Put("dimension_highlight_g", Clamp01(value)); }
@@ -439,13 +533,13 @@ public static class AppSettings
     public static int MeasureBoxModeSelectionIndex { get => GetIntInRange("measure_box_mode", MeasureBoxModeBestFit, MeasureBoxModeAxisAligned, MeasureBoxModeBestFit); set => Put("measure_box_mode", System.Math.Clamp(value, MeasureBoxModeAxisAligned, MeasureBoxModeBestFit)); }
     public static bool MeasureMultiMeasureEnabled { get => Get("measure_multi_enabled", true); set => Put("measure_multi_enabled", value); }
     public static bool MeasureBoundingBoxAdditiveEnabled { get => Get("measure_bbox_additive_enabled", false); set => Put("measure_bbox_additive_enabled", value); }
-    public static bool MeasureShowDeltaBreakdown { get => Get("measure_show_deltas", true); set => Put("measure_show_deltas", value); }
+    public static bool MeasureShowDeltaBreakdown { get => Get("measure_show_deltas", false); set => Put("measure_show_deltas", value); }
     public static bool MeasurePointSnapEnabled { get => Get("measure_snap_enabled", true); set => Put("measure_snap_enabled", value); }
     public static bool MeasureEndpointSnapEnabled { get => Get("measure_snap_endpoint_enabled", true); set => Put("measure_snap_endpoint_enabled", value); }
     public static bool MeasureMidpointSnapEnabled { get => Get("measure_snap_midpoint_enabled", true); set => Put("measure_snap_midpoint_enabled", value); }
     public static bool MeasureSnapVisibleEdgesOnly { get => Get("measure_snap_visible_edges_only", true); set => Put("measure_snap_visible_edges_only", value); }
-    public static float MeasureSnapEdgeFactor { get => GetFloatInRange("measure_snap_edge_factor", DefaultMeasureSnapFactor, MinMeasureSnapFactor, MaxMeasureSnapFactor); set => Put("measure_snap_edge_factor", System.Math.Clamp(value, MinMeasureSnapFactor, MaxMeasureSnapFactor)); }
-    public static float MeasureSnapEndpointFactor { get => GetFloatInRange("measure_snap_endpoint_factor", DefaultMeasureSnapFactor, MinMeasureSnapFactor, MaxMeasureSnapFactor); set => Put("measure_snap_endpoint_factor", System.Math.Clamp(value, MinMeasureSnapFactor, MaxMeasureSnapFactor)); }
+    public static float MeasureSnapEdgeFactor { get => GetFloatInRange("measure_snap_edge_factor", DefaultMeasureSnapEdgeFactor, MinMeasureSnapFactor, MaxMeasureSnapFactor); set => Put("measure_snap_edge_factor", System.Math.Clamp(value, MinMeasureSnapFactor, MaxMeasureSnapFactor)); }
+    public static float MeasureSnapEndpointFactor { get => GetFloatInRange("measure_snap_endpoint_factor", DefaultMeasureSnapEndpointFactor, MinMeasureSnapFactor, MaxMeasureSnapFactor); set => Put("measure_snap_endpoint_factor", System.Math.Clamp(value, MinMeasureSnapFactor, MaxMeasureSnapFactor)); }
     public static float MeasureSnapVisibilityProbe { get => GetFloatInRange("measure_snap_visibility_probe", DefaultMeasureSnapVisibilityProbe, MinMeasureSnapVisibilityProbe, MaxMeasureSnapVisibilityProbe); set => Put("measure_snap_visibility_probe", System.Math.Clamp(value, MinMeasureSnapVisibilityProbe, MaxMeasureSnapVisibilityProbe)); }
     public static float MeasureSnapOcclusionToleranceFactor { get => GetFloatInRange("measure_snap_occlusion_tolerance_factor", DefaultMeasureSnapOcclusionToleranceFactor, MinMeasureSnapOcclusionToleranceFactor, MaxMeasureSnapOcclusionToleranceFactor); set => Put("measure_snap_occlusion_tolerance_factor", System.Math.Clamp(value, MinMeasureSnapOcclusionToleranceFactor, MaxMeasureSnapOcclusionToleranceFactor)); }
     public static float DimensionTextScale { get => GetFloatInRange("dimension_text_scale", DefaultDimensionTextScale, MinDimensionTextScale, MaxDimensionTextScale); set => Put("dimension_text_scale", System.Math.Clamp(value, MinDimensionTextScale, MaxDimensionTextScale)); }
@@ -464,7 +558,7 @@ public static class AppSettings
 
     // Section tools
     public static bool SectionFillVisible { get => Get("section_fill_visible", false); set => Put("section_fill_visible", value); }
-    public static bool SectionEdgesVisible { get => Get("section_edges_visible", true); set => Put("section_edges_visible", value); }
+    public static bool SectionEdgesVisible { get => Get("section_edges_visible", false); set => Put("section_edges_visible", value); }
     public static bool SectionCurvesVisible { get => Get("section_curves_visible", true); set => Put("section_curves_visible", value); }
     public static bool SectionCapsVisible { get => Get("section_caps_visible", true); set => Put("section_caps_visible", value); }
     public static float SectionPlaneR { get => Get("section_plane_r", 0.19607843f); set => Put("section_plane_r", System.Math.Clamp(value, 0.0f, 1.0f)); }
@@ -489,19 +583,8 @@ public static class AppSettings
     }
 
     // FA Cloud
-    // S9-1: get-only. The active server URL lives in CloudServerConfig (INI),
-    // not SharedPreferences. The old setter ignored its value and merely removed
-    // the legacy "cloud_server_url" pref key, so any assignment silently vanished;
-    // that legacy key is already purged by MigrateDefaultsIfNeeded (schema < 21),
-    // so no clear path is needed here.
-    public static string CloudServerUrl => CloudServerConfig.ServerUrl;
-    public static string CloudServerConfigPath => CloudServerConfig.ConfigPath;
-    public static int CloudServerProfileSelectionIndex => CloudServerConfig.ProfileSelectionIndex;
-    public static string CloudServerProfileDisplayName => CloudServerConfig.ProfileDisplayName;
-    public static string CloudServerSelectedUrlKey => CloudServerConfig.SelectedUrlKey;
-    public static void SetCloudServerProfileSelectionIndex(int index) => CloudServerConfig.SetProfileSelectionIndex(index);
+    public static string CloudServerUrl { get => CloudServerUrls.NormalizeConfiguredUrl(Get(CloudServerUrlKey, "")); set => Put(CloudServerUrlKey, (value ?? "").Trim()); }
     public static string CloudUserEmail { get => Get("cloud_user_email", DefaultCloudUserEmail); set => Put("cloud_user_email", value.Trim()); }
-    public static string CloudDefaultProjectName { get => Get("cloud_default_project", DefaultCloudProjectName); set => Put("cloud_default_project", value.Trim()); }
     public static bool CloudRememberCredentials { get => Get("cloud_remember_credentials", false); set => Put("cloud_remember_credentials", value); }
     public static bool CloudRememberPassword { get => Get("cloud_remember_password", false); set => Put("cloud_remember_password", value); }
 
@@ -542,7 +625,6 @@ public static class AppSettings
         appearance.CadEdgeFeatureAngleDegrees = CadEdgeFeatureAngleDegrees;
         appearance.CadEdgeCoplanarToleranceDegrees = CadEdgeCoplanarToleranceDegrees;
         appearance.CadEdgeWeldToleranceScale = CadEdgeWeldToleranceScale;
-        appearance.CadEdgeSilhouetteEnabled = CadEdgeSilhouetteEnabled;
         appearance.EdgeDepthBias = EdgeDepthBias;
         appearance.SurfaceOffsetFactor = SurfaceOffsetFactor;
         appearance.SurfaceOffsetUnits = SurfaceOffsetUnits;
@@ -606,7 +688,7 @@ public static class AppSettings
         editor.Apply();
     }
 
-    private static void Put(string k, float v) => Edit(ed => ed.PutFloat(k, float.IsFinite(v) ? v : 0.0f));
+    private static void Put(string k, float v) => Edit(ed => ed.PutFloat(k, NormalizeFloatForStorage(k, v)));
     private static void Put(string k, bool v) => Edit(ed => ed.PutBoolean(k, v));
     private static void Put(string k, int v) => Edit(ed => ed.PutInt(k, v));
     private static void Put(string k, string v) => Edit(ed => ed.PutString(k, v ?? ""));
@@ -662,12 +744,97 @@ public static class AppSettings
         if (previousSchema < 21)
             editor.Remove("cloud_server_url");
 
+        RoundStoredSliderValues(editor);
         RemoveLegacyDefaultValues(editor);
         RemoveFloatIfBelow(editor, "edge_width", MinimumVisibleEdgeWidth);
         RemoveOutOfRangeValues(editor);
 
         editor.PutInt("settings_schema_version", SettingsSchemaVersion);
         editor.Apply();
+    }
+
+    private static void MigrateLegacyCloudServerUrl(Context context)
+    {
+        if (!string.IsNullOrWhiteSpace(Get(CloudServerUrlKey, "")))
+            return;
+
+        foreach (string? directory in EnumerateLegacyCloudConfigDirectories(context))
+        {
+            if (string.IsNullOrWhiteSpace(directory))
+                continue;
+
+            string path = Path.Combine(directory, LegacyCloudConfigFileName);
+            if (!File.Exists(path))
+                continue;
+
+            try
+            {
+                string legacyUrl = ReadLegacyCloudInternetServerUrl(File.ReadAllText(path));
+                if (!string.IsNullOrWhiteSpace(legacyUrl))
+                {
+                    Put(CloudServerUrlKey, legacyUrl);
+                    return;
+                }
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+            {
+                global::Android.Util.Log.Warn("FA.Cloud", "Failed to migrate legacy cloud config: " + ex.GetBaseException().Message);
+            }
+        }
+    }
+
+    private static IEnumerable<string?> EnumerateLegacyCloudConfigDirectories(Context context)
+    {
+        yield return context.GetExternalFilesDir(null)?.AbsolutePath;
+        yield return context.FilesDir?.AbsolutePath;
+    }
+
+    private static string ReadLegacyCloudInternetServerUrl(string iniText)
+    {
+        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        string section = "";
+        using var reader = new StringReader(iniText ?? "");
+        while (reader.ReadLine() is { } rawLine)
+        {
+            string line = rawLine.Trim();
+            if (line.Length == 0 || line.StartsWith('#') || line.StartsWith(';'))
+                continue;
+
+            if (line.StartsWith('[') && line.EndsWith(']'))
+            {
+                section = line[1..^1].Trim();
+                continue;
+            }
+
+            int separator = line.IndexOf('=');
+            if (separator <= 0)
+                continue;
+
+            if (section.Length > 0 && !section.Equals("cloud", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            string key = line[..separator].Trim();
+            values[key] = UnquoteIniValue(line[(separator + 1)..].Trim());
+        }
+
+        string internetUrl = CloudServerUrls.NormalizeConfiguredUrl(values.GetValueOrDefault("internet_url"));
+        if (!string.IsNullOrWhiteSpace(internetUrl))
+            return internetUrl;
+
+        string legacyServerUrl = CloudServerUrls.NormalizeConfiguredUrl(values.GetValueOrDefault("server_url"));
+        return legacyServerUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ? legacyServerUrl : "";
+    }
+
+    private static string UnquoteIniValue(string value)
+    {
+        if (value.Length >= 2
+            && ((value[0] == '"' && value[^1] == '"')
+                || (value[0] == '\'' && value[^1] == '\'')))
+        {
+            return value[1..^1].Trim();
+        }
+
+        return value;
     }
 
     private static void RemoveLegacyDefaultValues(ISharedPreferencesEditor editor)
@@ -677,6 +844,9 @@ public static class AppSettings
 
         foreach ((string key, int expected) in LegacyIntDefaultsToRemove)
             RemoveIntIfEquals(editor, key, expected);
+
+        foreach ((string key, bool expected) in LegacyBoolDefaultsToRemove)
+            RemoveBoolIfEquals(editor, key, expected);
     }
 
     private static void RemoveOutOfRangeValues(ISharedPreferencesEditor editor)
@@ -691,6 +861,46 @@ public static class AppSettings
     private static bool Approximately(float left, float right)
     {
         return System.Math.Abs(left - right) <= 0.000001f;
+    }
+
+    private static float NormalizeFloatForStorage(string key, float value)
+    {
+        foreach ((string ruleKey, float defaultValue, float min, float max, bool logarithmic) in SliderFloatRules)
+        {
+            if (!string.Equals(ruleKey, key, StringComparison.Ordinal))
+                continue;
+
+            return SnapSliderFloat(value, defaultValue, min, max, logarithmic);
+        }
+
+        return float.IsFinite(value) ? value : 0.0f;
+    }
+
+    private static float SnapSliderFloat(float value, float defaultValue, float min, float max, bool logarithmic)
+        => logarithmic
+            ? AppSettingsValueGuards.ClampAndRoundToSignificantDigits(value, min, max, significantDigits: 2, fallback: defaultValue)
+            : AppSettingsValueGuards.ClampAndSnap(
+                value,
+                min,
+                max,
+                AppSettingsValueGuards.ResolveLinearSliderStep(min, max),
+                defaultValue);
+
+    private static void RoundStoredSliderValues(ISharedPreferencesEditor editor)
+    {
+        foreach ((string key, float defaultValue, float min, float max, bool logarithmic) in SliderFloatRules)
+        {
+            if (!Prefs.Contains(key))
+                continue;
+
+            float value = Get(key, float.NaN);
+            if (!float.IsFinite(value) || value < min || value > max)
+                continue;
+
+            float snapped = SnapSliderFloat(value, defaultValue, min, max, logarithmic);
+            if (value != snapped)
+                editor.PutFloat(key, snapped);
+        }
     }
 
     private static float GetFloatInRange(string key, float defaultValue, float min, float max)
@@ -751,6 +961,12 @@ public static class AppSettings
             editor.Remove(key);
     }
 
+    private static void RemoveBoolIfEquals(ISharedPreferencesEditor editor, string key, bool expected)
+    {
+        if (Prefs.Contains(key) && Get(key, !expected) == expected)
+            editor.Remove(key);
+    }
+
     private static void ResetAmbientOcclusionTuning(ISharedPreferencesEditor editor)
     {
         editor.Remove("ao_sample_count");
@@ -795,7 +1011,11 @@ public static class AppSettings
             return;
 
         float scale = value / LegacySectionGizmoSizeFractionBase;
-        editor.PutFloat("section_gizmo_scale", System.Math.Clamp(scale, MinSectionGizmoScale, MaxSectionGizmoScale));
+        editor.PutFloat(
+            "section_gizmo_scale",
+            NormalizeFloatForStorage(
+                "section_gizmo_scale",
+                System.Math.Clamp(scale, MinSectionGizmoScale, MaxSectionGizmoScale)));
     }
 
     private static float Clamp01(float value)

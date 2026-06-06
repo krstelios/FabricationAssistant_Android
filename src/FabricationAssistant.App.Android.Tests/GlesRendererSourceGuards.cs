@@ -266,15 +266,20 @@ public sealed class GlesRendererSourceGuards
     }
 
     [Fact]
-    public void Slice22_CleartextGatedToLanAndErrorBodyCapped()
+    public void Slice22_CloudRequiresHttpsAndErrorBodyCapped()
     {
         string client = File.ReadAllText(ResolveRepoPath(
             @"..\FabricationAssistant.App.Android\CloudApiClient.cs"));
 
-        // S22-1: http:// is rejected for non-private/non-loopback (internet) hosts.
+        // S22-1: FA Cloud is internet-only, so every configured server URL must be HTTPS.
         string normalize = ExtractMethod(client, "public static string NormalizeServerUrl");
-        Assert.Contains("uri.Scheme == Uri.UriSchemeHttp", normalize);
-        Assert.Contains("IsPrivateOrLoopbackHost(uri.Host)", normalize);
+        Assert.Contains("uri.Scheme != Uri.UriSchemeHttps", normalize);
+        Assert.DoesNotContain("UriSchemeHttp &&", normalize);
+        Assert.DoesNotContain("UriSchemeHttp ||", normalize);
+
+        string releaseNetworkSecurity = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\Resources\xml\network_security_config_release.xml"));
+        Assert.Contains("cleartextTrafficPermitted=\"false\"", releaseNetworkSecurity);
 
         // S22-1: the blunt global cleartext flag is gone from the manifest.
         string manifest = File.ReadAllText(ResolveRepoPath(
@@ -289,21 +294,28 @@ public sealed class GlesRendererSourceGuards
     }
 
     [Fact]
-    public void Slice20_SilhouetteOverlayOnlyInShadedWithEdges()
+    public void CadEdgeSilhouetteOverlay_IsRemoved()
     {
-        // S20-F10: the screen-space silhouette runs only in ShadedWithEdges (desktop
-        // parity), not in plain Shaded; the old Clay/Wireframe exclusion is replaced.
         string renderer = File.ReadAllText(ResolveRepoPath(
             @"..\FabricationAssistant.Rendering.Gles\GlesViewportRenderer.cs"));
+        string preferences = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\PreferencesBottomSheet.cs"));
+        string appSettings = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.App.Android\AppSettings.cs"));
+        string appearance = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.Rendering.Gles\SceneAppearance.cs"));
 
-        int start = renderer.IndexOf("bool silhouetteOverlayActive = normalDepthRanThisFrame", StringComparison.Ordinal);
-        Assert.True(start >= 0, "silhouetteOverlayActive assignment was not found.");
-        int end = renderer.IndexOf("if (silhouetteOverlayActive)", start, StringComparison.Ordinal);
-        Assert.True(end > start, "silhouetteOverlayActive assignment end was not found.");
-        string assignment = renderer[start..end];
-
-        Assert.Contains("a.Mode == RenderMode.ShadedWithEdges", assignment);
-        Assert.DoesNotContain("a.Mode != RenderMode.Clay", assignment);
+        Assert.DoesNotContain("CadEdgeSilhouetteEnabled", appSettings);
+        Assert.DoesNotContain("CadEdgeSilhouetteEnabled", appearance);
+        Assert.DoesNotContain("CadEdgeSilhouetteEnabled", renderer);
+        Assert.DoesNotContain("edge_silhouette", appSettings);
+        Assert.DoesNotContain("\"Silhouettes\"", preferences);
+        Assert.DoesNotContain("silhouette_overlay.gles.frag", renderer);
+        Assert.DoesNotContain("RenderSilhouetteOverlay", renderer);
+        Assert.DoesNotContain("silhouetteOverlayActive", renderer);
+        Assert.DoesNotContain("silhouettePrepassWanted", renderer);
+        Assert.False(File.Exists(ResolveRepoPath(
+            @"..\FabricationAssistant.Rendering.Gles\Shaders\silhouette_overlay.gles.frag")));
     }
 
     [Fact]
@@ -433,7 +445,10 @@ public sealed class GlesRendererSourceGuards
         Assert.Contains("issuedLoadVersion != Volatile.Read(ref _loadVersion)", pickHelper);
         Assert.Contains("PickModelBodyAsync(px, py, pickReason", mainActivity);
         Assert.Contains("PickModelBodyAsync(px, py, \"context\"", mainActivity);
-        Assert.Contains("PickModelBodyAsync(px, py, \"body-move-select\"", mainActivity);
+        Assert.Contains("PickModelBodyAsync(px, py, \"select-off-empty-clear\"", mainActivity);
+        Assert.DoesNotContain("\"body-move-select\"", mainActivity);
+        Assert.Contains("private bool CanUseBodyMoveGizmo()", mainActivity);
+        Assert.Contains("_bodyMoveToolEnabled", mainActivity);
     }
 
     [Fact]
@@ -583,21 +598,6 @@ public sealed class GlesRendererSourceGuards
     }
 
     [Fact]
-    public void ScreenSpaceSilhouetteOverlay_IsSkippedDuringSectionClipping()
-    {
-        string renderer = File.ReadAllText(ResolveRepoPath(
-            @"..\FabricationAssistant.Rendering.Gles\GlesViewportRenderer.cs"));
-
-        int silhouetteStart = renderer.IndexOf("bool silhouetteOverlayActive = normalDepthRanThisFrame", StringComparison.Ordinal);
-        Assert.True(silhouetteStart >= 0, "silhouetteOverlayActive assignment was not found.");
-        int silhouetteEnd = renderer.IndexOf("if (silhouetteOverlayActive)", silhouetteStart, StringComparison.Ordinal);
-        Assert.True(silhouetteEnd > silhouetteStart, "silhouetteOverlayActive assignment end was not found.");
-        string assignment = renderer[silhouetteStart..silhouetteEnd];
-
-        Assert.Contains("SectionPlanes.Count == 0", assignment);
-    }
-
-    [Fact]
     public void AndroidRenderTargets_Require32BitDepthWhileBackbufferUsesCompatibleDepth()
     {
         string msaa = File.ReadAllText(ResolveRepoPath(
@@ -641,7 +641,7 @@ public sealed class GlesRendererSourceGuards
         string renderer = File.ReadAllText(ResolveRepoPath(
             @"..\FabricationAssistant.Rendering.Gles\GlesViewportRenderer.cs"));
         Assert.DoesNotContain("DepthBits < 32", renderer);
-        Assert.Contains("depth remains D32FS8", renderer);
+        Assert.Contains("uses D32FS8", renderer);
     }
 
     [Fact]
@@ -683,6 +683,51 @@ public sealed class GlesRendererSourceGuards
             @"..\FabricationAssistant.Rendering.Gles\GlesViewportRenderer.cs"));
 
         Assert.Contains("duplicate scene draw that frame", renderer);
+    }
+
+    [Fact]
+    public void MsaaIsNotSilentlyDowngradedDuringNavigationOrSsaa()
+    {
+        string renderer = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.Rendering.Gles\GlesViewportRenderer.cs"));
+
+        Assert.DoesNotContain("msaaBypassedForNavigation", renderer);
+        Assert.DoesNotContain("MSAA samples reduced during lightweight navigation", renderer);
+        Assert.DoesNotContain("renderTargetAppearance.MsaaSamples = 0", renderer);
+        Assert.DoesNotContain("renderTargetAppearance.MsaaSamples = 2", renderer);
+        Assert.DoesNotContain("cap hardware", renderer);
+        Assert.DoesNotContain("Off(interactive", renderer);
+        Assert.Contains("it must not silently downgrade the user's MSAA", renderer);
+        Assert.Contains("try the requested sample", renderer);
+    }
+
+    [Fact]
+    public void FxaaRunsAfterSceneFboResolveAndFinalOverlays()
+    {
+        string renderer = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.Rendering.Gles\GlesViewportRenderer.cs"));
+        string outline = File.ReadAllText(ResolveRepoPath(
+            @"..\FabricationAssistant.Rendering.Gles\GlesOutlineRenderer.cs"));
+
+        string composite = ExtractMethod(renderer, "private unsafe bool EnsureCompositeFramebuffer");
+        Assert.Contains("InternalFormat.Rgb8", composite);
+        Assert.Contains("PixelFormat.Rgb", composite);
+
+        Assert.Contains("That scene FBO may be multisampled or single-sampled", renderer);
+        Assert.Contains("useComposite ? _compositeFbo : 0u", renderer);
+        Assert.Contains("uint finalOverlayTarget = useFxaa ? _compositeFbo : 0u;", renderer);
+        Assert.Contains("targetFramebuffer = 0", outline);
+        Assert.Contains("_gl.BindFramebuffer(FramebufferTarget.Framebuffer, targetFramebuffer);", outline);
+
+        int resolveIndex = renderer.IndexOf("if (!TryResolveMsaaFramebuffer(a, useComposite ? _compositeFbo : 0u))", StringComparison.Ordinal);
+        int bindIndex = renderer.IndexOf("BindFinalOverlayTarget(useFxaa);", resolveIndex, StringComparison.Ordinal);
+        int targetIndex = renderer.IndexOf("uint finalOverlayTarget = useFxaa ? _compositeFbo : 0u;", bindIndex, StringComparison.Ordinal);
+        int applyIndex = renderer.IndexOf("ApplyFxaa();", targetIndex, StringComparison.Ordinal);
+
+        Assert.True(resolveIndex >= 0, "MSAA/scene FBO resolve into the composite was not found.");
+        Assert.True(bindIndex > resolveIndex, "FXAA overlay target binding must happen after the scene FBO resolve.");
+        Assert.True(targetIndex > bindIndex, "Final overlays must target the FXAA composite before ApplyFxaa.");
+        Assert.True(applyIndex > targetIndex, "ApplyFxaa must be the final post-process, after selection outlines and axes.");
     }
 
     [Fact]
@@ -791,14 +836,14 @@ public sealed class GlesRendererSourceGuards
         string mainActivity = File.ReadAllText(ResolveRepoPath(
             @"..\FabricationAssistant.App.Android\MainActivity.cs"));
         Assert.Contains("Text = \"Remember my password\"", mainActivity);
-        Assert.Contains("LoadRememberedPassword(serverUrl, initialEmail)", mainActivity);
+        Assert.Contains("LoadRememberedPassword(configuredServerUrl, initialEmail)", mainActivity);
         Assert.Contains("UpdateCloudRememberedPassword(outcome.ServerUrl, outcome.Email, password, rememberPassword)", mainActivity);
         Assert.Contains("UpdateCloudRememberedPassword(challenge.ServerUrl, challenge.Email, passwordToRemember, rememberPassword)", mainActivity);
 
         string preferences = File.ReadAllText(ResolveRepoPath(
             @"..\FabricationAssistant.App.Android\PreferencesBottomSheet.cs"));
-        Assert.Contains("\"Remember password\"", preferences);
-        Assert.Contains("cloudSecureStore.ClearRememberedPassword();", preferences);
+        Assert.DoesNotContain("\"Remember password\"", preferences);
+        Assert.DoesNotContain("ClearRememberedPassword", preferences);
     }
 
     [Fact]

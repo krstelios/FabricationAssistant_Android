@@ -1,0 +1,17 @@
+--------- beginning of main
+06-05 21:53:02.390 30387 30387 I FA.Renderer: Render pacing: Choreographer vsync request coalescing enabled.
+06-05 21:53:02.544 30387 30421 I FA.Renderer: Scene framebuffer depth=Depth32fStencil8, samples=4, requestedSamples=4, viewport=2860x1522.
+06-05 21:53:02.544 30387 30421 I FA.Renderer: MSAA state: requested=4x, effective=4x, GL_MAX_SAMPLES=4, viewport=2860x1522.
+06-05 21:53:02.547 30387 30421 I FA.Renderer: SSAO state: enabled=True, active=False, reason=no scene, mode=ShadedWithEdges, viewport=2860x1522.
+06-05 21:53:05.324 30387 30421 I FA.Renderer: Scene framebuffer depth=Depth32fStencil8, samples=4, requestedSamples=4, viewport=2839x1522.
+06-05 21:53:05.341 30387 30421 I FA.Renderer: Scene framebuffer depth=Depth32fStencil8, samples=4, requestedSamples=4, viewport=1929x1522.
+06-05 21:53:08.406 30387 30421 I FA.Renderer: Scene framebuffer depth=Depth32fStencil8, samples=4, requestedSamples=4, viewport=2384x1522.
+06-05 21:53:09.253 30387 30421 I FA.Renderer: Scene framebuffer depth=Depth32fStencil8, samples=4, requestedSamples=4, viewport=2406x1522.
+06-05 21:53:09.274 30387 30421 I FA.Renderer: Scene framebuffer depth=Depth32fStencil8, samples=4, requestedSamples=4, viewport=2431x1522.
+06-05 21:53:09.291 30387 30421 I FA.Renderer: Scene framebuffer depth=Depth32fStencil8, samples=4, requestedSamples=4, viewport=2508x1522.
+06-05 21:53:09.312 30387 30421 I FA.Renderer: Scene framebuffer depth=Depth32fStencil8, samples=4, requestedSamples=4, viewport=2600x1522.
+06-05 21:53:09.329 30387 30421 I FA.Renderer: Scene framebuffer depth=Depth32fStencil8, samples=4, requestedSamples=4, viewport=2699x1522.
+06-05 21:53:09.339 30387 30421 I FA.Renderer: Scene framebuffer depth=Depth32fStencil8, samples=4, requestedSamples=4, viewport=2781x1522.
+06-05 21:53:09.363 30387 30421 I FA.Renderer: Scene framebuffer depth=Depth32fStencil8, samples=4, requestedSamples=4, viewport=2828x1522.
+06-05 21:53:09.374 30387 30421 I FA.Renderer: Scene framebuffer depth=Depth32fStencil8, samples=4, requestedSamples=4, viewport=2838x1522.
+06-05 21:53:09.385 30387 30421 I FA.Renderer: Scene framebuffer depth=Depth32fStencil8, samples=4, requestedSamples=4, viewport=2860x1522.

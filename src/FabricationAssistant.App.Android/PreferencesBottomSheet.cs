@@ -193,7 +193,6 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         // S10-F8: weld tolerance spans two decades (1e-6..1e-4); a log scale makes
         // the low end tunable instead of compressing it into ~9% of the track.
         AddFloatSlider(ctx, edges, "Weld tolerance", 1e-6f, 1e-4f, AppSettings.CadEdgeWeldToleranceScale, v => AppSettings.CadEdgeWeldToleranceScale = v, logarithmic: true);
-        AddSwitch(ctx, edges, "Silhouettes", AppSettings.CadEdgeSilhouetteEnabled, v => AppSettings.CadEdgeSilhouetteEnabled = v);
         AddFloatSlider(ctx, edges, "Depth bias", 0f, 0.002f, AppSettings.EdgeDepthBias, v => AppSettings.EdgeDepthBias = v);
         AddFloatSlider(ctx, edges, "Surface offset F", 0f, 4f, AppSettings.SurfaceOffsetFactor, v => AppSettings.SurfaceOffsetFactor = v);
         AddFloatSlider(ctx, edges, "Surface offset U", 0f, 4f, AppSettings.SurfaceOffsetUnits, v => AppSettings.SurfaceOffsetUnits = v);
@@ -326,25 +325,9 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         // S10-F9: gizmo scale belongs with the Section Tools controls it affects.
         AddFloatSlider(ctx, sections, "Section gizmo scale", 0.5f, 4f, AppSettings.SectionGizmoScale, v => AppSettings.SectionGizmoScale = v);
 
-        var cloud = AddSection(ctx, root, "FA Cloud", "Connection, account, and project");
-        var cloudSecureStore = new CloudSecureStore(ctx.ApplicationContext ?? ctx);
-        AddLabeledToggleRow(ctx, cloud, "Connection", new[] { "Local network", "Internet" },
-            AppSettings.CloudServerProfileSelectionIndex, AppSettings.SetCloudServerProfileSelectionIndex);
-        AddSubtle(ctx, cloud, "Connection changes apply to the next cloud sign-in.");
-        AddTextField(ctx, cloud, "User / email", AppSettings.CloudUserEmail, value => AppSettings.CloudUserEmail = value);
-        AddTextField(ctx, cloud, "Default project", AppSettings.CloudDefaultProjectName, value => AppSettings.CloudDefaultProjectName = value);
-        AddSwitch(ctx, cloud, "Keep me signed in", AppSettings.CloudRememberCredentials, remember =>
-        {
-            AppSettings.CloudRememberCredentials = remember;
-            if (!remember)
-                cloudSecureStore.ClearRefreshToken();
-        });
-        AddSwitch(ctx, cloud, "Remember password", AppSettings.CloudRememberPassword, remember =>
-        {
-            AppSettings.CloudRememberPassword = remember;
-            if (!remember)
-                cloudSecureStore.ClearRememberedPassword();
-        });
+        var cloud = AddSection(ctx, root, "FA Cloud", "Connection");
+        AddTextField(ctx, cloud, "Server URL", AppSettings.CloudServerUrl, value => AppSettings.CloudServerUrl = value);
+        AddSubtle(ctx, cloud, "Cloud sign-in uses this HTTPS server URL.");
 
         // Navigation
         var nav = AddSection(ctx, root, "Navigation", "Orbit, pan, zoom");
@@ -390,6 +373,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
             return;
 
         ViewGroup.LayoutParams? layoutParams = currentView.LayoutParameters;
+        DismissColorPickerDialogs();
         DisposeLogFeed();
         parent.RemoveViewAt(index);
         View replacement = CreateEmbeddedView(ctx);
@@ -939,7 +923,38 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         lp.BottomMargin = Dp(ctx, 6);
         row.LayoutParameters = lp;
 
-        var labelTv = new TextView(ctx) { Text = FormatSliderValue(label, initial) };
+        // Logarithmic mapping (requires min > 0) gives each decade equal travel so
+        // sliders spanning several orders of magnitude (e.g. grid spacing
+        // 0.001..1e6 or weld tolerance 1e-6..1e-4) stay usable instead of crushing
+        // the low end into a few pixels.
+        float RawProgressToValue(int progress) => logarithmic
+            ? (float)(min * System.Math.Pow(max / (double)min, progress / 1000.0))
+            : min + progress / 1000f * (max - min);
+
+        float SnapValue(float value) => logarithmic
+            ? AppSettingsValueGuards.ClampAndRoundToSignificantDigits(value, min, max, significantDigits: 2, fallback: min)
+            : AppSettingsValueGuards.ClampAndSnap(
+                value,
+                min,
+                max,
+                AppSettingsValueGuards.ResolveLinearSliderStep(min, max),
+                fallback: min);
+
+        float ProgressToValue(int progress) => SnapValue(RawProgressToValue(progress));
+
+        int ValueToProgress(float value)
+        {
+            float snapped = SnapValue(value);
+            return System.Math.Clamp(
+                (int)System.Math.Round(logarithmic
+                    ? System.Math.Log(snapped / (double)min) / System.Math.Log(max / (double)min) * 1000.0
+                    : (snapped - min) / (double)(max - min) * 1000.0),
+                0,
+                1000);
+        }
+
+        float normalizedInitial = SnapValue(initial);
+        var labelTv = new TextView(ctx) { Text = FormatSliderValue(label, normalizedInitial) };
         labelTv.SetTextColor(GetColor(ctx, Resource.Color.fa_text_secondary));
         SetTooltip(ctx, row, label);
         SetTooltip(ctx, labelTv, label);
@@ -948,21 +963,7 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
         SetTooltip(ctx, seek, label);
         seek.Max = 1000;
 
-        // Logarithmic mapping (requires min > 0) gives each decade equal travel so
-        // sliders spanning several orders of magnitude (e.g. grid spacing
-        // 0.001..1e6 or weld tolerance 1e-6..1e-4) stay usable instead of crushing
-        // the low end into a few pixels.
-        float ProgressToValue(int progress) => logarithmic
-            ? (float)(min * System.Math.Pow(max / (double)min, progress / 1000.0))
-            : min + progress / 1000f * (max - min);
-        int ValueToProgress(float value) => System.Math.Clamp(
-            (int)System.Math.Round(logarithmic
-                ? System.Math.Log(value / (double)min) / System.Math.Log(max / (double)min) * 1000.0
-                : (value - min) / (double)(max - min) * 1000.0),
-            0,
-            1000);
-
-        seek.Progress = ValueToProgress(initial);
+        seek.Progress = ValueToProgress(normalizedInitial);
         seek.ProgressChanged += (_, e) =>
         {
             float v = ProgressToValue(e.Progress);
@@ -1000,12 +1001,20 @@ public sealed class PreferencesBottomSheet : BottomSheetDialogFragment, IDisposa
 
     private static string FormatSliderValue(string label, float value)
     {
-        string format = Math.Abs(value) < 0.01f && value != 0f ? "F6" : "F4";
         return string.Format(
             System.Globalization.CultureInfo.InvariantCulture,
             "{0}: {1}",
             label,
-            value.ToString(format, System.Globalization.CultureInfo.InvariantCulture));
+            FormatCompactFloat(value));
+    }
+
+    private static string FormatCompactFloat(float value)
+    {
+        if (!float.IsFinite(value))
+            return "0";
+
+        string text = value.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture);
+        return text == "-0" ? "0" : text;
     }
 
     private void AddIntSlider(Context ctx, ViewGroup parent, string label, int min, int max, int initial, Action<int> save)

@@ -7,7 +7,7 @@ namespace FabricationAssistant.Rendering.Gles;
 /// multisample color renderbuffer (RGB8) + multisample depth-stencil
 /// renderbuffer (D32FS8) attached to a single FBO. The renderer draws every
 /// non-post-process pass into this FBO, then blit-resolves the color
-/// attachment to FBO 0 before the selection outline composite.
+/// attachment to either FBO 0 or the renderer's single-sample composite target.
 ///
 /// When the requested sample count is &lt;= 1, single-sample storage is used
 /// (still through this wrapper) so the render path stays uniform: scene
@@ -237,7 +237,7 @@ public sealed partial class MsaaSceneFramebuffer : IDisposable
     /// <summary>
     /// Blit-resolves the multisample color attachment into <paramref name="targetFbo"/>
     /// (0 = default backbuffer) at the same dimensions, and leaves that FBO bound so
-    /// the post-process passes (silhouette/outline, then optional FXAA) draw into it.
+    /// the post-process passes (outline, then optional FXAA) draw into it.
     /// Depth and stencil are not resolved - those passes only read color.
     /// </summary>
     public bool TryResolveTo(uint targetFbo)

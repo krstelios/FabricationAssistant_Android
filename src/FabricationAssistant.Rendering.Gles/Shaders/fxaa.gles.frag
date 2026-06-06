@@ -2,9 +2,8 @@
 precision highp float;
 
 // FXAA (luma, NVIDIA/Geeks3D "console" quality 3.11 variant). Post-process pass
-// over the fully composited scene+overlays. Smooths every edge in the final
-// image - geometry silhouettes, the screen-space CAD silhouette overlay, and
-// the selection outlines - none of which the hardware MSAA resolve can touch.
+// over the fully composited scene+overlays. Smooths geometry silhouettes and
+// selection outlines in the final image, which hardware MSAA resolve cannot touch.
 
 uniform sampler2D uScene;       // composited scene color (full resolution)
 uniform vec2 uInvResolution;    // 1 / viewport size

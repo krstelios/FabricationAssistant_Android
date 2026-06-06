@@ -228,6 +228,7 @@ public sealed class MainActivity : AppCompatActivity
     private MaterialButton? _measureFaceToPointButton;
     private MaterialButton? _measureFaceToFaceButton;
     private MaterialButton? _measureAreaButton;
+    private MaterialButton? _measureCircularFeatureButton;
     private MaterialButton? _measureBoundingBoxButton;
     private SwitchMaterial? _measureBoundingBoxAdditiveSwitch;
     private SwitchMaterial? _measureEndpointSnapSwitch;
@@ -276,6 +277,7 @@ public sealed class MainActivity : AppCompatActivity
     private BottomToolbarMode _bottomToolbarMode = BottomToolbarMode.Main;
     private AndroidModalTool _activeModalTool = AndroidModalTool.Select;
     private AndroidModelSelectionMode _selectionMode = AndroidModelSelectionMode.Part;
+    private SelectionToolState _selectionToolState = SelectionToolState.Off;
     private bool _isInFixedView;
     private StandardView? _activeFixedView;
     private bool _isoIsPerspective = true;
@@ -339,6 +341,7 @@ public sealed class MainActivity : AppCompatActivity
     private long _lastBodyMovePromptToastMs;
     private bool _sectionSwitchUpdating;
     private bool _measureSnapSwitchUpdating;
+    private bool _bodyMoveToolEnabled;
     private AndroidViewportExplodeLayout? _explodeLayout;
     private Scene? _explodeLayoutScene;
     private double _explodeAmount;
@@ -403,6 +406,7 @@ public sealed class MainActivity : AppCompatActivity
     private bool _cloudReloadPromptShowing;
     private AndroidUri? _currentLocalSaveUri;
     private bool _isSaveInProgress;
+    private int _cameraGizmoRefreshQueued;
     private int _measurementCameraOverlayUpdateQueued;
     private int _runtimeTransformSyncQueued;
     private bool _pendingQrScanAfterPermission;
@@ -431,11 +435,17 @@ public sealed class MainActivity : AppCompatActivity
     private enum AndroidModalTool
     {
         Select,
-        BodyMove,
         ZoomWindow,
         Section,
         Measure,
         Explode,
+    }
+
+    private enum SelectionToolState
+    {
+        Off,
+        Replace,
+        Additive,
     }
 
     private enum SectionSubMode
@@ -464,11 +474,11 @@ public sealed class MainActivity : AppCompatActivity
         if (_selectionMode != persistedSelectionMode)
             AppSettings.ModelSelectionMode = _selectionMode;
         _lastInteractiveMeasureMode = MeasureModeFromSettings();
-        global::Android.Util.Log.Info("FA.Cloud", "Using FA Cloud config: " + AppSettings.CloudServerConfigPath);
-#if DEBUG
-        if (AppSettings.CloudServerUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
-            global::Android.Util.Log.Warn("FA.Cloud", "Debug build is configured for cleartext FA Cloud HTTP: " + AppSettings.CloudServerUrl);
-#endif
+        global::Android.Util.Log.Info(
+            "FA.Cloud",
+            string.IsNullOrWhiteSpace(AppSettings.CloudServerUrl)
+                ? "FA Cloud server URL is not configured."
+                : "FA Cloud server URL is configured.");
 
         _services = AppServices.Build(ApplicationContext!);
         _import = _services.GetRequiredService<ImportPipeline>();
@@ -1368,6 +1378,23 @@ public sealed class MainActivity : AppCompatActivity
         if (_cloudClient is not { } cloudClient || _isDestroyed)
             return;
 
+        string configuredServerUrl = AppSettings.CloudServerUrl;
+        if (string.IsNullOrWhiteSpace(configuredServerUrl))
+        {
+            Toast.MakeText(this, "Set the cloud server URL in Settings first.", ToastLength.Long)?.Show();
+            return;
+        }
+
+        try
+        {
+            configuredServerUrl = CloudApiClient.NormalizeServerUrl(configuredServerUrl);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            Toast.MakeText(this, ex.GetBaseException().Message, ToastLength.Long)?.Show();
+            return;
+        }
+
         string initialEmail = AppSettings.CloudUserEmail;
         string rememberedPassword = "";
         bool rememberPasswordInitial = AppSettings.CloudRememberPassword;
@@ -1375,8 +1402,7 @@ public sealed class MainActivity : AppCompatActivity
         {
             try
             {
-                string serverUrl = CloudApiClient.NormalizeServerUrl(AppSettings.CloudServerUrl);
-                rememberedPassword = _cloudSecureStore?.LoadRememberedPassword(serverUrl, initialEmail) ?? "";
+                rememberedPassword = _cloudSecureStore?.LoadRememberedPassword(configuredServerUrl, initialEmail) ?? "";
             }
             catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
             {
@@ -1483,7 +1509,6 @@ public sealed class MainActivity : AppCompatActivity
         forgotParams.Gravity = GravityFlags.End;
         forgotParams.TopMargin = Dp(2);
         root.AddView(forgotPassword, forgotParams);
-        EditText projectInput = AddCloudDialogField(root, "Default project", AppSettings.CloudDefaultProjectName, isPassword: false, hint: "Project name");
 
         var rememberCheck = new CheckBox(this)
         {
@@ -1554,7 +1579,6 @@ public sealed class MainActivity : AppCompatActivity
             SetCloudDialogCommandEnabled(forgotPassword, !busy);
             emailInput.Enabled = !busy;
             passwordInput.Enabled = !busy;
-            projectInput.Enabled = !busy;
             rememberPasswordCheck.Enabled = !busy;
             rememberCheck.Enabled = !busy;
         }
@@ -1585,6 +1609,9 @@ public sealed class MainActivity : AppCompatActivity
             {
                 if (_isDestroyed || !dialog.IsShowing)
                     return;
+                global::Android.Util.Log.Warn(
+                    "FA.Cloud.Auth",
+                    "Cloud sign-in dialog failed: " + ex.GetType().FullName + ": " + ex.GetBaseException().Message);
                 status.SetTextColor(GetColorCompat(Resource.Color.fa_warning));
                 status.Text = ex.GetBaseException().Message;
             }
@@ -1604,27 +1631,24 @@ public sealed class MainActivity : AppCompatActivity
             {
                 string email = emailInput.Text?.Trim() ?? "";
                 string password = passwordInput.Text ?? "";
-                string project = projectInput.Text?.Trim() ?? "";
                 bool rememberPassword = rememberPasswordCheck.Checked;
                 if (!rememberPassword)
-                    UpdateCloudRememberedPassword(AppSettings.CloudServerUrl, email, password, rememberPassword: false);
-                CloudSignInOutcome outcome = await cloudClient.SignInAsync(AppSettings.CloudServerUrl, email, password, rememberCheck.Checked, _activityDestroyCts.Token);
+                    UpdateCloudRememberedPassword(configuredServerUrl, email, password, rememberPassword: false);
+                CloudSignInOutcome outcome = await cloudClient.SignInAsync(configuredServerUrl, email, password, rememberCheck.Checked, _activityDestroyCts.Token);
                 if (_isDestroyed || !dialog.IsShowing)
                     return;
-                if (!string.IsNullOrWhiteSpace(project))
-                    AppSettings.CloudDefaultProjectName = project;
 
                 if (outcome.Kind == CloudSignInOutcomeKind.TotpEnrollmentRequired)
                 {
                     dialog.Dismiss();
-                    ShowCloudTotpEnrollmentDialog(outcome, project);
+                    ShowCloudTotpEnrollmentDialog(outcome);
                     return;
                 }
 
                 if (outcome.Kind == CloudSignInOutcomeKind.TotpRequired)
                 {
                     dialog.Dismiss();
-                    ShowCloudTotpSignInDialog(outcome, project, rememberPassword, password);
+                    ShowCloudTotpSignInDialog(outcome, rememberPassword, password);
                     return;
                 }
 
@@ -1656,7 +1680,6 @@ public sealed class MainActivity : AppCompatActivity
 
         DialogKeyboard.ConfirmOnEnter(emailInput, signIn);
         DialogKeyboard.ConfirmOnEnter(passwordInput, signIn);
-        DialogKeyboard.ConfirmOnEnter(projectInput, signIn);
 
         signOut.Click += async (_, _) =>
         {
@@ -1682,7 +1705,6 @@ public sealed class MainActivity : AppCompatActivity
 
     private void ShowCloudTotpSignInDialog(
         CloudSignInOutcome challenge,
-        string project,
         bool rememberPassword,
         string passwordToRemember)
     {
@@ -1736,8 +1758,6 @@ public sealed class MainActivity : AppCompatActivity
                     _activityDestroyCts.Token);
                 if (_isDestroyed || !dialog.IsShowing)
                     return;
-                if (!string.IsNullOrWhiteSpace(project))
-                    AppSettings.CloudDefaultProjectName = project;
                 UpdateCloudRememberedPassword(challenge.ServerUrl, challenge.Email, passwordToRemember, rememberPassword);
                 Toast.MakeText(this, "Cloud sign-in complete", ToastLength.Short)?.Show();
                 dialog.Dismiss();
@@ -1760,7 +1780,7 @@ public sealed class MainActivity : AppCompatActivity
         DialogKeyboard.ConfirmOnEnter(codeInput, verify);
     }
 
-    private void ShowCloudTotpEnrollmentDialog(CloudSignInOutcome enrollment, string project)
+    private void ShowCloudTotpEnrollmentDialog(CloudSignInOutcome enrollment)
     {
         if (_cloudClient is not { } cloudClient || _isDestroyed)
             return;
@@ -1895,8 +1915,6 @@ public sealed class MainActivity : AppCompatActivity
                     _activityDestroyCts.Token);
                 if (_isDestroyed || !dialog.IsShowing)
                     return;
-                if (!string.IsNullOrWhiteSpace(project))
-                    AppSettings.CloudDefaultProjectName = project;
                 dialog.Dismiss();
                 ShowCloudTotpBackupCodesDialog(result.BackupCodes ?? Array.Empty<string>());
             }
@@ -4235,8 +4253,12 @@ public sealed class MainActivity : AppCompatActivity
             expandModelExplorerPath);
 
         UpdateMainToolButtonStates();
-        if (_activeModalTool == AndroidModalTool.BodyMove)
+        if (_bodyMoveToolEnabled)
+        {
+            if (_bodyMoveGizmoActive == GlesTransformGizmoHandle.None)
+                _bodyMoveGizmoHovered = GlesTransformGizmoHandle.None;
             UpdateBodyMoveGizmoRendererState();
+        }
         if (requestRender)
             _viewport?.RequestRender();
     }
@@ -4691,6 +4713,7 @@ public sealed class MainActivity : AppCompatActivity
         yield return _measureFaceToPointButton;
         yield return _measureFaceToFaceButton;
         yield return _measureAreaButton;
+        yield return _measureCircularFeatureButton;
         yield return _measureBoundingBoxButton;
         yield return _measureClearButton;
         yield return _viewPresetReturnButton;
@@ -5137,6 +5160,7 @@ public sealed class MainActivity : AppCompatActivity
         _measureFaceToPointButton = FindViewById<MaterialButton>(Resource.Id.measureFaceToPoint);
         _measureFaceToFaceButton = FindViewById<MaterialButton>(Resource.Id.measureFaceToFace);
         _measureAreaButton = FindViewById<MaterialButton>(Resource.Id.measureArea);
+        _measureCircularFeatureButton = FindViewById<MaterialButton>(Resource.Id.measureCircularFeature);
         _measureBoundingBoxButton = FindViewById<MaterialButton>(Resource.Id.measureBoundingBox);
         _measureBoundingBoxAdditiveSwitch = FindViewById<SwitchMaterial>(Resource.Id.measureBoundingBoxAdditive);
         _measureEndpointSnapSwitch = FindViewById<SwitchMaterial>(Resource.Id.measureEndpointSnap);
@@ -5229,6 +5253,8 @@ public sealed class MainActivity : AppCompatActivity
             _measureFaceToFaceButton.Click += OnMeasureFaceToFaceClicked;
         if (_measureAreaButton is not null)
             _measureAreaButton.Click += OnMeasureAreaClicked;
+        if (_measureCircularFeatureButton is not null)
+            _measureCircularFeatureButton.Click += OnMeasureCircularFeatureClicked;
         if (_measureBoundingBoxButton is not null)
             _measureBoundingBoxButton.Click += OnBoundingBoxMeasureClicked;
         if (_measureBoundingBoxAdditiveSwitch is not null)
@@ -5314,11 +5340,28 @@ public sealed class MainActivity : AppCompatActivity
 
         _bottomToolbarMode = BottomToolbarMode.Main;
         _activeModalTool = AndroidModalTool.Select;
+        _selectionToolState = SelectionToolState.Off;
         UpdateBottomToolbarVisibility();
         UpdateFullscreenButtonState();
     }
 
-    private void OnToolSelectClicked(object? sender, EventArgs e) => ActivateSelectTool("select button");
+    private void OnToolSelectClicked(object? sender, EventArgs e)
+    {
+        if (!HasScene())
+            return;
+
+        SelectionToolState current = _activeModalTool == AndroidModalTool.Select
+            ? _selectionToolState
+            : SelectionToolState.Off;
+        SelectionToolState next = current switch
+        {
+            SelectionToolState.Off => SelectionToolState.Replace,
+            SelectionToolState.Replace => SelectionToolState.Additive,
+            _ => SelectionToolState.Off,
+        };
+
+        ActivateSelectTool("select button", next);
+    }
 
     private static readonly (AndroidModelSelectionMode Mode, int Icon, int Label)[] SelectionModeEntries =
     {
@@ -5463,6 +5506,8 @@ public sealed class MainActivity : AppCompatActivity
     private void OnMeasureFaceToFaceClicked(object? sender, EventArgs e) => SetMeasureMode(MeasureToolMode.FaceToFace);
 
     private void OnMeasureAreaClicked(object? sender, EventArgs e) => SetMeasureMode(MeasureToolMode.Area);
+
+    private void OnMeasureCircularFeatureClicked(object? sender, EventArgs e) => SetMeasureMode(MeasureToolMode.CircularFeature);
 
     private void OnMeasureBoundingBoxAdditiveCheckedChanged(object? sender, CompoundButton.CheckedChangeEventArgs e)
     {
@@ -5721,6 +5766,12 @@ public sealed class MainActivity : AppCompatActivity
 
         _bottomToolbarMode = mode;
         _activeModalTool = modalTool;
+        if (modalTool != AndroidModalTool.Select)
+        {
+            _selectionToolState = SelectionToolState.Off;
+            CancelHoverPick();
+            SetHoveredMesh(0);
+        }
 
         if (modalTool != AndroidModalTool.Select)
             ClearSelectedMeasurement("tool changed");
@@ -5738,9 +5789,6 @@ public sealed class MainActivity : AppCompatActivity
         if (modalTool != AndroidModalTool.Section)
             ClearSectionPlacementDraft();
 
-        if (modalTool != AndroidModalTool.BodyMove)
-            ClearBodyMoveHover();
-
         UpdateBottomToolbarVisibility();
         if (modalTool == AndroidModalTool.Select
             || previousTool == AndroidModalTool.Select
@@ -5749,16 +5797,25 @@ public sealed class MainActivity : AppCompatActivity
         {
             UpdateSectionRendererState();
         }
-        if (modalTool == AndroidModalTool.BodyMove || previousTool == AndroidModalTool.BodyMove)
+        if (_bodyMoveToolEnabled)
             UpdateBodyMoveGizmoRendererState();
         _viewport?.RequestRender();
     }
 
     private void ActivateSelectTool(string reason)
+        => ActivateSelectTool(reason, SelectionToolState.Off);
+
+    private void ActivateSelectTool(string reason, SelectionToolState selectionToolState)
     {
         CancelActiveModalTool(_activeModalTool, preserveExplode: false);
         _activeModalTool = AndroidModalTool.Select;
+        _selectionToolState = HasScene() ? selectionToolState : SelectionToolState.Off;
         _bottomToolbarMode = BottomToolbarMode.Main;
+        if (_selectionToolState == SelectionToolState.Off)
+        {
+            CancelHoverPick();
+            SetHoveredMesh(0);
+        }
         ClearSectionPlacementDraft();
         ClearBodyMoveHover();
         UpdateBottomToolbarVisibility();
@@ -5766,7 +5823,7 @@ public sealed class MainActivity : AppCompatActivity
         UpdateBodyMoveGizmoRendererState();
         RefreshMeasurementOverlays();
         _viewport?.RequestRender();
-        global::Android.Util.Log.Info("FA.Toolbar", $"Select active: reason={reason}.");
+        global::Android.Util.Log.Info("FA.Toolbar", $"Select active: reason={reason}, selectionState={_selectionToolState}.");
     }
 
     private void CancelActiveModalTool(AndroidModalTool tool, bool preserveExplode)
@@ -5797,12 +5854,6 @@ public sealed class MainActivity : AppCompatActivity
             _sectionGizmoHovered = GlesTransformGizmoHandle.None;
         }
 
-        if (tool == AndroidModalTool.BodyMove)
-        {
-            if (_bodyMoveGizmoActive != GlesTransformGizmoHandle.None)
-                CancelBodyMoveGizmoDrag();
-            ClearBodyMoveHover();
-        }
     }
 
     private void UpdateBottomToolbarVisibility()
@@ -5837,6 +5888,7 @@ public sealed class MainActivity : AppCompatActivity
         SetVisibility(_measureFaceToPointButton, measureVisibility);
         SetVisibility(_measureFaceToFaceButton, measureVisibility);
         SetVisibility(_measureAreaButton, measureVisibility);
+        SetVisibility(_measureCircularFeatureButton, measureVisibility);
         SetVisibility(_measureBoundingBoxButton, measureVisibility);
         SetVisibility(_measureBoundingBoxAdditiveSwitch, measureVisibility);
         SetVisibility(_measureEndpointSnapSwitch, measureVisibility);
@@ -6232,38 +6284,6 @@ public sealed class MainActivity : AppCompatActivity
         (_measureBoundingBoxButton as View ?? _viewport as View)?.AnnounceForAccessibility(accessibilityHint ?? hint);
     }
 
-    private void HandleBodyMoveSelectionTap(TouchGestureEvent ev)
-    {
-        if (_viewport is null)
-            return;
-
-        bool hadSelection = _selectedNodeIds.Count > 0;
-        float density = Resources?.DisplayMetrics?.Density ?? 1.0f;
-        if (density <= 0f) density = 1.0f;
-        int px = (int)(ev.Position.X * density);
-        int py = (int)(ev.Position.Y * density);
-
-        PickModelBodyAsync(px, py, "body-move-select", hit =>
-        {
-            if (_activeModalTool != AndroidModalTool.BodyMove)
-                return;
-
-            if (hit is > 0)
-            {
-                OnPickResult(hit);
-                UpdateBodyMoveGizmoRendererState();
-                _viewport?.RequestRender();
-                return;
-            }
-
-            OnPickResult(hit);
-            if (hadSelection)
-                ActivateSelectTool("body move empty tap");
-            else
-                ShowBodyMovePromptToast();
-        });
-    }
-
     private void ShowBodyMovePromptToast()
     {
         long now = System.Environment.TickCount64;
@@ -6371,6 +6391,7 @@ public sealed class MainActivity : AppCompatActivity
         SetSelected(_measureFaceToPointButton, activeMode == MeasureToolMode.FaceToPoint);
         SetSelected(_measureFaceToFaceButton, activeMode == MeasureToolMode.FaceToFace);
         SetSelected(_measureAreaButton, activeMode == MeasureToolMode.Area);
+        SetSelected(_measureCircularFeatureButton, activeMode == MeasureToolMode.CircularFeature);
         SetSelected(_measureBoundingBoxButton, _measureBoundingBoxAwaitingSelection && !_measureBoundingBoxBusy);
         if (_measureBoundingBoxAdditiveSwitch is not null)
         {
@@ -6426,14 +6447,15 @@ public sealed class MainActivity : AppCompatActivity
         bool hasVisibleSelection = hasSelection && _selectedNodeIds.Any(IsNodeEffectivelyVisible);
         bool canExplode = CanUseExplodeView();
 
-        SetSelected(_toolSelectButton, _activeModalTool == AndroidModalTool.Select);
+        UpdateSelectionToolButtonState(hasScene);
         UpdateSelectionModeButtonState();
-        SetSelected(_toolMoveButton, _activeModalTool == AndroidModalTool.BodyMove);
+        SetSelected(_toolMoveButton, hasScene && _bodyMoveToolEnabled);
         SetSelected(_toolZoomWindowButton, _activeModalTool == AndroidModalTool.ZoomWindow);
         SetSelected(_toolSectionsButton, _activeModalTool == AndroidModalTool.Section);
         SetSelected(_toolExplodeButton, _activeModalTool == AndroidModalTool.Explode);
         SetSelected(_toolRenderModesButton, _bottomToolbarMode == BottomToolbarMode.RenderMode);
 
+        SetEnabled(_toolSelectButton, hasScene);
         SetEnabled(_toolMoveButton, hasScene);
         SetEnabled(_toolSelectionModeButton, hasScene);
         SetEnabled(_toolZoomWindowButton, hasScene);
@@ -6449,6 +6471,27 @@ public sealed class MainActivity : AppCompatActivity
         SetEnabled(_toolIsolateButton, hasScene && hasVisibleSelection);
         SetEnabled(_toolIsolateXrayButton, hasScene && hasVisibleSelection);
         SetEnabled(_toolRenderModesButton, hasScene && !_renderModeChangeInFlight);
+    }
+
+    private void UpdateSelectionToolButtonState(bool hasScene)
+    {
+        if (_toolSelectButton is null)
+            return;
+
+        bool active = hasScene
+            && _activeModalTool == AndroidModalTool.Select
+            && _selectionToolState != SelectionToolState.Off;
+        bool additive = active && _selectionToolState == SelectionToolState.Additive;
+        SetSelected(_toolSelectButton, active);
+        _toolSelectButton.Activated = additive;
+
+        int contentDescriptionResId = additive
+            ? Resource.String.cd_tool_select_additive
+            : active
+                ? Resource.String.cd_tool_select_enabled
+                : Resource.String.cd_tool_select_off;
+        _toolSelectButton.ContentDescription = GetString(contentDescriptionResId);
+        SetTooltip(_toolSelectButton, contentDescriptionResId);
     }
 
     private void SetModelSelectionMode(AndroidModelSelectionMode mode, bool showToast)
@@ -6646,9 +6689,9 @@ public sealed class MainActivity : AppCompatActivity
         if (!HasScene())
             return;
 
-        if (_activeModalTool == AndroidModalTool.BodyMove)
+        if (_bodyMoveToolEnabled)
         {
-            ActivateSelectTool("body move toggled off");
+            DeactivateBodyMoveTool("toolbar button");
             return;
         }
 
@@ -6660,16 +6703,34 @@ public sealed class MainActivity : AppCompatActivity
         if (!HasScene())
             return;
 
+        _bodyMoveToolEnabled = true;
         if (_bodyMoveGizmoActive != GlesTransformGizmoHandle.None)
-            CancelBodyMoveGizmoDrag();
+            CommitBodyMoveGizmoDrag();
 
-        EnterToolbarMode(BottomToolbarMode.Main, AndroidModalTool.BodyMove);
-        if (_selectedNodeIds.Count == 0)
+        if (!CanMoveSelectedBodies())
             ShowBodyMovePromptToast();
         UpdateBodyMoveGizmoRendererState();
+        UpdateMainToolButtonStates();
         _viewport?.RequestRender();
-        global::Android.Util.Log.Info("FA.BodyMove", $"Body Move active: reason={reason}, selectedNodes=[{string.Join(",", _selectedNodeIds)}].");
+        global::Android.Util.Log.Info("FA.BodyMove", $"Body Move enabled: reason={reason}, selectedNodes=[{string.Join(",", _selectedNodeIds)}].");
     }
+
+    private void DeactivateBodyMoveTool(string reason)
+    {
+        if (_bodyMoveGizmoActive != GlesTransformGizmoHandle.None)
+            CommitBodyMoveGizmoDrag();
+
+        _bodyMoveToolEnabled = false;
+        ClearBodyMoveHover();
+        UpdateBodyMoveGizmoRendererState();
+        UpdateMainToolButtonStates();
+        _viewport?.RequestRender();
+        global::Android.Util.Log.Info("FA.BodyMove", $"Body Move disabled: reason={reason}.");
+    }
+
+    private bool CanUseBodyMoveGizmo()
+        => _bodyMoveToolEnabled
+           && _activeModalTool == AndroidModalTool.Select;
 
     private void ActivateZoomWindowTool()
     {
@@ -8069,7 +8130,7 @@ public sealed class MainActivity : AppCompatActivity
 
         global::Android.Util.Log.Info(
             "FA.QR",
-            $"Resolved payload='{partNumber}' matches={matches.Length} in {sw.ElapsedMilliseconds} ms.");
+            $"Resolved payloadLength={partNumber.Length} matches={matches.Length} in {sw.ElapsedMilliseconds} ms.");
 
         return new AndroidQrScanResult(lastScan, partNumber, status, matches);
     }
@@ -8959,7 +9020,7 @@ public sealed class MainActivity : AppCompatActivity
         if (_viewport is null
             || _camera is null
             || scene is null
-            || _activeModalTool != AndroidModalTool.BodyMove
+            || !CanUseBodyMoveGizmo()
             || _selectedNodeIds.Count == 0)
         {
             return false;
@@ -9001,7 +9062,7 @@ public sealed class MainActivity : AppCompatActivity
             return HandleActiveSectionGizmoTouch(motionEvent, action);
 
         if (action == MotionEventActions.Down
-            && _activeModalTool == AndroidModalTool.BodyMove
+            && CanUseBodyMoveGizmo()
             && !_bodyMoveGizmoInputOpen)
         {
             Point2D bodyDip = MotionEventToDip(motionEvent);
@@ -10994,7 +11055,8 @@ public sealed class MainActivity : AppCompatActivity
         => mode == MeasureToolMode.PointToPoint
            || mode == MeasureToolMode.FaceToPoint
            || mode == MeasureToolMode.FaceToFace
-           || mode == MeasureToolMode.Area;
+           || mode == MeasureToolMode.Area
+           || mode == MeasureToolMode.CircularFeature;
 
     private void ApplyMeasureTooltips()
     {
@@ -11003,6 +11065,7 @@ public sealed class MainActivity : AppCompatActivity
         SetTooltip(_measureFaceToPointButton, Resource.String.cd_measure_face_to_point);
         SetTooltip(_measureFaceToFaceButton, Resource.String.cd_measure_face_to_face);
         SetTooltip(_measureAreaButton, Resource.String.cd_measure_area);
+        SetTooltip(_measureCircularFeatureButton, Resource.String.cd_measure_circular_feature);
         SetTooltip(_measureBoundingBoxButton, Resource.String.cd_measure_bounding_box);
         SetTooltip(_measureBoundingBoxAdditiveSwitch, Resource.String.cd_measure_bounding_box_additive);
         SetTooltip(_measureEndpointSnapSwitch, Resource.String.cd_measure_snap_endpoint);
@@ -11035,7 +11098,7 @@ public sealed class MainActivity : AppCompatActivity
 
     private void ApplyMainTooltips()
     {
-        SetTooltip(_toolSelectButton, Resource.String.cd_tool_select);
+        SetTooltip(_toolSelectButton, Resource.String.cd_tool_select_off);
         SetTooltip(_toolSelectionModeButton, SelectionModeContentDescriptionResId());
         SetTooltip(_toolMoveButton, Resource.String.cd_tool_move);
         SetTooltip(_toolZoomWindowButton, Resource.String.cd_tool_zoom_window);
@@ -11330,9 +11393,9 @@ public sealed class MainActivity : AppCompatActivity
             return;
         }
 
-        if (_activeModalTool == AndroidModalTool.BodyMove)
+        if (CanClearModelSelectionFromInactiveSelectTap())
         {
-            HandleBodyMoveSelectionTap(ev);
+            HandleInactiveSelectClearTap(ev);
             return;
         }
 
@@ -11355,19 +11418,63 @@ public sealed class MainActivity : AppCompatActivity
     }
 
     private bool CanPickViewportModelBodies()
-        => _activeModalTool == AndroidModalTool.Select
+        => IsSelectionToolEnabled()
            || _activeModalTool == AndroidModalTool.Explode;
+
+    private bool CanClearModelSelectionFromInactiveSelectTap()
+        => _activeModalTool == AndroidModalTool.Select
+           && _selectionToolState == SelectionToolState.Off
+           && _selectedNodeIds.Count > 0;
+
+    private void HandleInactiveSelectClearTap(TouchGestureEvent ev)
+    {
+        if (_viewport is null)
+            return;
+
+        float density = Resources?.DisplayMetrics?.Density ?? 1.0f;
+        if (density <= 0f) density = 1.0f;
+        int px = (int)(ev.Position.X * density);
+        int py = (int)(ev.Position.Y * density);
+
+        PickModelBodyAsync(px, py, "select-off-empty-clear", hit =>
+        {
+            if (!CanClearModelSelectionFromInactiveSelectTap())
+                return;
+
+            if (hit is > 0)
+            {
+                global::Android.Util.Log.Info(
+                    "FA.Measure",
+                    $"Selection off tap ignored on model hit: meshIndex={hit}, selected=[{string.Join(",", _selectedNodeIds)}].");
+                return;
+            }
+
+            ReplaceSelectedNodeIds(
+                _runtimeScene,
+                Array.Empty<int>(),
+                scrollModelExplorerToSelection: true);
+            global::Android.Util.Log.Info("FA.Measure", "Selection cleared from select-off empty tap.");
+        });
+    }
+
+    private bool IsSelectionToolEnabled()
+        => _activeModalTool == AndroidModalTool.Select
+           && _selectionToolState != SelectionToolState.Off;
+
+    private bool IsAdditiveSelectionToolEnabled()
+        => _activeModalTool == AndroidModalTool.Select
+           && _selectionToolState == SelectionToolState.Additive;
 
     private void HandleViewportContextRequest(TouchGestureEvent ev)
     {
         if (_viewport is null)
             return;
 
-        if (_activeModalTool != AndroidModalTool.Select || _measure is { IsActive: true })
+        if (!IsSelectionToolEnabled() || _measure is { IsActive: true })
         {
             global::Android.Util.Log.Info(
                 "FA.ContextMenu",
-                $"Ignored: kind={ev.Kind}, activeTool={_activeModalTool}, measureActive={_measure?.IsActive == true}.");
+                $"Ignored: kind={ev.Kind}, activeTool={_activeModalTool}, selectionState={_selectionToolState}, measureActive={_measure?.IsActive == true}.");
             return;
         }
 
@@ -11869,17 +11976,54 @@ public sealed class MainActivity : AppCompatActivity
                 : selectedNode!.DisplayName;
         }
 
-        ReplaceSelectedNodeIds(
+        bool changed = ApplyViewportSelectionPick(
             scene,
             selectedNodeIds,
-            scrollModelExplorerToSelection: true,
             fallbackRendererMeshIndices: selected > 0 ? [selected] : Array.Empty<int>());
 
         global::Android.Util.Log.Info(
             "FA.Measure",
             selected == 0
                 ? "Selection cleared."
-                : $"Selection picked: mode={_selectionMode}, meshIndex={selected}, nodeIds=[{string.Join(",", _selectedNodeIds)}], label='{selectionLabel ?? "<mesh only>"}'.");
+                : $"Selection picked: selectionState={_selectionToolState}, changed={changed}, mode={_selectionMode}, meshIndex={selected}, nodeIds=[{string.Join(",", _selectedNodeIds)}], label='{selectionLabel ?? "<mesh only>"}'.");
+    }
+
+    private bool ApplyViewportSelectionPick(
+        Scene? scene,
+        IReadOnlyList<int> pickedNodeIds,
+        IReadOnlyList<int> fallbackRendererMeshIndices)
+    {
+        if (!IsAdditiveSelectionToolEnabled() || scene is null)
+        {
+            ReplaceSelectedNodeIds(
+                scene,
+                pickedNodeIds,
+                scrollModelExplorerToSelection: true,
+                fallbackRendererMeshIndices: fallbackRendererMeshIndices);
+            return true;
+        }
+
+        if (pickedNodeIds.Count == 0)
+        {
+            bool hadSelection = _selectedNodeIds.Count > 0;
+            ReplaceSelectedNodeIds(
+                scene,
+                Array.Empty<int>(),
+                scrollModelExplorerToSelection: true);
+            return hadSelection;
+        }
+
+        var nextNodeIds = new HashSet<int>(_selectedNodeIds);
+        nextNodeIds.UnionWith(pickedNodeIds);
+
+        if (nextNodeIds.SetEquals(_selectedNodeIds))
+            return false;
+
+        ReplaceSelectedNodeIds(
+            scene,
+            nextNodeIds,
+            scrollModelExplorerToSelection: true);
+        return true;
     }
 
     private void SelectNode(int nodeId)
@@ -11945,7 +12089,7 @@ public sealed class MainActivity : AppCompatActivity
             _stylusSecondaryContextActive = false;
         }
         else if (isStylusHover
-                 && _activeModalTool == AndroidModalTool.Select
+                 && IsSelectionToolEnabled()
                  && _measure is not { IsActive: true })
         {
             if (!_stylusSecondaryContextActive)
@@ -11960,15 +12104,19 @@ public sealed class MainActivity : AppCompatActivity
             return true;
         }
 
-        if (_activeModalTool == AndroidModalTool.BodyMove
+        if (CanUseBodyMoveGizmo()
             && _bodyMoveGizmoActive == GlesTransformGizmoHandle.None
             && !_bodyMoveGizmoInputOpen)
         {
-            CancelHoverPick();
-            SetHoveredMesh(0);
             var dip = MotionEventToDip(motionEvent);
-            SetBodyMoveGizmoHovered(PickBodyMoveGizmoHandle(dip));
-            return true;
+            GlesTransformGizmoHandle bodyHover = PickBodyMoveGizmoHandle(dip);
+            SetBodyMoveGizmoHovered(bodyHover);
+            if (bodyHover != GlesTransformGizmoHandle.None)
+            {
+                CancelHoverPick();
+                SetHoveredMesh(0);
+                return true;
+            }
         }
 
         if (CanSelectSectionPlanes()
@@ -13233,6 +13381,8 @@ public sealed class MainActivity : AppCompatActivity
     {
         ReleaseFixedViewLockForSceneChange();
         ClearExplodeView("scene change", syncRenderer: false);
+        _selectionToolState = SelectionToolState.Off;
+        _bodyMoveToolEnabled = false;
         _sections?.Reset();
         _sectionCustomPoints.Clear();
         _activeSectionSubMode = SectionSubMode.None;
@@ -13379,14 +13529,34 @@ public sealed class MainActivity : AppCompatActivity
         {
             RunOnUiThread(() =>
             {
-                RefreshSectionGizmoForCamera();
+                ScheduleSectionGizmoRefreshForCamera();
                 ScheduleMeasurementCameraOverlayUpdate();
             });
             return;
         }
 
-        RefreshSectionGizmoForCamera();
+        ScheduleSectionGizmoRefreshForCamera();
         ScheduleMeasurementCameraOverlayUpdate();
+    }
+
+    private void ScheduleSectionGizmoRefreshForCamera()
+    {
+        if (Interlocked.Exchange(ref _cameraGizmoRefreshQueued, 1) != 0)
+            return;
+
+        void RefreshQueued()
+        {
+            Interlocked.Exchange(ref _cameraGizmoRefreshQueued, 0);
+            if (_isDestroyed)
+                return;
+
+            RefreshSectionGizmoForCamera();
+        }
+
+        if (_viewport?.Post(RefreshQueued) == true)
+            return;
+
+        RefreshQueued();
     }
 
     private void RefreshSectionGizmoForCamera()
@@ -13399,7 +13569,7 @@ public sealed class MainActivity : AppCompatActivity
             requestRender = true;
         }
 
-        if (_activeModalTool == AndroidModalTool.BodyMove
+        if (CanUseBodyMoveGizmo()
             && UpdateBodyMoveGizmoRendererState())
         {
             requestRender = true;
@@ -13567,7 +13737,7 @@ public sealed class MainActivity : AppCompatActivity
         foreach (MeasurementLabelBinding binding in _measurementLabels)
         {
             TextView textView = binding.View;
-            if (!TryProjectWorldToViewport(binding.Anchor, out double screenX, out double screenY))
+            if (!TryProjectWorldToVisibleViewport(binding.Anchor, out double screenX, out double screenY))
             {
                 skipped++;
                 if (textView.Visibility != ViewStates.Invisible)
@@ -14550,7 +14720,7 @@ public sealed class MainActivity : AppCompatActivity
         => CanSelectSectionPlanes();
 
     private bool CanSelectSectionPlanes()
-        => (_activeModalTool == AndroidModalTool.Select
+        => (IsSelectionToolEnabled()
             || _activeModalTool == AndroidModalTool.Measure
             || _activeModalTool == AndroidModalTool.Section)
            && _sections is { Planes.Count: > 0, EdgesVisible: true };
@@ -14742,7 +14912,7 @@ public sealed class MainActivity : AppCompatActivity
     }
 
     private bool CanSelectMeasurementLabels()
-        => _activeModalTool == AndroidModalTool.Select
+        => IsSelectionToolEnabled()
            || _activeModalTool == AndroidModalTool.Measure
            || _activeModalTool == AndroidModalTool.Section;
 
@@ -14824,6 +14994,18 @@ public sealed class MainActivity : AppCompatActivity
             global::Android.Util.Log.Warn("FA.Measure", "Measurement label projection failed: " + ex.Message);
             return false;
         }
+    }
+
+    private bool TryProjectWorldToVisibleViewport(Vector3d world, out double screenX, out double screenY)
+    {
+        if (!TryProjectWorldToViewport(world, out screenX, out screenY))
+            return false;
+
+        return _viewport is not null
+            && screenX >= 0.0
+            && screenX <= _viewport.Width
+            && screenY >= 0.0
+            && screenY <= _viewport.Height;
     }
 
     private int LabelColor(PresentationStyle style) => style switch
@@ -15906,6 +16088,7 @@ public sealed class MainActivity : AppCompatActivity
         DetachClick(_measureFaceToPointButton, OnMeasureFaceToPointClicked);
         DetachClick(_measureFaceToFaceButton, OnMeasureFaceToFaceClicked);
         DetachClick(_measureAreaButton, OnMeasureAreaClicked);
+        DetachClick(_measureCircularFeatureButton, OnMeasureCircularFeatureClicked);
         DetachClick(_measureBoundingBoxButton, OnBoundingBoxMeasureClicked);
         if (_measureBoundingBoxAdditiveSwitch is not null)
         {

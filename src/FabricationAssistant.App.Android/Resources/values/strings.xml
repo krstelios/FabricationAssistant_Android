@@ -17,6 +17,9 @@
     <string name="cd_nav_spen_palm_rejection_off">S Pen palm rejection off</string>
     <string name="cd_nav_settings">Settings</string>
     <string name="cd_tool_select">Select</string>
+    <string name="cd_tool_select_off">Selection off</string>
+    <string name="cd_tool_select_enabled">Select</string>
+    <string name="cd_tool_select_additive">Shift-select</string>
     <string name="cd_tool_selection_mode_assembly">Selection mode: Assembly</string>
     <string name="cd_tool_selection_mode_part">Selection mode: Part</string>
     <string name="cd_tool_selection_mode_mesh">Selection mode: Mesh</string>
@@ -41,6 +44,7 @@
     <string name="cd_measure_face_to_point">Face to point measurement</string>
     <string name="cd_measure_face_to_face">Face to face measurement</string>
     <string name="cd_measure_area">Area measurement</string>
+    <string name="cd_measure_circular_feature">Cylinder diameter or arc radius measurement</string>
     <string name="cd_measure_bounding_box">Bounding box measurement</string>
     <string name="cd_measure_bounding_box_additive">Additive bounding box</string>
     <string name="cd_measure_snap_endpoint">Endpoint snap</string>

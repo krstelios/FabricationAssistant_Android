@@ -69,6 +69,7 @@ internal sealed class AndroidBomPanel : IDisposable
     private string _filterText = string.Empty;
     // Consolidated column filters (consolidated kind only).
     private BomConsolidatedFilterEngine<BomPanelRow>? _filterEngine;
+    private BomColumnFilterPopup? _activeColumnFilterPopup;
     private Context? _lastContext; // captured in CreateView for later header rebuilds
     private bool _disposed;
 
@@ -234,6 +235,11 @@ internal sealed class AndroidBomPanel : IDisposable
 
         _disposed = true;
         ActionRequested = null;
+        ApplyFilterRequested = null;
+        FilterEditStarting = null;
+
+        _activeColumnFilterPopup?.Dismiss();
+        _activeColumnFilterPopup = null;
 
         if (_tableScroll is not null && _tableScrollLayoutChangeHandler is not null)
             _tableScroll.LayoutChange -= _tableScrollLayoutChangeHandler;
@@ -411,13 +417,23 @@ internal sealed class AndroidBomPanel : IDisposable
     private void OpenColumnFilter(Context ctx, int columnIndex, View anchor)
     {
         if (_filterEngine is null) return;
+        _activeColumnFilterPopup?.Dismiss();
+        _activeColumnFilterPopup = null;
+
         ColumnSpec spec = _columns[columnIndex];
         FilterEditStarting?.Invoke(); // let the host snapshot the pre-edit state for undo
-        var popup = new BomColumnFilterPopup(
+        BomColumnFilterPopup? popup = null;
+        popup = new BomColumnFilterPopup(
             ctx,
             _filterEngine.Column(spec.Key),
             onSort: dir => _filterEngine.SetSort(spec.Key, dir),
-            onApply: () => ApplyFilterRequested?.Invoke());
+            onApply: () => ApplyFilterRequested?.Invoke(),
+            onDismiss: () =>
+            {
+                if (ReferenceEquals(_activeColumnFilterPopup, popup))
+                    _activeColumnFilterPopup = null;
+            });
+        _activeColumnFilterPopup = popup;
         popup.Show(anchor);
     }
 

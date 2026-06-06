@@ -18,12 +18,10 @@ public static class DracoGltfTranscoder
     private const uint ChunkTypeJson = 0x4E4F534A;  // "JSON"
     private const uint ChunkTypeBin  = 0x004E4942;  // "BIN\0"
     private const long MaxSourceBytes = 1L * 1024L * 1024L * 1024L;
-    // S5#2: capped at int.MaxValue rather than a full 2 GiB. The decoded buffer
-    // byteLength and bufferView offsets are written as glTF int32 fields via
-    // checked((int)...); a budget of exactly 2 GiB (2^31) is one byte past
-    // int.MaxValue and would throw an uncaught OverflowException instead of the
-    // catchable InvalidDataException EnsureDecodedBudget raises.
-    private const long MaxDecodedBytes = int.MaxValue;
+    // Keep the decoded GLB under a tablet-friendly byte budget. This still stays
+    // below glTF int32 fields and turns hostile tiny-compressed inputs that expand
+    // huge into a catchable InvalidDataException before the importer loads them.
+    private const long MaxDecodedBytes = 512L * 1024L * 1024L;
 
     public static void Transcode(string sourceGlbPath, string destinationGlbPath, Action<string>? onWarning = null)
     {
@@ -77,7 +75,10 @@ public static class DracoGltfTranscoder
                 if (prims is null) continue;
                 foreach (var prim in prims)
                 {
-                    var ext = prim?["extensions"]?["KHR_draco_mesh_compression"];
+                    if (prim is not JsonObject primObj)
+                        continue;
+
+                    var ext = primObj["extensions"]?["KHR_draco_mesh_compression"];
                     if (ext is null) continue;
 
                     int viewIndex = ext["bufferView"]!.GetValue<int>();
@@ -107,48 +108,31 @@ public static class DracoGltfTranscoder
                         offset,
                         length);
 
+                    var dracoAttributes = ext["attributes"] as JsonObject
+                        ?? throw new InvalidDataException("Draco extension is missing its attribute map.");
+
                     using var dm = DracoMesh.Decode(encoded);
 
-                    var positions = dm.GetPositions();
-                    var normals = dm.GetNormals();
-                    var texCoords = dm.GetTexCoords();
-                    var indices = dm.GetIndices();
+                    uint[]? indices = dm.GetIndices();
+                    if (indices is null)
+                        throw new InvalidDataException("Draco decoded mesh missing triangle indices.");
 
-                    if (positions is null || indices is null)
-                        throw new InvalidDataException("Draco decoded mesh missing required attributes");
-
-                    int posView = AppendFloatBufferView(bufferViews, newBin, positions, byteStride: 12);
+                    JsonObject rebuiltAttribs = DecodeDracoAttributes(
+                        dracoAttributes,
+                        dm,
+                        bufferViews,
+                        accessors,
+                        newBin);
                     int idxView = AppendUInt32BufferView(bufferViews, newBin, indices);
-                    int posAccessor = AppendVec3FloatAccessor(accessors, posView, dm.NumPoints, positions);
                     int idxAccessor = AppendUIntAccessor(accessors, idxView, indices.Length);
 
-                    int? nrmAccessor = normals is null ? null
-                        : AppendVec3FloatAccessor(accessors,
-                            AppendFloatBufferView(bufferViews, newBin, normals, byteStride: 12),
-                            dm.NumPoints, normals);
-                    int? uvAccessor = texCoords is null ? null
-                        : AppendVec2FloatAccessor(accessors,
-                            AppendFloatBufferView(bufferViews, newBin, texCoords, byteStride: 8),
-                            dm.NumPoints);
+                    primObj["attributes"] = rebuiltAttribs;
+                    primObj["indices"] = idxAccessor;
 
-                    // S5-1: the in-process decoder only exposes POSITION/NORMAL/TEXCOORD_0.
-                    // Rebuild the attribute set from just those - mutating the original
-                    // instead would leave TANGENT/COLOR_0/TEXCOORD_1+/JOINTS_0/WEIGHTS_0
-                    // pointing at accessors that no longer have a bufferView (so they read
-                    // as zeros). Warn so the dropped data is surfaced rather than lost
-                    // silently; geometry stays intact. (A full fix would add a generic
-                    // attribute copy in the native wrapper.)
-                    var rebuiltAttribs = new JsonObject();
-                    rebuiltAttribs["POSITION"] = posAccessor;
-                    if (nrmAccessor.HasValue) rebuiltAttribs["NORMAL"] = nrmAccessor.Value;
-                    if (uvAccessor.HasValue) rebuiltAttribs["TEXCOORD_0"] = uvAccessor.Value;
-                    WarnOnDroppedDracoAttributes(prim!["attributes"] as JsonObject, rebuiltAttribs, onWarning);
-                    prim["attributes"] = rebuiltAttribs;
-                    prim["indices"] = idxAccessor;
-
-                    ((JsonObject)prim["extensions"]!).Remove("KHR_draco_mesh_compression");
-                    if (((JsonObject)prim["extensions"]!).Count == 0)
-                        ((JsonObject)prim).Remove("extensions");
+                    JsonObject extensions = (JsonObject)primObj["extensions"]!;
+                    extensions.Remove("KHR_draco_mesh_compression");
+                    if (extensions.Count == 0)
+                        primObj.Remove("extensions");
 
                     changed = true;
                 }
@@ -181,42 +165,61 @@ public static class DracoGltfTranscoder
         }
     }
 
-    // S5-1: report (rather than silently drop) vertex attributes the in-process decoder
-    // cannot read. Kept Android-API-free via the onWarning callback so this transcoder
-    // still link-compiles into the net8.0 host test project; the Android decorator routes
-    // the message to Android.Util.Log.
-    private static void WarnOnDroppedDracoAttributes(JsonObject? original, JsonObject preserved, Action<string>? onWarning)
+    private static JsonObject DecodeDracoAttributes(
+        JsonObject dracoAttributes,
+        DracoMesh dm,
+        JsonArray bufferViews,
+        JsonArray accessors,
+        Stream bin)
     {
-        if (original is null || onWarning is null)
-            return;
+        var rebuilt = new JsonObject();
+        bool hasPosition = false;
 
-        List<string>? dropped = null;
-        foreach (KeyValuePair<string, JsonNode?> attribute in original)
+        foreach (KeyValuePair<string, JsonNode?> entry in dracoAttributes)
         {
-            if (!preserved.ContainsKey(attribute.Key))
-                (dropped ??= new List<string>()).Add(attribute.Key);
+            if (entry.Value is null)
+                throw new InvalidDataException($"Draco attribute '{entry.Key}' is missing its unique id.");
+
+            int uniqueId = entry.Value.GetValue<int>();
+            DracoAttributeData attribute = dm.GetAttributeByUniqueId(uniqueId)
+                ?? throw new InvalidDataException($"Draco decoded mesh is missing attribute '{entry.Key}' with unique id {uniqueId}.");
+
+            int componentType = GetGltfComponentTypeForDracoDataType(attribute.DataType);
+            string accessorType = GetGltfAccessorType(attribute.ComponentCount);
+            ValidateDecodedAttributeForGltf(entry.Key, attribute, componentType, accessorType);
+
+            int viewIndex = AppendRawBufferView(bufferViews, bin, attribute.Data);
+            int accessorIndex = AppendDecodedAttributeAccessor(
+                accessors,
+                viewIndex,
+                dm.NumPoints,
+                entry.Key,
+                attribute,
+                componentType,
+                accessorType);
+
+            rebuilt[entry.Key] = accessorIndex;
+            if (string.Equals(entry.Key, "POSITION", StringComparison.Ordinal))
+                hasPosition = true;
         }
 
-        if (dropped is not null)
-        {
-            onWarning(
-                $"Draco primitive carried vertex attribute(s) [{string.Join(", ", dropped)}] the in-process decoder cannot read; they were dropped. Geometry is intact, but vertex colors, tangents, extra UV sets, or skinning may be missing.");
-        }
+        if (!hasPosition)
+            throw new InvalidDataException("Draco decoded mesh missing required POSITION attribute.");
+
+        return rebuilt;
     }
 
-    private static int AppendFloatBufferView(JsonArray bufferViews, Stream bin, float[] data, int byteStride)
+    private static int AppendRawBufferView(JsonArray bufferViews, Stream bin, byte[] data)
     {
         long offset = bin.Position;
-        EnsureDecodedBudget(offset + (long)data.Length * 4L + 3L);
-        ReadOnlySpan<byte> bytes = MemoryMarshal.AsBytes(data.AsSpan());
-        bin.Write(bytes);
+        EnsureDecodedBudget(offset + data.Length + 3L);
+        bin.Write(data);
         PadTo4Bytes(bin);
         var node = new JsonObject
         {
             ["buffer"] = 0,
             ["byteOffset"] = checked((int)offset),
-            ["byteLength"] = bytes.Length,
-            ["byteStride"] = byteStride,
+            ["byteLength"] = data.Length,
         };
         bufferViews.Add(node);
         return bufferViews.Count - 1;
@@ -239,31 +242,33 @@ public static class DracoGltfTranscoder
         return bufferViews.Count - 1;
     }
 
-    private static int AppendVec3FloatAccessor(JsonArray accessors, int bufferView, int count, float[] data)
+    private static int AppendDecodedAttributeAccessor(
+        JsonArray accessors,
+        int bufferView,
+        int count,
+        string semantic,
+        DracoAttributeData attribute,
+        int componentType,
+        string accessorType)
     {
-        var (min, max) = ComputeVec3MinMax(data);
         var node = new JsonObject
         {
             ["bufferView"] = bufferView,
-            ["componentType"] = 5126,  // FLOAT
+            ["componentType"] = componentType,
             ["count"] = count,
-            ["type"] = "VEC3",
-            ["min"] = new JsonArray(min[0], min[1], min[2]),
-            ["max"] = new JsonArray(max[0], max[1], max[2]),
+            ["type"] = accessorType,
         };
-        accessors.Add(node);
-        return accessors.Count - 1;
-    }
 
-    private static int AppendVec2FloatAccessor(JsonArray accessors, int bufferView, int count)
-    {
-        var node = new JsonObject
+        if (attribute.Normalized)
+            node["normalized"] = true;
+
+        if (string.Equals(semantic, "POSITION", StringComparison.Ordinal))
         {
-            ["bufferView"] = bufferView,
-            ["componentType"] = 5126,  // FLOAT
-            ["count"] = count,
-            ["type"] = "VEC2",
-        };
+            var (min, max) = ComputeVec3FloatMinMax(attribute.Data);
+            node["min"] = new JsonArray(min[0], min[1], min[2]);
+            node["max"] = new JsonArray(max[0], max[1], max[2]);
+        }
+
         accessors.Add(node);
         return accessors.Count - 1;
     }
@@ -281,20 +286,156 @@ public static class DracoGltfTranscoder
         return accessors.Count - 1;
     }
 
-    private static (float[] min, float[] max) ComputeVec3MinMax(float[] data)
+    private static (float[] min, float[] max) ComputeVec3FloatMinMax(byte[] data)
     {
+        ReadOnlySpan<float> values = MemoryMarshal.Cast<byte, float>(data);
+        if (values.Length == 0 || values.Length % 3 != 0)
+            throw new InvalidDataException("POSITION attribute does not contain tightly packed VEC3 float data.");
+
         float minX = float.PositiveInfinity, minY = float.PositiveInfinity, minZ = float.PositiveInfinity;
         float maxX = float.NegativeInfinity, maxY = float.NegativeInfinity, maxZ = float.NegativeInfinity;
-        for (int i = 0; i + 2 < data.Length; i += 3)
+        for (int i = 0; i + 2 < values.Length; i += 3)
         {
-            if (data[i]     < minX) minX = data[i];
-            if (data[i + 1] < minY) minY = data[i + 1];
-            if (data[i + 2] < minZ) minZ = data[i + 2];
-            if (data[i]     > maxX) maxX = data[i];
-            if (data[i + 1] > maxY) maxY = data[i + 1];
-            if (data[i + 2] > maxZ) maxZ = data[i + 2];
+            if (values[i]     < minX) minX = values[i];
+            if (values[i + 1] < minY) minY = values[i + 1];
+            if (values[i + 2] < minZ) minZ = values[i + 2];
+            if (values[i]     > maxX) maxX = values[i];
+            if (values[i + 1] > maxY) maxY = values[i + 1];
+            if (values[i + 2] > maxZ) maxZ = values[i + 2];
         }
         return (new[] { minX, minY, minZ }, new[] { maxX, maxY, maxZ });
+    }
+
+    internal static int GetGltfComponentTypeForDracoDataType(int dracoDataType)
+        => dracoDataType switch
+        {
+            1 => 5120, // BYTE
+            2 => 5121, // UNSIGNED_BYTE
+            3 => 5122, // SHORT
+            4 => 5123, // UNSIGNED_SHORT
+            6 => 5125, // UNSIGNED_INT
+            9 => 5126, // FLOAT
+            _ => throw new InvalidDataException($"Draco attribute data type {dracoDataType} cannot be represented as a glTF accessor."),
+        };
+
+    internal static string GetGltfAccessorType(int componentCount)
+        => componentCount switch
+        {
+            1 => "SCALAR",
+            2 => "VEC2",
+            3 => "VEC3",
+            4 => "VEC4",
+            _ => throw new InvalidDataException($"Draco attribute component count {componentCount} cannot be represented as a glTF accessor."),
+        };
+
+    private static void ValidateDecodedAttributeForGltf(
+        string semantic,
+        DracoAttributeData attribute,
+        int componentType,
+        string accessorType)
+    {
+        if (attribute.Data.Length % attribute.ByteStride != 0)
+            throw new InvalidDataException($"Draco attribute '{semantic}' has inconsistent byte stride metadata.");
+
+        switch (semantic)
+        {
+            case "POSITION":
+                RequireAttributeShape(semantic, componentType, accessorType, 5126, "VEC3", normalized: false, attribute.Normalized);
+                break;
+            case "NORMAL":
+                RequireAttributeShape(semantic, componentType, accessorType, 5126, "VEC3", normalized: false, attribute.Normalized);
+                break;
+            case "TANGENT":
+                RequireAttributeShape(semantic, componentType, accessorType, 5126, "VEC4", normalized: false, attribute.Normalized);
+                break;
+            default:
+                if (IsNumberedSemantic(semantic, "TEXCOORD_"))
+                {
+                    if (accessorType != "VEC2"
+                        || componentType is not (5121 or 5123 or 5126))
+                    {
+                        throw new InvalidDataException($"Draco attribute '{semantic}' has an unsupported glTF texture-coordinate layout.");
+                    }
+                    if (componentType != 5126 && !attribute.Normalized)
+                        throw new InvalidDataException($"Draco integer texture-coordinate attribute '{semantic}' must be normalized.");
+                    if (componentType == 5126 && attribute.Normalized)
+                        throw new InvalidDataException($"Draco float texture-coordinate attribute '{semantic}' cannot be normalized.");
+                }
+                else if (IsNumberedSemantic(semantic, "COLOR_"))
+                {
+                    if (accessorType is not ("VEC3" or "VEC4")
+                        || componentType is not (5121 or 5123 or 5126))
+                    {
+                        throw new InvalidDataException($"Draco attribute '{semantic}' has an unsupported glTF color layout.");
+                    }
+                    if (componentType != 5126 && !attribute.Normalized)
+                        throw new InvalidDataException($"Draco integer color attribute '{semantic}' must be normalized.");
+                    if (componentType == 5126 && attribute.Normalized)
+                        throw new InvalidDataException($"Draco float color attribute '{semantic}' cannot be normalized.");
+                }
+                else if (IsNumberedSemantic(semantic, "JOINTS_"))
+                {
+                    if (accessorType != "VEC4" || componentType is not (5121 or 5123) || attribute.Normalized)
+                        throw new InvalidDataException($"Draco attribute '{semantic}' has an unsupported glTF joints layout.");
+                }
+                else if (IsNumberedSemantic(semantic, "WEIGHTS_"))
+                {
+                    if (accessorType != "VEC4"
+                        || componentType is not (5121 or 5123 or 5126))
+                    {
+                        throw new InvalidDataException($"Draco attribute '{semantic}' has an unsupported glTF weights layout.");
+                    }
+                    if (componentType != 5126 && !attribute.Normalized)
+                        throw new InvalidDataException($"Draco integer weights attribute '{semantic}' must be normalized.");
+                    if (componentType == 5126 && attribute.Normalized)
+                        throw new InvalidDataException($"Draco float weights attribute '{semantic}' cannot be normalized.");
+                }
+                else if (semantic.StartsWith("_", StringComparison.Ordinal))
+                {
+                    if (componentType == 5126 && attribute.Normalized)
+                        throw new InvalidDataException($"Draco float custom attribute '{semantic}' cannot be normalized.");
+                }
+                else
+                {
+                    throw new InvalidDataException($"Draco attribute '{semantic}' is not a recognized glTF vertex attribute semantic.");
+                }
+                break;
+        }
+    }
+
+    private static void RequireAttributeShape(
+        string semantic,
+        int actualComponentType,
+        string actualAccessorType,
+        int expectedComponentType,
+        string expectedAccessorType,
+        bool normalized,
+        bool actualNormalized)
+    {
+        if (actualComponentType != expectedComponentType
+            || actualAccessorType != expectedAccessorType
+            || actualNormalized != normalized)
+        {
+            throw new InvalidDataException($"Draco attribute '{semantic}' has an unsupported glTF layout.");
+        }
+    }
+
+    private static bool IsNumberedSemantic(string semantic, string prefix)
+    {
+        if (!semantic.StartsWith(prefix, StringComparison.Ordinal))
+            return false;
+
+        ReadOnlySpan<char> suffix = semantic.AsSpan(prefix.Length);
+        if (suffix.Length == 0)
+            return false;
+
+        for (int i = 0; i < suffix.Length; i++)
+        {
+            if (!char.IsDigit(suffix[i]))
+                return false;
+        }
+
+        return true;
     }
 
     private static void TryRemoveExtensionRef(JsonNode root, string key, string name)

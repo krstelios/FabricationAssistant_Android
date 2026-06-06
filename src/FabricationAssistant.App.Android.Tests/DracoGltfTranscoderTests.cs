@@ -46,6 +46,40 @@ public sealed class DracoGltfTranscoderTests : IDisposable
         Assert.Contains("range exceeds", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData(1, 5120)]
+    [InlineData(2, 5121)]
+    [InlineData(3, 5122)]
+    [InlineData(4, 5123)]
+    [InlineData(6, 5125)]
+    [InlineData(9, 5126)]
+    public void GetGltfComponentTypeForDracoDataType_maps_supported_types(int dracoType, int expected)
+        => Assert.Equal(expected, DracoGltfTranscoder.GetGltfComponentTypeForDracoDataType(dracoType));
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(5)]
+    [InlineData(7)]
+    [InlineData(8)]
+    [InlineData(10)]
+    [InlineData(11)]
+    public void GetGltfComponentTypeForDracoDataType_rejects_non_gltf_types(int dracoType)
+        => Assert.Throws<InvalidDataException>(() => DracoGltfTranscoder.GetGltfComponentTypeForDracoDataType(dracoType));
+
+    [Theory]
+    [InlineData(1, "SCALAR")]
+    [InlineData(2, "VEC2")]
+    [InlineData(3, "VEC3")]
+    [InlineData(4, "VEC4")]
+    public void GetGltfAccessorType_maps_supported_component_counts(int componentCount, string expected)
+        => Assert.Equal(expected, DracoGltfTranscoder.GetGltfAccessorType(componentCount));
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(5)]
+    public void GetGltfAccessorType_rejects_non_gltf_component_counts(int componentCount)
+        => Assert.Throws<InvalidDataException>(() => DracoGltfTranscoder.GetGltfAccessorType(componentCount));
+
     public void Dispose()
     {
         try { Directory.Delete(_tempDir, recursive: true); }

@@ -1,16 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  S22-1: cleartext is permitted at the network layer because the optional "Local"
-  cloud profile talks to an operator-configured LAN server (often http:// on a
-  trusted network) whose host is only known at runtime - a static domain-config
-  cannot allowlist it. The real protection lives in app code:
-  CloudApiClient.NormalizeServerUrl rejects http:// to any non-private/non-loopback
-  host, so bearer/refresh tokens, the sign-in password, TOTP, and downloads can
-  only ever travel in cleartext to a LAN host the operator explicitly configured -
-  never to an internet host. HTTPS is always allowed and preferred.
+  FA Cloud is internet-only. CloudApiClient also requires https:// URLs, and the
+  network layer blocks cleartext as a second guard.
 -->
 <network-security-config>
-  <base-config cleartextTrafficPermitted="true">
+  <base-config cleartextTrafficPermitted="false">
     <trust-anchors>
       <certificates src="system" />
     </trust-anchors>

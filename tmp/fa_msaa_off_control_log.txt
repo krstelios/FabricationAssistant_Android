@@ -1,0 +1,7 @@
+--------- beginning of main
+06-05 21:52:52.611 30289 30289 I FA.Renderer: Render pacing: Choreographer vsync request coalescing enabled.
+06-05 21:52:52.768 30289 30315 I FA.Renderer: Scene framebuffer depth=Depth32fStencil8, samples=4, requestedSamples=4, viewport=2860x1522.
+06-05 21:52:52.768 30289 30315 I FA.Renderer: MSAA state: requested=4x, effective=4x, GL_MAX_SAMPLES=4, viewport=2860x1522.
+06-05 21:52:52.771 30289 30315 I FA.Renderer: SSAO state: enabled=True, active=False, reason=no scene, mode=ShadedWithEdges, viewport=2860x1522.
+06-05 21:52:52.782 30289 30315 I FA.Renderer: Scene framebuffer depth=Depth32fStencil8, samples=1, requestedSamples=1, viewport=2860x1522.
+06-05 21:52:52.782 30289 30315 I FA.Renderer: MSAA state: requested=Off, effective=Off, GL_MAX_SAMPLES=4, viewport=2860x1522.

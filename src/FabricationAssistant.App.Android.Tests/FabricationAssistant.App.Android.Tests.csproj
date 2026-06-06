@@ -65,6 +65,8 @@
              LinkBase="Linked\Measurement\Engine" />
     <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Measurement\Engine\FacePatch.cs"
              LinkBase="Linked\Measurement\Engine" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Measurement\Engine\CircularFeatureDetectionService.cs"
+             LinkBase="Linked\Measurement\Engine" />
     <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Measurement\Engine\FeatureEdgeExtractor.cs"
              LinkBase="Linked\Measurement\Engine" />
     <Compile Include="$(MSBuildThisFileDirectory)..\..\..\src\FabricationAssistant.Core\Measurement\Engine\SectionMeasureGeometryProvider.cs"

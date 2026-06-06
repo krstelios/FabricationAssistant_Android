@@ -14,7 +14,8 @@ internal sealed class AndroidSnapWarmupRunner
     {
         long segmentCount = 0;
         int warmedMeshes = 0;
-        long start = Environment.TickCount64;
+        bool budgetReached = false;
+        long sliceStart = Environment.TickCount64;
 
         foreach (AndroidSnapWarmupMesh snapshot in snapshots)
         {
@@ -31,11 +32,15 @@ internal sealed class AndroidSnapWarmupRunner
             segmentCount += meshSegments;
             warmedMeshes++;
 
-            if (Environment.TickCount64 - start >= budgetMs)
-                return new AndroidSnapWarmupResult(warmedMeshes, segmentCount, BudgetReached: true);
+            if (Environment.TickCount64 - sliceStart >= budgetMs)
+            {
+                budgetReached = true;
+                Thread.Yield();
+                sliceStart = Environment.TickCount64;
+            }
         }
 
-        return new AndroidSnapWarmupResult(warmedMeshes, segmentCount, BudgetReached: false);
+        return new AndroidSnapWarmupResult(warmedMeshes, segmentCount, budgetReached);
     }
 }
 

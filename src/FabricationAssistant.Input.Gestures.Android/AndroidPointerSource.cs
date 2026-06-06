@@ -639,7 +639,10 @@ public sealed class AndroidPointerSource : IDisposable
         if (!_suppressFingerPointers
             && IsStylusDownAction(ev)
             && ContainsStylusOrEraser(ev))
+        {
             NotifyStylusInput();
+            CancelActiveGesture();
+        }
 
         return _suppressFingerPointers;
     }

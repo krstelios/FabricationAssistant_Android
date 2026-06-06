@@ -34,9 +34,8 @@ public sealed class GlesViewportRenderer : IDisposable
     private GlesGridRenderer? _gridRenderer;
     private GlesNormalDepthRenderer? _normalDepthRenderer;
     private GlesSsaoRenderer? _ssaoRenderer;
-    private ShaderProgram? _silhouetteOverlayProgram;
-    private uint _silhouetteOverlayVao;
-    private uint _silhouetteOverlayVbo;
+    private uint _fullscreenTriangleVao;
+    private uint _fullscreenTriangleVbo;
     private GlesOutlineRenderer? _outlineRenderer;
     private GlesMeasurementOverlay? _measurementOverlay;
     private GlesFaceHighlightOverlay? _faceHighlightOverlay;
@@ -56,7 +55,6 @@ public sealed class GlesViewportRenderer : IDisposable
     private long _lastSectionCapCancelLogTicks;
     private int _sectionCapDiagnosticFramesRemaining;
     private string _sectionCapDiagnosticReason = "";
-    private long _lastMsaaBypassLogTicks;
     private long _lastStaleSectionCapLogTicks;
     private MsaaSceneFramebuffer? _msaaFbo;
     // FXAA post-process: the resolved scene+overlays are composited into this
@@ -450,14 +448,10 @@ public sealed class GlesViewportRenderer : IDisposable
         var ssaoBlurFs = LoadEmbeddedShader("ssao_blur.gles.frag");
         _ssaoRenderer = new GlesSsaoRenderer(_gl, fsVs, ssaoFs, ssaoBlurFs);
 
-        // Screen-space silhouette overlay driven by the normal-depth pre-pass.
-        var silhouetteFs = LoadEmbeddedShader("silhouette_overlay.gles.frag");
-        _silhouetteOverlayProgram = new ShaderProgram(_gl, "silhouette_overlay", fsVs, silhouetteFs);
-        (_silhouetteOverlayVao, _silhouetteOverlayVbo) = GlesFullscreenTriangle.Create(_gl);
-
-        // FXAA post-process (reuses the fullscreen vertex shader + triangle VAO).
+        // FXAA post-process.
         var fxaaFs = LoadEmbeddedShader("fxaa.gles.frag");
         _fxaaProgram = new ShaderProgram(_gl, "fxaa", fsVs, fxaaFs);
+        (_fullscreenTriangleVao, _fullscreenTriangleVbo) = GlesFullscreenTriangle.Create(_gl);
 
         // 1x1 white AO texture - bound when SSAO is off so the mesh shader's
         // AO multiply is identity.
@@ -538,9 +532,9 @@ public sealed class GlesViewportRenderer : IDisposable
         _normalDepthRenderer?.Resize(_width, _height);
         _ssaoRenderer?.Resize(_width, _height, _appearance.AoFullResolution);
         _outlineRenderer?.Resize(_width, _height);
-        // Only allocate the MSAA FBO when MSAA is on. Mirrors the conditional
-        // in OnDrawFrame so a resize while MSAA is Off does not eagerly
-        // create the FBO.
+        // During resize, only preallocate the scene FBO when true MSAA is on.
+        // The normal frame path can still allocate the single-sample offscreen
+        // target lazily when MSAA is Off and post-processing needs it.
         var appearance = _appearance;
         if (appearance.MsaaSamples > 1)
             TryPrepareMsaaFramebuffer(appearance);
@@ -625,7 +619,7 @@ public sealed class GlesViewportRenderer : IDisposable
         }
 
         // Supersampling (SSAA): on the settled (non-interactive) frame, render the
-        // scene, AO and silhouette into an offscreen buffer at RenderScale x the
+        // scene and AO into an offscreen buffer at RenderScale x the
         // screen size, then linear-downsample to the backbuffer. This is done by
         // temporarily swapping _width/_height to the larger render size for the
         // offscreen passes; the final UI overlays (selection outline, axis triad)
@@ -648,7 +642,6 @@ public sealed class GlesViewportRenderer : IDisposable
         long ssaoStart = Stopwatch.GetTimestamp();
         uint aoTextureToBind = _whiteAoTexture;
         bool ssaoActive = false;
-        bool normalDepthRanThisFrame = false;
         string ssaoInactiveReason = GetSsaoInactiveReason(a, camera);
         if (ssaoInactiveReason.Length == 0 && lightweightNavigationActive)
             ssaoInactiveReason = "interactive navigation";
@@ -656,20 +649,7 @@ public sealed class GlesViewportRenderer : IDisposable
         // SSAO is eligible to run when nothing vetoed it above.
         bool ssaoEligible = ssaoInactiveReason.Length == 0;
 
-        // S19#1: the screen-space silhouette overlay also consumes the
-        // normal-depth pre-pass, so the pre-pass must be able to run even when
-        // AO is off. These are the same guards the overlay itself applies
-        // below, so the pre-pass runs exactly when either consumer needs it.
-        // S20-F10: the silhouette overlay only runs in ShadedWithEdges, matching
-        // desktop (where the silhouette is part of the CAD edge pass that itself is
-        // gated on mode == ShadedWithEdges). Plain Shaded therefore shows no edge
-        // overlays at all, instead of silhouette-lines-without-feature-edges.
-        bool silhouettePrepassWanted = a.CadEdgeSilhouetteEnabled
-            && a.Mode == RenderMode.ShadedWithEdges
-            && SectionPlanes.Count == 0
-            && !lightweightNavigationActive;
-
-        if ((ssaoEligible || silhouettePrepassWanted)
+        if (ssaoEligible
             && Scene is { } ssaoScene
             && camera is { } ssaoCamera
             && _normalDepthRenderer is { } normalDepth)
@@ -678,11 +658,8 @@ public sealed class GlesViewportRenderer : IDisposable
             ResetMainFramebufferState();
             normalDepth.SectionPlanes = SectionPlanes;
             normalDepth.Render(ssaoScene, ssaoCamera, _width, _height, a, collectSsaoDiagnostics);
-            normalDepthRanThisFrame = true;
 
-            // SSAO consumption stays gated on SSAO eligibility; a pre-pass run
-            // only for silhouettes leaves AO off (aoTextureToBind stays white).
-            if (ssaoEligible && _ssaoRenderer is { } ssao)
+            if (_ssaoRenderer is { } ssao)
             {
                 ssao.Resize(_width, _height, a.AoFullResolution);
                 ssao.Render(
@@ -710,23 +687,14 @@ public sealed class GlesViewportRenderer : IDisposable
         LogSsaoState(a, ssaoActive, ssaoInactiveReason, aoTextureToBind);
         long afterSsao = Stopwatch.GetTimestamp();
 
-        bool msaaBypassedForNavigation = lightweightNavigationActive && a.MsaaSamples > 1;
-        if (msaaBypassedForNavigation && ShouldLogThrottled(ref _lastMsaaBypassLogTicks, 1000.0))
-        {
-            Android.Util.Log.Info(
-                "FA.Renderer",
-                $"MSAA samples reduced during lightweight navigation: requested={a.MsaaSamples}x, depth remains D32FS8, viewport={_width}x{_height}.");
-        }
-
         SceneAppearance renderTargetAppearance = a;
-        if (msaaBypassedForNavigation)
-            renderTargetAppearance.MsaaSamples = 0;
-        // Under SSAA the downsample already removes most aliasing, so cap hardware
-        // MSAA at 2x to keep the (now 2.25x larger) offscreen renderbuffers within
-        // a sane memory budget. The MsaaSceneFramebuffer sample fallback handles
-        // the rest if even that does not fit.
-        if (wantSsaa && renderTargetAppearance.MsaaSamples > 2)
-            renderTargetAppearance.MsaaSamples = 2;
+        // Lightweight navigation still skips expensive screen-space effects
+        // such as SSAO, but it must not silently downgrade the user's MSAA
+        // setting. MSAA is the primary geometry edge AA path and should remain
+        // visible while orbiting/panning.
+        // Keep the same rule under SSAA/render scale: try the requested sample
+        // count first and let MsaaSceneFramebuffer's allocation fallback reduce
+        // it only if the device cannot allocate that render target.
 
         bool useMsaaFbo = TryPrepareMsaaFramebuffer(renderTargetAppearance);
         // SSAA needs the offscreen path so it can resolve into the composite and
@@ -739,9 +707,10 @@ public sealed class GlesViewportRenderer : IDisposable
             _width = screenWidth;
             _height = screenHeight;
         }
-        // FXAA engages only on the normal MSAA path, outside lightweight
-        // navigation, and not together with SSAA (which already supersamples
-        // every edge). The composite FBO is shared with SSAA.
+        // FXAA runs after the scene FBO has resolved into the single-sample
+        // composite. That scene FBO may be multisampled or single-sampled
+        // (MSAA Off); the important part is that FXAA sees the final resolved
+        // color image, not the multisample renderbuffer.
         bool useFxaa = a.FxaaEnabled
             && useMsaaFbo
             && !useSsaa
@@ -1104,10 +1073,9 @@ public sealed class GlesViewportRenderer : IDisposable
         }
         ResetMainFramebufferState();
 
-        // Plan 3B: resolve the MSAA color attachment to the default
-        // backbuffer. The selection outline post-process draws into the
-        // default FBO over the resolved color. Skip the resolve entirely
-        // when we rendered directly to the default FB.
+        // Plan 3B: resolve the scene color attachment to the default backbuffer
+        // or to the single-sample composite target used by SSAA/FXAA. Skip the
+        // resolve entirely when we rendered directly to the default FB.
         if (useMsaaFbo && _msaaFbo!.FboHandle != 0)
         {
             // FXAA/SSAA on: resolve into the offscreen composite FBO so the
@@ -1128,9 +1096,9 @@ public sealed class GlesViewportRenderer : IDisposable
                 // single redraw self-corrects once resolves succeed again.
                 retriedWithoutMsaa = true;
                 useMsaaFbo = false;
-                // The composite path depends on the offscreen FBO; with MSAA off
-                // the scene goes straight to the backbuffer, so drop SSAA/FXAA and
-                // restore the true screen size before re-rendering.
+                // The composite path depends on the offscreen scene FBO; with
+                // that path unavailable the retry renders straight to the
+                // backbuffer, so drop SSAA/FXAA and restore the true screen size.
                 if (wantSsaa)
                 {
                     _width = screenWidth;
@@ -1147,45 +1115,26 @@ public sealed class GlesViewportRenderer : IDisposable
         }
         long afterScene = Stopwatch.GetTimestamp();
 
-        // Screen-space silhouette overlay. Runs after the MSAA resolve (so
-        // it draws into the resolved single-sampled buffer) and before the
-        // outline post-process. Requires the normal-depth pre-pass to have run
-        // THIS frame - which now happens for silhouettes independently of SSAO
-        // (S19#1), so it no longer requires AO to be on. Gating on
-        // normalDepthRanThisFrame (not NormalTexture != 0, which stays non-zero
-        // once allocated) ensures the texture is fresh. S20-F10: restricted to
-        // ShadedWithEdges (desktop parity - the silhouette belongs to the edge
-        // pass, so plain Shaded/Clay/Wireframe show no silhouette). Also skip it in
-        // section mode: the normal-depth pre-pass does not include cap geometry, so
-        // this post-process can repaint background/cut edge pixels over the cap.
-        bool silhouetteOverlayActive = normalDepthRanThisFrame
-            && a.CadEdgeSilhouetteEnabled
-            && a.Mode == RenderMode.ShadedWithEdges
-            && SectionPlanes.Count == 0
-            && !lightweightNavigationActive;
-        if (silhouetteOverlayActive)
-            RenderSilhouetteOverlay(a);
-
-        // Bring the composited scene+silhouette (in the offscreen composite FBO)
-        // to the screen backbuffer before the UI overlays draw. SSAA linear-
-        // downsamples the super-sampled buffer to screen size and restores the
-        // true screen dimensions; FXAA filters at native size. The selection
-        // outline and axis triad then composite directly onto FBO 0 at screen
-        // size (they re-bind FBO 0 themselves, so they must run after this).
+        // Bring or keep the resolved scene in the target needed by the remaining
+        // post passes. SSAA downsamples immediately to the screen and restores
+        // the true screen dimensions. FXAA keeps the native-size composite bound
+        // so selection outlines and axes can join the image before the FXAA pass
+        // writes the final pixels to FBO 0.
         if (useSsaa && useMsaaFbo)
         {
             DownscaleCompositeToScreen(screenWidth, screenHeight);
             _width = screenWidth;
             _height = screenHeight;
         }
-        else if (useFxaa && useMsaaFbo)
+        else if (useFxaa)
         {
-            ApplyFxaa();
+            BindFinalOverlayTarget(useFxaa);
         }
 
         // Selection / hover outline post-process. Hover draws first so the
         // selected body's red outline wins when both targets overlap.
         long outlineStart = afterScene;
+        uint finalOverlayTarget = useFxaa ? _compositeFbo : 0u;
         if (!lightweightNavigationActive
             && a.OutlineEnabled
             && HighlightSelection
@@ -1195,7 +1144,7 @@ public sealed class GlesViewportRenderer : IDisposable
         {
             _outlineRenderer.SectionPlanes = SectionPlanes;
             _outlineRenderer.Render(Scene, camera, HoveredMeshIndices,
-                a.HoverOutlineColor, a.HoverOutlineThicknessPx, _width, _height);
+                a.HoverOutlineColor, a.HoverOutlineThicknessPx, _width, _height, finalOverlayTarget);
             ResetMainFramebufferState();
         }
 
@@ -1207,15 +1156,19 @@ public sealed class GlesViewportRenderer : IDisposable
         {
             _outlineRenderer.SectionPlanes = SectionPlanes;
             _outlineRenderer.Render(Scene, camera, SelectedMeshIndices,
-                a.OutlineColor, a.OutlineThicknessPx, _width, _height);
+                a.OutlineColor, a.OutlineThicknessPx, _width, _height, finalOverlayTarget);
             ResetMainFramebufferState();
         }
 
         if (a.ShowAxes)
         {
+            BindFinalOverlayTarget(useFxaa);
             _axisTriadOverlay?.Render(camera, _width, _height);
             ResetMainFramebufferState();
         }
+
+        if (useFxaa)
+            ApplyFxaa();
 
 
         long afterOutline = Stopwatch.GetTimestamp();
@@ -1374,70 +1327,6 @@ public sealed class GlesViewportRenderer : IDisposable
 
     private bool ShouldRenderMesh(GpuMesh mesh)
         => mesh.Visible || IsXrayBackgroundMesh(mesh);
-
-    /// <summary>
-    /// Fullscreen pass that emits CAD silhouette edges by reading the
-    /// normal-depth pre-pass texture. Constant per-pixel cost, independent
-    /// of edge count.
-    /// </summary>
-    private void RenderSilhouetteOverlay(SceneAppearance a)
-    {
-        if (_gl is null
-            || _silhouetteOverlayProgram is null
-            || _normalDepthRenderer is null
-            || _normalDepthRenderer.NormalTexture == 0
-            || _width <= 0
-            || _height <= 0)
-        {
-            return;
-        }
-
-        _silhouetteOverlayProgram.Use();
-        _gl.ActiveTexture(TextureUnit.Texture0);
-        _gl.BindTexture(TextureTarget.Texture2D, _normalDepthRenderer.NormalTexture);
-        SetInt(_silhouetteOverlayProgram, "uNormalDepthTexture", 0);
-        SetVec2(_silhouetteOverlayProgram, "uViewportInvSize",
-            1f / _width,
-            1f / _height);
-
-        // Match the geometric edge color so the silhouette overlay reads as
-        // the same visual style as boundary/feature edges.
-        float edgeAlpha = 0.82f;
-        SetVec4(
-            _silhouetteOverlayProgram,
-            "uEdgeColor",
-            a.EdgeColor[0],
-            a.EdgeColor[1],
-            a.EdgeColor[2],
-            edgeAlpha);
-        // Tuning: depth threshold is in packed normalized depth (~0.004 per
-        // 8-bit step); normal threshold is 1 - cos(theta) for the crease
-        // angle the silhouette test should ignore. Starting values work on
-        // the test assembly; expose via AppSettings if user tuning is needed.
-        SetFloat(_silhouetteOverlayProgram, "uDepthEdgeThreshold", 0.003f);
-        SetFloat(_silhouetteOverlayProgram, "uNormalEdgeThreshold", 0.35f);
-
-        _gl.Disable(EnableCap.DepthTest);
-        _gl.Disable(EnableCap.CullFace);
-        _gl.Enable(EnableCap.Blend);
-        _gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
-        _gl.DepthMask(false);
-
-        GlesFullscreenTriangle.Draw(_gl, _silhouetteOverlayVao);
-
-        _gl.DepthMask(true);
-        _gl.Enable(EnableCap.DepthTest);
-        _gl.Disable(EnableCap.Blend);
-        _gl.ActiveTexture(TextureUnit.Texture0);
-        _gl.BindTexture(TextureTarget.Texture2D, 0);
-    }
-
-    private void SetVec4(ShaderProgram program, string name, float x, float y, float z, float w)
-    {
-        int loc = program.UniformLocation(name);
-        if (loc >= 0)
-            _gl!.Uniform4(loc, x, y, z, w);
-    }
 
     /// <summary>
     /// Extracts 6 normalized world-space frustum planes from row-major
@@ -2590,9 +2479,7 @@ public sealed class GlesViewportRenderer : IDisposable
         }
 
         Interlocked.Exchange(ref _lastSlowFrameLogTicks, now);
-        string msaaState = lightweightNavigationActive && appearance.MsaaSamples > 1
-            ? $"Off(interactive, requested={appearance.MsaaSamples}x)"
-            : appearance.MsaaSamples <= 1 ? "Off" : appearance.MsaaSamples + "x";
+        string msaaState = appearance.MsaaSamples <= 1 ? "Off" : appearance.MsaaSamples + "x";
         Android.Util.Log.Warn(
             "FA.Renderer",
             $"Slow frame: {elapsedMs:0.0}ms, queueCommands={queueCommandCount}, interactive={interactive}, lightweight={lightweightNavigationActive}, mode={appearance.Mode}, ssao={ssaoActive}, edges={edgesDrawn}, edgeWidth={appearance.EdgeWidth:0.###}, outline={(!lightweightNavigationActive && appearance.OutlineEnabled && HighlightSelection)}, meshes={Scene?.Meshes.Count ?? 0}, transparent={_lastSurfaceTransparentMeshCount}, hiddenAlpha={_lastSurfaceHiddenMeshCount}, msaa={msaaState}, viewport={_width}x{_height}.");
@@ -2850,6 +2737,16 @@ public sealed class GlesViewportRenderer : IDisposable
         _gl.Viewport(0, 0, (uint)screenW, (uint)screenH);
     }
 
+    private void BindFinalOverlayTarget(bool useFxaa)
+    {
+        if (_gl is null)
+            return;
+
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, useFxaa ? _compositeFbo : 0u);
+        if (_width > 0 && _height > 0)
+            _gl.Viewport(0, 0, (uint)_width, (uint)_height);
+    }
+
     // FXAA the composited image (in _compositeTex) to the default backbuffer.
     private void ApplyFxaa()
     {
@@ -2869,7 +2766,7 @@ public sealed class GlesViewportRenderer : IDisposable
         SetInt(_fxaaProgram, "uScene", 0);
         SetVec2(_fxaaProgram, "uInvResolution", 1f / _width, 1f / _height);
 
-        GlesFullscreenTriangle.Draw(_gl, _silhouetteOverlayVao);
+        GlesFullscreenTriangle.Draw(_gl, _fullscreenTriangleVao);
 
         _gl.DepthMask(true);
         _gl.Enable(EnableCap.DepthTest);
@@ -3203,20 +3100,19 @@ public sealed class GlesViewportRenderer : IDisposable
         TryDispose(_gridRenderer);
         TryDispose(_normalDepthRenderer);
         TryDispose(_ssaoRenderer);
-        TryDispose(_silhouetteOverlayProgram);
         TryDispose(_fxaaProgram);
-        if (_silhouetteOverlayVbo != 0 && _gl is not null)
+        if (_fullscreenTriangleVbo != 0 && _gl is not null)
         {
-            try { _gl.DeleteBuffer(_silhouetteOverlayVbo); }
-            catch (Exception ex) { Android.Util.Log.Warn("FA.Renderer", "Failed to delete silhouette overlay VBO: " + ex.Message); }
+            try { _gl.DeleteBuffer(_fullscreenTriangleVbo); }
+            catch (Exception ex) { Android.Util.Log.Warn("FA.Renderer", "Failed to delete fullscreen triangle VBO: " + ex.Message); }
         }
-        if (_silhouetteOverlayVao != 0 && _gl is not null)
+        if (_fullscreenTriangleVao != 0 && _gl is not null)
         {
-            try { _gl.DeleteVertexArray(_silhouetteOverlayVao); }
-            catch (Exception ex) { Android.Util.Log.Warn("FA.Renderer", "Failed to delete silhouette overlay VAO: " + ex.Message); }
+            try { _gl.DeleteVertexArray(_fullscreenTriangleVao); }
+            catch (Exception ex) { Android.Util.Log.Warn("FA.Renderer", "Failed to delete fullscreen triangle VAO: " + ex.Message); }
         }
-        _silhouetteOverlayVbo = 0;
-        _silhouetteOverlayVao = 0;
+        _fullscreenTriangleVbo = 0;
+        _fullscreenTriangleVao = 0;
         TryDispose(_outlineRenderer);
         TryDispose(_measurementOverlay);
         TryDispose(_faceHighlightOverlay);
@@ -3231,7 +3127,6 @@ public sealed class GlesViewportRenderer : IDisposable
         _gridRenderer = null;
         _normalDepthRenderer = null;
         _ssaoRenderer = null;
-        _silhouetteOverlayProgram = null;
         _fxaaProgram = null;
         _outlineRenderer = null;
         _measurementOverlay = null;
@@ -3447,9 +3342,7 @@ internal sealed class FrameTimingAccumulator
         if (_frames < FramesPerReport)
             return;
 
-        string msaaState = lightweightNavigationActive && appearance.MsaaSamples > 1
-            ? $"Off(interactive, requested={appearance.MsaaSamples}x)"
-            : appearance.MsaaSamples <= 1 ? "Off" : appearance.MsaaSamples + "x";
+        string msaaState = appearance.MsaaSamples <= 1 ? "Off" : appearance.MsaaSamples + "x";
         Android.Util.Log.Info(
             "FA.FrameTiming",
             $"Render timing over {_frames} frames: avg={_totalMs / _frames:0.0}ms, max={_maxMs:0.0}ms, over16={_over16}, over33={_over33}, over50={_over50}, queue={_queueMs / _frames:0.0}ms, queueCommands={_queueCommands}, ssao={_ssaoMs / _frames:0.0}ms, scene={_sceneMs / _frames:0.0}ms, edges={_edgeMs / _frames:0.0}ms, outline={_outlineMs / _frames:0.0}ms, mode={appearance.Mode}, interactive={interactive}, lightweight={lightweightNavigationActive}, ssaoActive={ssaoActive}, edgesDrawn={edgesDrawn}, edgeWidth={appearance.EdgeWidth:0.###}, outline={outlineEnabled}, meshes={meshCount}, transparent={transparentMeshCount}, hiddenAlpha={hiddenAlphaMeshCount}, culledFrustum={_frustumCulledSum / _frames}/{meshCount}, msaa={msaaState}, viewport={width}x{height}.");

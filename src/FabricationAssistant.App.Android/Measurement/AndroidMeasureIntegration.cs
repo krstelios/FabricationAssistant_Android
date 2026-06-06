@@ -61,7 +61,16 @@ internal sealed class AndroidMeasureIntegration : IDisposable
         _session = new MeasurementSession(_store, _units, MeasurementTolerances.Default, undoService, _nodePoseLookup);
         _raycaster = new AndroidMeasureRaycaster(sceneAccessor, sectionPlanesAccessor);
         _snapVisibilityFilter = IsSnapTargetVisible;
-        _snapDiagnosticsLog = message => Log.Debug("FA.MeasureSnap", message);
+        _snapDiagnosticsLog = message =>
+        {
+            if (message.StartsWith("CircularFeature ", StringComparison.Ordinal))
+            {
+                Log.Info("FA.MeasureCircular", message);
+                return;
+            }
+
+            Log.Debug("FA.MeasureSnap", message);
+        };
         EdgeSnapService.VisibilityFilter = _snapVisibilityFilter;
         EdgeSnapService.DiagnosticsLog = _snapDiagnosticsLog;
         MeshMeasurePicker.DiagnosticsLog = _snapDiagnosticsLog;
@@ -198,7 +207,7 @@ internal sealed class AndroidMeasureIntegration : IDisposable
             {
                 Log.Debug(
                     "FA.MeasureSnap",
-                    $"Warmup budget reached: reason={reason}, meshes={result.WarmedMeshes}/{snapshots.Count}, segments={result.SegmentCount}, elapsedMs={Environment.TickCount64 - start}.");
+                    $"Warmup complete after budget yields: reason={reason}, meshes={result.WarmedMeshes}/{snapshots.Count}, segments={result.SegmentCount}, elapsedMs={Environment.TickCount64 - start}.");
                 return;
             }
 

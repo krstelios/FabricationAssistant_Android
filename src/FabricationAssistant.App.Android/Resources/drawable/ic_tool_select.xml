@@ -7,14 +7,14 @@
     <path
         android:pathData="M24,15 L24,47 L32,39 L36,49 L40,47 L36,37 L46,37 Z"
         android:fillColor="@android:color/transparent"
-        android:strokeColor="@color/fa_toolbar_icon_main"
+        android:strokeColor="@color/fa_tool_select_icon"
         android:strokeWidth="2"
         android:strokeLineCap="round"
         android:strokeLineJoin="round" />
     <path
         android:pathData="M28,23 L36,31"
         android:fillColor="@android:color/transparent"
-        android:strokeColor="@color/fa_toolbar_icon_main"
+        android:strokeColor="@color/fa_tool_select_icon"
         android:strokeWidth="2"
         android:strokeLineCap="round" />
 </vector>

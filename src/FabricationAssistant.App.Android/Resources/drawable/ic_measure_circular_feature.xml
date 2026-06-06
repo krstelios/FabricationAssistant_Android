@@ -1,0 +1,26 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M12,4.5m-7.5,7.5a7.5,7.5 0,1 0,15 0a7.5,7.5 0,1 0,-15 0"
+        android:strokeColor="@color/fa_toolbar_icon_main"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="1.8" />
+    <path
+        android:fillColor="@color/fa_toolbar_icon_main"
+        android:pathData="M5.8,10.8h12.4v2.4h-12.4z" />
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M12,12L17,7"
+        android:strokeColor="@color/fa_toolbar_icon_accent"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="2" />
+    <path
+        android:fillColor="@color/fa_toolbar_icon_accent"
+        android:pathData="M12,12m-2.1,0a2.1,2.1 0,1 0,4.2 0a2.1,2.1 0,1 0,-4.2 0" />
+</vector>

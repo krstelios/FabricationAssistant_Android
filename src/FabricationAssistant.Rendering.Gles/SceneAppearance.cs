@@ -22,7 +22,7 @@ public static class SceneAppearanceDefaults
     public const bool ShowGrid = true;
     public const bool ShiftGridToModelMin = true;
     public const bool UseAutomaticGridSpacing = true;
-    public const float GridSpacingMm = 100.8f;
+    public const float GridSpacingMm = 100.0f;
     public const float GridLineThickness = 1.0f;
     public const float GridLineColorR = 0.35f;
     public const float GridLineColorG = 0.35f;
@@ -40,16 +40,15 @@ public static class SceneAppearanceDefaults
     public const float SurfaceOpacity = 1.0f;
 
     public const bool EdgesEnabled = true;
-    public const float EdgeR = 0.24028806f;
-    public const float EdgeG = 0.24f;
-    public const float EdgeB = 0.26f;
+    public const float EdgeR = 0.12941177f;
+    public const float EdgeG = 0.12941177f;
+    public const float EdgeB = 0.13725491f;
     public const float EdgeWidth = 1.0f;
     public const float CadEdgeFeatureAngleDegrees = 28.0f;
     public const float CadEdgeCoplanarToleranceDegrees = 5.0f;
     public const float CadEdgeWeldToleranceScale = 1.0e-5f;
-    public const bool CadEdgeSilhouetteEnabled = true;
     public const float EdgeDepthBias = 0.0f;
-    public const float SurfaceOffsetFactor = 2.44f;
+    public const float SurfaceOffsetFactor = 0.0f;
     public const float SurfaceOffsetUnits = 0.0f;
 
     public const float ClaySurfaceR = 0.804f;
@@ -62,34 +61,34 @@ public static class SceneAppearanceDefaults
     public const float ClayFeatureEdgeR = 0.11975311f;
     public const float ClayFeatureEdgeG = 0.12004116f;
     public const float ClayFeatureEdgeB = 0.11650209f;
-    public const float ClayFeatureEdgeA = 0.48666665f;
+    public const float ClayFeatureEdgeA = 0.5f;
     public const float ClayFeatureEdgeWidth = 0.95f;
     public const float ClayFeatureEdgeDepthBias = 0.0f;
     public const float ClayFeatureEdgeCreaseAngleDegrees = 35.0f;
 
-    public const float BaseColorLift = 0.1095f;
-    public const float AmbientStrength = 0.306f;
+    public const float BaseColorLift = 0.06f;
+    public const float AmbientStrength = 0.24f;
     public const float HeadlightStrength = 0.14f;
     public const float KeyLightStrength = 0.34f;
     public const float FillLightStrength = 0.24f;
     public const float BounceLightStrength = 0.0f;
     public const float HemisphereStrength = 0.28f;
-    public const float SpecularStrength = 0.354f;
+    public const float SpecularStrength = 0.35f;
     public const float SpecularPower = 77.0f;
 
     public const bool AmbientOcclusionEnabled = true;
-    public const int AoSampleCount = 4;
-    public const float AoRadius = 0.018617f;
-    public const float AoBias = 0.00064f;
-    public const float AoIntensity = 1.516f;
-    public const float AoPower = 1.33f;
-    public const float AoContrast = 1.0f;
+    public const int AoSampleCount = 24;
+    public const float AoRadius = 0.0045f;
+    public const float AoBias = 0.0005f;
+    public const float AoIntensity = 4.0f;
+    public const float AoPower = 1.6f;
+    public const float AoContrast = 1.05f;
     public const float AoMaxDistance = 2.0f;
-    public const float AoFadeStart = 1.094f;
+    public const float AoFadeStart = 1.45f;
     public const float AoFadeEnd = 2.0f;
     public const bool AoBlurEnabled = true;
-    public const int AoBlurRadius = 24;
-    public const float AoBlurSharpness = 8.96f;
+    public const int AoBlurRadius = 16;
+    public const float AoBlurSharpness = 5.8f;
     public const int AoBlurPasses = 1;
     // Render SSAO at full viewport resolution instead of half. Removes the blocky
     // half-res grid that shows through as low-res "triangles" in the shadow at
@@ -97,25 +96,25 @@ public static class SceneAppearanceDefaults
     public const bool AoFullResolution = true;
     // Post-process FXAA on the final composited image. Off by default - the
     // composite render target + extra pass only engage when enabled.
-    public const bool FxaaEnabled = false;
+    public const bool FxaaEnabled = true;
     // Supersampling factor for the settled (non-interactive) frame. 1.0 = native;
-    // >1 renders the scene/AO/silhouette into a larger offscreen buffer and
+    // >1 renders the scene/AO into a larger offscreen buffer and
     // linear-downsamples to the screen, which is the only knob that visibly
     // sharpens edges once hardware MSAA is maxed out. 1.0 by default.
     public const float RenderScale = 1.0f;
-    public const float ContourStrength = 0.20040001f;
-    public const float ContourPower = 4.4105f;
+    public const float ContourStrength = 0.18f;
+    public const float ContourPower = 0.6f;
     public const int MsaaSamples = 4;
 
     public const bool OutlineEnabled = true;
     public const float OutlineR = 1.0f;
     public const float OutlineG = 0.0f;
     public const float OutlineB = 0.0f;
-    public const float OutlineThicknessPx = 3.2098765f;
+    public const float OutlineThicknessPx = 3.2f;
     public const float HoverOutlineR = 0.0f;
     public const float HoverOutlineG = 1.0f;
     public const float HoverOutlineB = 0.0f;
-    public const float HoverOutlineThicknessPx = 0.37757202f;
+    public const float HoverOutlineThicknessPx = 0.4f;
     public const float HoverTintStrength = 0.2f;
 
     public static SceneAppearance Create() => new()
@@ -142,7 +141,6 @@ public static class SceneAppearanceDefaults
         CadEdgeFeatureAngleDegrees = CadEdgeFeatureAngleDegrees,
         CadEdgeCoplanarToleranceDegrees = CadEdgeCoplanarToleranceDegrees,
         CadEdgeWeldToleranceScale = CadEdgeWeldToleranceScale,
-        CadEdgeSilhouetteEnabled = CadEdgeSilhouetteEnabled,
         EdgeDepthBias = EdgeDepthBias,
         SurfaceOffsetFactor = SurfaceOffsetFactor,
         SurfaceOffsetUnits = SurfaceOffsetUnits,
@@ -238,7 +236,6 @@ public struct SceneAppearance
     public float CadEdgeFeatureAngleDegrees;
     public float CadEdgeCoplanarToleranceDegrees;
     public float CadEdgeWeldToleranceScale;
-    public bool CadEdgeSilhouetteEnabled;
     public float EdgeDepthBias;
     public float SurfaceOffsetFactor;
     public float SurfaceOffsetUnits;

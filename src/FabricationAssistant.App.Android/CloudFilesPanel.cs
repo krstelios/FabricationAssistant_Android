@@ -178,7 +178,6 @@ public sealed class CloudFilesPanel : IDisposable
             if (e.Position == 0)
             {
                 _selectedProjectId = null;
-                AppSettings.CloudDefaultProjectName = AllProjectsLabel;
                 RebuildList(ctx);
                 return;
             }
@@ -188,7 +187,6 @@ public sealed class CloudFilesPanel : IDisposable
             {
                 CloudProject project = _snapshot.Projects[projectIndex];
                 _selectedProjectId = project.ProjectId;
-                AppSettings.CloudDefaultProjectName = project.Name;
                 RebuildList(ctx);
             }
         };
@@ -289,31 +287,8 @@ public sealed class CloudFilesPanel : IDisposable
         int selected = 0;
         if (_snapshot.Projects.Count > 0)
         {
-            string preferredName = AppSettings.CloudDefaultProjectName;
-            if (string.Equals(preferredName, AllProjectsLabel, StringComparison.OrdinalIgnoreCase)
-                || string.IsNullOrWhiteSpace(preferredName))
-            {
-                selected = 0;
-                _selectedProjectId = null;
-                AppSettings.CloudDefaultProjectName = AllProjectsLabel;
-            }
-            else
-            {
-                int projectIndex = _snapshot.Projects.ToList().FindIndex(project =>
-                    string.Equals(project.Name, preferredName, StringComparison.OrdinalIgnoreCase));
-                if (projectIndex >= 0)
-                {
-                    selected = projectIndex + 1;
-                    _selectedProjectId = _snapshot.Projects[projectIndex].ProjectId;
-                    AppSettings.CloudDefaultProjectName = _snapshot.Projects[projectIndex].Name;
-                }
-                else
-                {
-                    selected = 0;
-                    _selectedProjectId = null;
-                    AppSettings.CloudDefaultProjectName = AllProjectsLabel;
-                }
-            }
+            selected = 0;
+            _selectedProjectId = null;
         }
         else
         {

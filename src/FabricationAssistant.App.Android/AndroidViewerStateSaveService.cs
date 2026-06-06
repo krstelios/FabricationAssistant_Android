@@ -227,6 +227,21 @@ internal sealed class AndroidViewerStateSaveService
                 dto.BoxBasisSource = b.BasisSource.ToString();
                 return dto;
 
+            case CircularFeatureMeasurement c:
+                dto.Kind = "circular-feature";
+                dto.Points = [[c.Center.X, c.Center.Y, c.Center.Z]];
+                dto.Axis = [c.Axis.X, c.Axis.Y, c.Axis.Z];
+                dto.CircleU = [c.U.X, c.U.Y, c.U.Z];
+                dto.CircleV = [c.V.X, c.V.Y, c.V.Z];
+                dto.Radius = c.RadiusScene;
+                dto.Distance = c.Value.Meters;
+                dto.DistanceUnits = "m";
+                dto.DimensionKind = c.DimensionKind.ToString();
+                dto.CurveSegments = c.CurveSegments
+                    .Select(p => new[] { p.X, p.Y, p.Z })
+                    .ToList();
+                return dto;
+
             default:
                 dto.Kind = "unknown";
                 return dto;

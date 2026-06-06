@@ -24,7 +24,6 @@ public static class SceneUploader
     public const float DefaultFeatureAngleDeg = 28f;
     public const float DefaultCoplanarToleranceDeg = 5f;
     public const float DefaultWeldToleranceScale = 1.0e-5f;
-    public const bool DefaultSilhouetteEnabled = true;
 
     public static List<GpuMesh> Upload(GL gl, DocumentDto document, float featureAngleDeg = DefaultFeatureAngleDeg)
     {
@@ -116,8 +115,7 @@ public static class SceneUploader
                     meshDto,
                     featureAngleDeg,
                     DefaultCoplanarToleranceDeg,
-                    DefaultWeldToleranceScale,
-                    DefaultSilhouetteEnabled);
+                    DefaultWeldToleranceScale);
             if (edgeVertices.Length > 0)
                 gpu.UploadEdges(edgeVertices);
 

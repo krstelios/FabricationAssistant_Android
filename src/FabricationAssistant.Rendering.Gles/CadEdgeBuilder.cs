@@ -5,10 +5,8 @@ namespace FabricationAssistant.Rendering.Gles;
 
 public static class CadEdgeBuilder
 {
-    // S7-F6: edge endpoints carry only position. The silhouette test moved to a
-    // screen-space pass, so the former per-vertex normalA/normalB/flags payload
-    // (7 floats) was dead - UploadEdges only ever read xyz. The topology
-    // classification below still gates which edges are emitted.
+    // Edge endpoints carry only position; UploadEdges only reads xyz. The
+    // topology classification below gates which feature/boundary edges are emitted.
     public const int EdgeVertexFloatCount = 3;
 
     private const double FeatureEdgeToleranceScale = 1e-5;
@@ -55,7 +53,7 @@ public static class CadEdgeBuilder
             ? featureAngleDegrees
             : FeatureEdgeCreaseAngleDegrees;
         double creaseDotThreshold = System.Math.Cos(featureAngle * System.Math.PI / 180.0);
-        _ = coplanarToleranceDegrees; // silhouette candidates moved to a screen-space pass; coplanar tolerance kept on the appearance for the post-process.
+        _ = coplanarToleranceDegrees;
 
         var topologyEdges = new Dictionary<TopologyEdgeKey, TopologyEdgeInfo>(
             System.Math.Max(64, mesh.Indices.Length / 6));

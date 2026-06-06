@@ -16,6 +16,9 @@
     <color name="fa_accent_600">#14B8A6</color>
     <color name="fa_accent_700">#0D9488</color>
     <color name="fa_on_accent">#061513</color>
+    <color name="fa_selection_shift_background">#2DD4BF</color>
+    <color name="fa_selection_shift_stroke">#2DD4BF</color>
+    <color name="fa_on_selection_shift">#FFFFFFFF</color>
     <color name="fa_error">#EF4444</color>
     <color name="fa_success">#34D399</color>
     <color name="fa_warning">#FBBF24</color>

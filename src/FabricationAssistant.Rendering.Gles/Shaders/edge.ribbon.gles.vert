@@ -6,9 +6,8 @@ precision highp float;
 // with divisor=1); locations 2-3 are per-vertex attributes from a shared
 // 4-vertex quad VBO with divisor=0. The host issues
 // glDrawElementsInstanced(TRIANGLES, 6, ..., segmentCount) so each segment
-// becomes one screen-facing ribbon. Silhouette-candidate edges are now
-// produced by a screen-space post-process, so this shader no longer needs
-// normals, flags, or the silhouette-test branch.
+// becomes one screen-facing ribbon. Feature/boundary edge classification is
+// done on the CPU, so this shader only needs endpoint positions.
 layout(location = 0) in vec3 aPosition0;
 layout(location = 1) in vec3 aPosition1;
 layout(location = 2) in float aSegmentT;
